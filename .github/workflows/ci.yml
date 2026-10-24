@@ -21,7 +21,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes \
             btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
-            gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
+            debian-archive-keyring gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
             systemd-container systemd-ukify xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
