@@ -28,9 +28,13 @@ jobs:
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
       - name: Verify the packages inside the built image
-        run: >-
-          sudo --preserve-env=PATH scripts/mkosi.sh shell -- rpm -q
-          glibc systemd plasma-workspace plasma-workspace-wayland
-          plasma-login-manager flatpak gcc git
+        run: |
+          sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
+          rpm -q \
+            glibc systemd plasma-workspace plasma-workspace-wayland \
+            plasma-login-manager plasma-setup flatpak gcc git cmake python3 nodejs
+          test -s /usr/share/veyra/branding/veyra-logo.svg
+          test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
+          '
       - name: Check that mkosi produced a disk image
         run: test -s mkosi.output/veyra-next.raw
