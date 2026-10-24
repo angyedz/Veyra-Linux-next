@@ -1,0 +1,48 @@
+# Veyra Boot experimental GRUB graphical menu.
+# Generated assets: scripts/build-veyra-boot-theme.sh OUTPUT_DIRECTORY
+# The image is derived from branding/veyra-logo.svg, never a substitute icon.
+desktop-color: "#071321"
+title-text: ""
+
++ image {
+    left = 50%-72
+    top = 8%
+    width = 144
+    height = 144
+    file = "veyra-logo.png"
+}
+
++ label {
+    text = "VEYRA LINUX"
+    left = 0%
+    top = 36%
+    width = 100%
+    align = "center"
+    color = "#EAF8FF"
+}
+
++ boot_menu {
+    left = 20%
+    top = 46%
+    width = 60%
+    height = 36%
+    item_font = "Unifont Regular 16"
+    item_color = "#A5BBD0"
+    selected_item_color = "#55B8FF"
+    item_height = 40
+    item_padding = 9
+    item_spacing = 8
+    scrollbar = false
+}
+
+# This is only the boot timeout, NOT update-package progress.
++ progress_bar {
+    id = "__timeout__"
+    left = 25%
+    top = 89%
+    width = 50%
+    height = 8
+    fg_color = "#55B8FF"
+    bg_color = "#20364C"
+    show_text = false
+}

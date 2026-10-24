@@ -8,6 +8,12 @@ One installed Linux system: Fedora packages, glibc, systemd, KDE Plasma on Wayla
 
 Kinoite informs the desktop experience: Plasma, Discover, Flatpak and an atomic-system update flow. Veyra does not use the Kinoite OSTree/rpm-ostree delivery model as its intended system-update mechanism.
 
+## Selected prototype foundation
+
+The current implementation uses Fedora 44, glibc and systemd. This replaces the earlier ADR's OpenRC preference for the new project: systemd is already the native service manager on Fedora and provides the boot, partition and image-update tools being evaluated. `mkosi` composes the image; `systemd-repart` defines its disk; `systemd-sysupdate` is the leading A/B update candidate. None of the update, rollback or Recovery pieces are implemented yet. They will be proved as Veyra behavior rather than inherited from Kinoite.
+
+The current UKIs are unsigned and the VM uses ordinary UEFI. Secure Boot is deliberately not claimed or enabled until key ownership, signing and enrollment are designed.
+
 ## Build and release direction
 
 1. `mkosi` consumes a versioned Fedora package manifest and Veyra configuration.

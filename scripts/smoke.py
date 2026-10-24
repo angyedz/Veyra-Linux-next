@@ -36,6 +36,7 @@ def main() -> int:
     content = section_values(config, "Content")
     distribution = section_values(config, "Distribution")
     build = section_values(config, "Build")
+    runtime = section_values(config, "Runtime")
 
     for expected in (
         "Distribution=fedora",
@@ -53,6 +54,10 @@ def main() -> int:
             return fail(f"{config.name} must contain {expected!r} in [Content]")
     if "ToolsTree=yes" not in build:
         return fail(f"{config.name} must build through mkosi's isolated tools tree")
+    if "Firmware=uefi" not in runtime:
+        return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
+    if "KernelCommandLine=systemd.unit=graphical.target" not in content:
+        return fail("the image must boot into the graphical desktop target")
 
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
@@ -93,12 +98,6 @@ def main() -> int:
         if service not in preset_content:
             return fail(f"system preset must include {service!r}")
 
-    default_target = ROOT / "mkosi.extra/etc/systemd/system/default.target"
-    if not default_target.is_symlink() or default_target.readlink() != pathlib.Path(
-        "/usr/lib/systemd/system/graphical.target"
-    ):
-        return fail("default.target must point to graphical.target")
-
     postinstall = ROOT / "mkosi.postinst.chroot"
     postinstall_content = postinstall.read_text(encoding="utf-8")
     if "flatpak remote-add --system --if-not-exists flathub" not in postinstall_content:
@@ -112,6 +111,22 @@ def main() -> int:
             return fail(f"vendored Flathub definition must include {expected!r}")
     if "/usr/share/veyra/flathub.flatpakrepo" not in postinstall_content:
         return fail("post-install script must configure Flathub from the vendored definition")
+
+    logo = ROOT / "branding/veyra-logo.svg"
+    installed_logo = ROOT / "mkosi.extra/usr/share/veyra/branding/veyra-logo.svg"
+    if not logo.is_file() or not installed_logo.is_file():
+        return fail("the canonical Veyra SVG must be included in the source and image")
+    if logo.read_bytes() != installed_logo.read_bytes():
+        return fail("the installed Veyra SVG must match the canonical source artwork")
+    for relative in (
+        "branding/fastfetch/config.jsonc",
+        "branding/fastfetch/logo.txt",
+        "branding/grub/theme.txt",
+        "mkosi.extra/usr/share/veyra/fastfetch/config.jsonc",
+        "mkosi.extra/usr/share/veyra/fastfetch/logo.txt",
+    ):
+        if not (ROOT / relative).is_file():
+            return fail(f"missing inherited branding file: {relative}")
 
     print("Veyra Next image source smoke checks passed.")
     return 0

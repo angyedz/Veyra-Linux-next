@@ -1,5 +1,7 @@
 # Veyra Next
 
+![Veyra mark](branding/veyra-logo.svg)
+
 Veyra Next is a new Fedora-based desktop OS project. The intended user experience is a normal KDE Plasma Wayland computer for gaming, communication and development. Fedora provides the package ecosystem and drivers; this repository defines Veyra's image and update behavior.
 
 ## Current stage
@@ -7,6 +9,8 @@ Veyra Next is a new Fedora-based desktop OS project. The intended user experienc
 This repository is building its first bootable Fedora 44 + KDE image with `mkosi`. It includes Fedora's first-boot account setup, Plasma Login Manager, Wayland, Flatpak/Discover, Flathub, PipeWire, Git and common native development tools.
 
 This is an image-building prototype, not a usable installer or pre-alpha release yet. The first-boot account flow is configured but still needs VM validation. A/B updates, verified boot, automatic rollback, Recovery and Developer Mode are not implemented. It has not been tested on real hardware. Steam/Proton, Discord screen sharing and NVIDIA/AMD compatibility are not yet qualified.
+
+The test image uses unsigned UKIs and therefore boots with Secure Boot disabled. Secure Boot enrollment and signed boot artifacts remain future work.
 
 ## Build
 
@@ -37,3 +41,5 @@ Those are product goals, not claims that this image already provides them.
 ## Architectural direction
 
 Kinoite is a reference for the KDE Atomic user experience, not the implementation to rebrand. The proposed Veyra path is Fedora packages composed by `mkosi`, then staged with systemd's A/B image-update tooling, partition layout and boot assessment. The detailed status and open design questions are in [architecture.md](docs/architecture.md).
+
+The inherited visual assets and their provenance are documented in [branding](branding/README.md).
