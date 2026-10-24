@@ -65,8 +65,7 @@ def main() -> int:
         "NetworkManager",
         "firewalld",
         "flatpak",
-        "initial-setup",
-        "initial-setup-gui-wayland-plasma",
+        "plasma-setup",
         "plasma-login-manager",
         "plasma-desktop",
         "plasma-workspace",
@@ -92,7 +91,7 @@ def main() -> int:
     for service in (
         "enable NetworkManager.service",
         "enable firewalld.service",
-        "enable initial-setup.service",
+        "enable plasma-setup.service",
         "enable plasmalogin.service",
     ):
         if service not in preset_content:

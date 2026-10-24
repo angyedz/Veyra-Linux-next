@@ -1,6 +1,6 @@
 # Build and boot a Veyra image in a VM
 
-This recipe builds an experimental disk image. Keep the VM disk disposable; the image uses Fedora's first-boot setup to create the initial account.
+This recipe builds an experimental disk image. Keep the VM disk disposable; the image uses KDE Plasma Setup to create the initial account.
 
 ## Requirements
 
@@ -23,7 +23,7 @@ mkosi places the image under `mkosi.output/`.
 scripts/mkosi.sh vm --console=gui
 ```
 
-The first boot should show Fedora Initial Setup before Plasma Login Manager. Complete account creation in the disposable VM to test the KDE desktop. Do not publish this image as something users can install: it still has no installer, A/B updates, verified boot, automatic rollback or Recovery.
+The first boot should show KDE Plasma Setup before Plasma Login Manager. Complete account creation in the disposable VM to test the KDE desktop. Do not publish this image as something users can install: it still has no installer, A/B updates, verified boot, automatic rollback or Recovery.
 
 This pre-alpha image has unsigned UKIs. mkosi is configured to use ordinary UEFI firmware in its VM; Secure Boot remains disabled until Veyra has a release signing and key-enrollment design.
 

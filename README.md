@@ -6,7 +6,7 @@ Veyra Next is a new Fedora-based desktop OS project. The intended user experienc
 
 ## Current stage
 
-This repository is building its first bootable Fedora 44 + KDE image with `mkosi`. It includes Fedora's first-boot account setup, Plasma Login Manager, Wayland, Flatpak/Discover, Flathub, PipeWire, Git and common native development tools.
+This repository is building its first bootable Fedora 44 + KDE image with `mkosi`. It includes KDE Plasma Setup for first-boot account creation, Plasma Login Manager, Wayland, Flatpak/Discover, Flathub, PipeWire, Git and common native development tools.
 
 This is an image-building prototype, not a usable installer or pre-alpha release yet. The first-boot account flow is configured but still needs VM validation. A/B updates, verified boot, automatic rollback, Recovery and Developer Mode are not implemented. It has not been tested on real hardware. Steam/Proton, Discord screen sharing and NVIDIA/AMD compatibility are not yet qualified.
 
@@ -27,7 +27,7 @@ The disk image and UKI artifacts are written to `mkosi.output/`. Boot the image 
 scripts/mkosi.sh vm --console=gui
 ```
 
-The image is configured to offer Fedora Initial Setup on first boot so the user can create an ordinary account before reaching Plasma. Verify that flow in the disposable VM before treating the image as usable.
+The image is configured to offer KDE Plasma Setup on first boot so the user can create an ordinary account before reaching Plasma. Verify that flow in the disposable VM before treating the image as usable.
 
 ## How the finished desktop should feel
 

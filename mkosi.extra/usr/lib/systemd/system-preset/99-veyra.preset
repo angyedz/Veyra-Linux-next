@@ -1,4 +1,4 @@
 enable NetworkManager.service
 enable firewalld.service
-enable initial-setup.service
+enable plasma-setup.service
 enable plasmalogin.service
