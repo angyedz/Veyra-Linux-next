@@ -31,8 +31,10 @@ jobs:
         run: |
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
           rpm -q \
-            glibc systemd plasma-workspace plasma-workspace-wayland \
-            plasma-login-manager plasma-setup flatpak gcc git cmake python3 nodejs
+            glibc systemd plasma-workspace plasma-login-manager plasma-setup \
+            flatpak gcc git cmake python3 nodejs22
+          test -x /usr/bin/startplasma-wayland
+          node --version
           test -s /usr/share/veyra/branding/veyra-logo.svg
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
           '
