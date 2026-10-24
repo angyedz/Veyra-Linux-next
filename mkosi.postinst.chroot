@@ -1,0 +1,8 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# Install Flathub as a normal system app source for Discover. The official
+# .flatpakrepo, including its signing key, is vendored so this build step works
+# without network access inside mkosi's finalization sandbox.
+flatpak remote-add --system --if-not-exists flathub \
+    /usr/share/veyra/flathub.flatpakrepo

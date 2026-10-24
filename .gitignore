@@ -1,0 +1,14 @@
+/work/
+mkosi.output/
+mkosi.cache/
+mkosi.builddir/
+mkosi.tools/
+mkosi.tools.manifest
+initrd/
+initrd
+initrd.cpio*
+*.qcow2
+*.raw
+*.iso
+*.img
+__pycache__/
