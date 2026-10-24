@@ -24,6 +24,16 @@ The current UKIs are unsigned and the VM uses ordinary UEFI. Secure Boot is deli
 
 This reuses systemd's image, partition and boot tools instead of writing a replacement package manager or custom cryptographic format. The A/B layout is two versions of one OS, never two concurrently running user environments.
 
+## Add-on package boundary
+
+Veyra's optional RPM repository is separate from Fedora's system repositories. Its two package channels are directories named `main` and `testing`; neither channel is a Git branch. Fedora continues to provide the system package set used when composing each A/B image. The Veyra repository is reserved for additional Veyra packages.
+
+The first `vpkg` implementation delegates dependency solving and RPM database transactions to DNF5, but narrows the allowed transaction to a selected Veyra repository and a separate installroot under writable `/var`. This keeps the add-on RPM database, transaction history, package cache, and extension RPM payloads separate from Fedora's RPM database in immutable `/usr/lib/sysimage`. It pre-downloads and inspects the resolved RPM set, rejects packages outside the `veyra-*` namespace, rejects RPM scripts, triggers, obsoletes and conflicts, and allows only one `.raw` system-extension payload under the installroot's `/var/lib/extensions`. `vpkg` exposes that image through a symlink in `/etc/extensions` and refreshes `systemd-sysext`; if activation fails, it uses the just-recorded DNF history transaction to undo the package operation and refreshes extensions again. RPM metadata and package signatures are required by both repository definitions.
+
+System extensions provide additive `/usr` and `/opt` content and can be activated without rebooting. Their extension-release metadata must match the Fedora release used by the base image. The first extension source, `veyra-shell-tools`, resolves Fedora dependencies in a root seeded with the Veyra base package set, rejects changes to any already-installed base package, and copies only newly introduced files into the extension image. A package that needs to replace a base file is rejected and must instead be delivered in a complete A/B system update. This gives Veyra two explicit transaction paths: add-on applications/extensions use DNF5 plus systemd-sysext; changes to the system image use A/B sysupdate.
+
+The package build scripts and repository directory manifests are in `packages/` and `scripts/`. CI is intended to build and sign a disposable test repository to validate the format. No production RPM key is committed or provisioned, no Pages site is enabled, and no package channel is published yet. A generated CI key must never become the key trusted by Veyra clients.
+
 ## Integrity layers
 
 - Fedora RPM signatures authenticate source packages during image composition.

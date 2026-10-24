@@ -32,12 +32,16 @@ jobs:
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
-            flatpak gcc git cmake python3 nodejs22
+            flatpak dnf5 dnf5-plugins gcc git cmake python3 nodejs22
           test -x /usr/lib/systemd/systemd-sysupdate
+          test -x /usr/bin/vpkg
           test -x /usr/bin/startplasma-wayland
           node --version
           test -s /usr/share/veyra/branding/veyra-logo.svg
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
+          test -L /etc/systemd/system/multi-user.target.wants/systemd-sysext.service
+          test -s /usr/lib/systemd/system/veyra-vpkg-sync.service
+          test -s /usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf
           '
       - name: Check that mkosi produced a disk image
         run: |

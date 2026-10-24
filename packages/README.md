@@ -1,0 +1,48 @@
+# Veyra package repository
+
+This tree contains source for Veyra add-on RPMs and the tools that build the
+two package channels. `main` and `testing` are repository directories, not Git
+branches. Fedora's system RPMs remain in Fedora's repositories and in the
+Veyra A/B system image; these channels are reserved for packages maintained by
+Veyra.
+
+## Transaction boundary
+
+The initial `vpkg` prototype uses DNF5 to resolve Veyra package dependencies
+inside a separate installroot on the writable `/var` partition. This keeps both
+the RPM database and DNF5 transaction state away from Fedora's immutable
+`/usr/lib/sysimage` database. It accepts only signed packages named `veyra-*`,
+with no RPM scripts and with a payload consisting solely of a `.raw`
+system-extension image under the separate installroot's
+`/var/lib/extensions/`. It validates the complete downloaded transaction before
+applying it, limits DNF5 to the selected Veyra channel, creates symlinks under
+`/etc/extensions`, refreshes `systemd-sysext`, and asks DNF5 history to undo the
+RPM transaction if the extension cannot be activated. This lets additive
+`/usr` and `/opt` content be activated without changing the base RPM database or
+rebooting.
+
+Base OS, kernel, bootloader, and other packages that change the system image
+are not installable through `vpkg`; those belong in a signed A/B system update.
+The repository RPM is a small wrapper around a version-compatible system
+extension image. Extension images are built for Fedora 44 in this prototype
+and must be rebuilt and tested when Veyra changes Fedora base versions.
+
+## Channels and publication
+
+The configured repository locations are:
+
+* `https://angyedz.github.io/Veyra-next/packages/main/$basearch/`
+* `https://angyedz.github.io/Veyra-next/packages/testing/$basearch/`
+
+Both repos require RPM signatures and signed `repomd.xml` metadata. The
+publisher must sign each RPM and repository metadata with the same trusted
+Veyra RPM key. No release key is checked into this repository, and publication
+must fail closed until the owner provisions the key. CI uses a throwaway key
+only to verify the build and repository-signature path; it is never a client
+trust key.
+
+The first package source is `veyra-shell-tools`, an optional set of
+`bash-completion`, `fzf`, `jq`, and `ripgrep` tools. Its binary payload is built
+as a Fedora 44-compatible system extension, then wrapped in an RPM. The
+repository builder rejects RPMs that do not follow the Veyra extension payload
+policy.

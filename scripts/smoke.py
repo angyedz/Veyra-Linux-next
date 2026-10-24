@@ -73,6 +73,8 @@ def main() -> int:
         "NetworkManager",
         "firewalld",
         "flatpak",
+        "dnf5",
+        "dnf5-plugins",
         "plasma-setup",
         "plasma-login-manager",
         "plasma-desktop",
@@ -101,10 +103,58 @@ def main() -> int:
         "enable firewalld.service",
         "enable plasma-setup.service",
         "enable plasmalogin.service",
+        "enable systemd-sysext.service",
         "enable systemd-boot-check-no-failures.service",
     ):
         if service not in preset_content:
             return fail(f"system preset must include {service!r}")
+
+    vpkg = ROOT / "mkosi.extra/usr/bin/vpkg"
+    if not vpkg.is_file() or not (vpkg.stat().st_mode & 0o111):
+        return fail("vpkg must be installed as an executable in the base image")
+    vpkg_content = vpkg.read_text(encoding="utf-8")
+    for expected in (
+        "--installroot=",
+        "--resolve",
+        "systemd-sysext",
+        "--installed-from-repo=veyra-main,veyra-testing",
+        "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
+        "Refusing non-Veyra RPM",
+        "System files must be delivered by an A/B OS update",
+    ):
+        if expected not in vpkg_content:
+            return fail(f"vpkg safety contract must include {expected!r}")
+    for channel in ("main", "testing"):
+        repo_file = ROOT / f"mkosi.extra/etc/yum.repos.d/veyra-{channel}.repo"
+        if not repo_file.is_file():
+            return fail(f"missing Veyra {channel} repository configuration")
+        repo_content = repo_file.read_text(encoding="utf-8")
+        for expected in (
+            f"[veyra-{channel}]",
+            f"/packages/{channel}/$basearch/",
+            "enabled=0",
+            "gpgcheck=1",
+            "repo_gpgcheck=1",
+            "RPM-GPG-KEY-VEYRA",
+        ):
+            if expected not in repo_content:
+                return fail(f"Veyra {channel} repository must include {expected!r}")
+    sync_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-sync.service"
+    sysext_dropin = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf"
+    if not sync_service.is_file() or not sysext_dropin.is_file():
+        return fail("systemd-sysext must sync Veyra package links before activation")
+    if "Before=systemd-sysext.service" not in sync_service.read_text(encoding="utf-8"):
+        return fail("Veyra package link synchronization must run before systemd-sysext")
+    if "After=veyra-vpkg-sync.service" not in sysext_dropin.read_text(encoding="utf-8"):
+        return fail("systemd-sysext must wait for Veyra extension links to synchronize")
+    for channel in ("main", "testing"):
+        package_list = ROOT / f"packages/{channel}/packages.list"
+        if not package_list.is_file():
+            return fail(f"missing package-channel manifest: {package_list.relative_to(ROOT)}")
+        for line in package_list.read_text(encoding="utf-8").splitlines():
+            name = line.strip()
+            if name and not name.startswith("#") and not name.startswith("veyra-"):
+                return fail(f"Fedora/base packages must not be published into Veyra channels: {name}")
 
     postinstall = ROOT / "mkosi.postinst.chroot"
     postinstall_content = postinstall.read_text(encoding="utf-8")

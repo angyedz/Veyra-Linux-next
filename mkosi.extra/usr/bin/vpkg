@@ -1,0 +1,424 @@
+#!/usr/bin/python3
+"""Install signed Veyra system-extension RPMs without modifying /usr."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+CHANNELS = {"main": "veyra-main", "testing": "veyra-testing"}
+CHANNEL_FILE = Path("/etc/veyra/vpkg/channel")
+LOCK_FILE = Path("/run/lock/veyra-vpkg.lock")
+PACKAGE_EXTENSION_DIR = Path("/var/lib/extensions")
+SYSTEM_EXTENSION_LINK_DIR = Path("/etc/extensions")
+VPKG_ROOT = Path("/var/lib/veyra/vpkg/root")
+FEDORA_RELEASE = "44"
+PACKAGE_RE = re.compile(r"^veyra-[A-Za-z0-9][A-Za-z0-9+_.-]*$")
+
+
+class VpkgError(RuntimeError):
+    pass
+
+
+def run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+        )
+    except FileNotFoundError as error:
+        raise VpkgError(f"Required command is missing: {command[0]}") from error
+    except subprocess.CalledProcessError as error:
+        if capture:
+            detail = (error.stderr or error.stdout or "").strip()
+            if detail:
+                print(detail, file=sys.stderr)
+        raise VpkgError(f"Command failed: {' '.join(command)}") from error
+
+
+def selected_channel() -> str:
+    try:
+        channel = CHANNEL_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return "main"
+    if channel not in CHANNELS:
+        raise VpkgError(f"Invalid saved package channel: {channel!r}")
+    return channel
+
+
+def require_root() -> None:
+    if os.geteuid() != 0:
+        raise VpkgError("Package changes require administrator access. Run: sudo vpkg …")
+
+
+def validate_package_specs(packages: list[str]) -> None:
+    if not packages:
+        raise VpkgError("Specify at least one Veyra package name.")
+    invalid = [name for name in packages if not PACKAGE_RE.fullmatch(name)]
+    if invalid:
+        raise VpkgError(
+            "Only exact Veyra package names are accepted here; patterns, file paths, "
+            f"and Fedora package names are not allowed: {', '.join(invalid)}"
+        )
+
+
+def repo_id(channel: str | None = None) -> str:
+    return CHANNELS[channel or selected_channel()]
+
+
+def dnf_prefix(channel: str | None = None) -> list[str]:
+    options = [
+        "dnf5",
+        "--installroot=" + str(VPKG_ROOT),
+        "--use-host-config",
+        "--releasever=" + FEDORA_RELEASE,
+        "--setopt=system_state_dir=/var/lib/veyra/vpkg/state",
+        "--setopt=transaction_history_dir=/var/lib/veyra/vpkg/history",
+        "--setopt=persistdir=/var/lib/veyra/vpkg/persist",
+        "--setopt=system_cachedir=/var/cache/veyra/vpkg",
+        "--setopt=keepcache=True",
+        "--setopt=install_weak_deps=False",
+    ]
+    if channel is not None:
+        options.append(f"--repo={repo_id(channel)}")
+    return options
+
+
+def dnf(command: list[str], channel: str | None = None, *, capture: bool = False):
+    return run([*dnf_prefix(channel), *command], capture=capture)
+
+
+def latest_history_id() -> int | None:
+    result = run([*dnf_prefix(), "history", "list", "--json"], capture=True)
+    try:
+        transactions = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise VpkgError("DNF5 returned unreadable transaction history.") from error
+    if not transactions:
+        return None
+    return max(int(transaction["id"]) for transaction in transactions)
+
+
+def inspect_extension_rpms(
+    directory: Path,
+    *,
+    allow_empty: bool = False,
+    rpm_root: Path | None = None,
+) -> list[Path]:
+    rpms = sorted(directory.glob("*.rpm"))
+    if not rpms:
+        if allow_empty:
+            return []
+        raise VpkgError("DNF5 did not download any Veyra extension RPMs to inspect.")
+
+    for rpm in rpms:
+        name = run(["rpm", "-qp", "--qf", "%{NAME}", str(rpm)], capture=True).stdout.strip()
+        if not PACKAGE_RE.fullmatch(name):
+            raise VpkgError(f"Refusing non-Veyra RPM in the Veyra repository: {rpm.name}")
+
+        files = run(["rpm", "-qpl", str(rpm)], capture=True).stdout.splitlines()
+        payload = [
+            path for path in files
+            if path not in {"/var", "/var/lib", str(PACKAGE_EXTENSION_DIR)}
+        ]
+        expected_payload = [f"{PACKAGE_EXTENSION_DIR}/{name}.raw"]
+        if payload != expected_payload:
+            raise VpkgError(
+                f"Refusing {name}: each Veyra add-on RPM must contain only "
+                f"{expected_payload[0]}. System files must be delivered by an A/B OS update."
+            )
+
+        for option in ("--scripts", "--triggers", "--filetriggers", "--transfiletriggers"):
+            result = run(["rpm", "-qp", option, str(rpm)], capture=True)
+            if result.stdout.strip():
+                raise VpkgError(f"Refusing {name}: extension RPM contains executable RPM scripts.")
+        for option in ("--obsoletes", "--conflicts"):
+            result = run(["rpm", "-qp", option, str(rpm)], capture=True)
+            if result.stdout.strip():
+                raise VpkgError(f"Refusing {name}: extension RPM declares {option[2:]} relationships.")
+
+        if rpm_root is None:
+            run(["rpm", "--checksig", str(rpm)], capture=True)
+        # For the runtime installroot, DNF5 has already verified the signed
+        # package with pkg_gpgcheck before saving it to this temporary directory.
+
+    return rpms
+
+
+def download_for_inspection(action: str, packages: list[str] | None = None) -> bool:
+    channel = selected_channel()
+    with tempfile.TemporaryDirectory(prefix="veyra-vpkg-") as temporary:
+        directory = Path(temporary)
+        common = dnf_prefix(channel)
+        download_options = [
+            "download",
+            "--resolve",
+            "--from-repo=" + repo_id(channel),
+            "--destdir=" + str(directory),
+        ]
+        if action == "install":
+            assert packages is not None
+            run([*common, *download_options, *packages])
+        elif action == "upgrade":
+            run(
+                [
+                    *common,
+                    "upgrade",
+                    "--installed-from-repo=veyra-main,veyra-testing",
+                    "--destdir=" + str(directory),
+                ]
+            )
+        return bool(
+            inspect_extension_rpms(
+                directory,
+                allow_empty=action == "upgrade",
+                rpm_root=VPKG_ROOT,
+            )
+        )
+
+
+def sync_extension_links() -> None:
+    SYSTEM_EXTENSION_LINK_DIR.mkdir(parents=True, exist_ok=True)
+    installed_names: list[str] = []
+    if VPKG_ROOT.exists():
+        output = run(
+            ["rpm", "--root", str(VPKG_ROOT), "-qa", "--qf", "%{NAME}\\n"],
+            capture=True,
+        ).stdout
+        installed_names = [line.strip() for line in output.splitlines() if line.strip()]
+
+    desired: dict[Path, Path] = {}
+    for name in installed_names:
+        if name == "gpg-pubkey" or name.startswith("gpg-pubkey-"):
+            continue
+        if not PACKAGE_RE.fullmatch(name):
+            raise VpkgError(
+                f"The Veyra package installroot contains an unexpected RPM: {name}. "
+                "Only extension-wrapper packages may be installed there."
+            )
+        files = run(["rpm", "--root", str(VPKG_ROOT), "-ql", name], capture=True).stdout.splitlines()
+        payload = [
+            path for path in files
+            if path not in {"/var", "/var/lib", str(PACKAGE_EXTENSION_DIR)}
+        ]
+        expected = f"{PACKAGE_EXTENSION_DIR}/{name}.raw"
+        if payload != [expected]:
+            raise VpkgError(f"Installed package {name} violates the Veyra extension RPM policy.")
+        target = VPKG_ROOT / expected.lstrip("/")
+        if not target.is_file():
+            raise VpkgError(f"The installed extension image is missing: {target}")
+        desired[SYSTEM_EXTENSION_LINK_DIR / f"{name}.raw"] = target
+
+    for link in SYSTEM_EXTENSION_LINK_DIR.glob("veyra-*.raw"):
+        if not link.is_symlink():
+            continue
+        target = Path(os.path.abspath(link.parent / os.readlink(link)))
+        try:
+            target.relative_to(VPKG_ROOT)
+        except ValueError:
+            continue
+        if link not in desired:
+            link.unlink()
+
+    for link, target in desired.items():
+        if link.exists() and not link.is_symlink():
+            raise VpkgError(f"Refusing to replace an existing extension file: {link}")
+        if link.is_symlink():
+            current_target = Path(os.path.abspath(link.parent / os.readlink(link)))
+            if current_target == target:
+                continue
+            try:
+                current_target.relative_to(VPKG_ROOT)
+            except ValueError as error:
+                raise VpkgError(f"Refusing to replace an extension link not owned by vpkg: {link}") from error
+        temporary = SYSTEM_EXTENSION_LINK_DIR / f".{link.name}.vpkg-new"
+        if temporary.exists() or temporary.is_symlink():
+            temporary.unlink()
+        temporary.symlink_to(target)
+        os.replace(temporary, link)
+
+
+def refresh_extensions_or_undo(previous_id: int | None) -> None:
+    try:
+        sync_extension_links()
+        run(["systemd-sysext", "refresh"])
+        return
+    except VpkgError as refresh_error:
+        print("Veyra extension activation failed; reverting the RPM transaction.", file=sys.stderr)
+        try:
+            current_id = latest_history_id()
+            if current_id is None or current_id == previous_id:
+                raise VpkgError("DNF5 did not record the transaction, so automatic undo is unavailable.")
+            run([
+                *dnf_prefix(),
+                "--repo=veyra-main,veyra-testing",
+                "--assumeyes",
+                "history",
+                "undo",
+                str(current_id),
+            ])
+            sync_extension_links()
+            run(["systemd-sysext", "refresh"])
+        except VpkgError as undo_error:
+            raise VpkgError(
+                f"Extension activation failed ({refresh_error}); automatic rollback also failed "
+                f"({undo_error}). The RPM transaction may still be installed."
+            ) from undo_error
+        raise VpkgError("Extension activation failed. The RPM transaction was rolled back.") from refresh_error
+
+
+def with_lock(action) -> None:
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_FILE.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        action()
+
+
+def set_channel(channel: str) -> None:
+    require_root()
+    CHANNEL_FILE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=CHANNEL_FILE.parent, delete=False
+    ) as temporary:
+        temporary.write(f"{channel}\n")
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        temporary_path = Path(temporary.name)
+    temporary_path.chmod(0o644)
+    os.replace(temporary_path, CHANNEL_FILE)
+    print(f"Veyra package channel set to {channel}.")
+
+
+def install(packages: list[str]) -> None:
+    require_root()
+    validate_package_specs(packages)
+
+    def transaction() -> None:
+        if not download_for_inspection("install", packages):
+            print("The requested Veyra packages are already installed.")
+            return
+        previous_id = latest_history_id()
+        dnf(["install", "--from-repo=" + repo_id(), *packages])
+        refresh_extensions_or_undo(previous_id)
+
+    with_lock(transaction)
+
+
+def remove(packages: list[str]) -> None:
+    require_root()
+    validate_package_specs(packages)
+
+    def transaction() -> None:
+        previous_id = latest_history_id()
+        dnf(["remove", "--installed-from-repo=veyra-main,veyra-testing", *packages])
+        refresh_extensions_or_undo(previous_id)
+
+    with_lock(transaction)
+
+
+def upgrade() -> None:
+    require_root()
+
+    def transaction() -> None:
+        if not download_for_inspection("upgrade"):
+            print("Veyra packages are already up to date in this channel.")
+            return
+        previous_id = latest_history_id()
+        dnf(["upgrade", "--installed-from-repo=veyra-main,veyra-testing"])
+        refresh_extensions_or_undo(previous_id)
+
+    with_lock(transaction)
+
+
+def sync() -> None:
+    require_root()
+    with_lock(sync_extension_links)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="vpkg",
+        description="Manage signed Veyra add-on packages without changing the immutable OS image.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    channel = commands.add_parser("channel", help="show or select the Veyra package channel")
+    channel.add_argument("name", nargs="?", choices=(*CHANNELS,))
+
+    commands.add_parser("repos", help="show configured repositories and selected channel")
+
+    search = commands.add_parser("search", help="search the selected Veyra repository")
+    search.add_argument("terms", nargs="+")
+
+    info = commands.add_parser("info", help="show Veyra package details")
+    info.add_argument("packages", nargs="+")
+
+    listing = commands.add_parser("list", help="list packages from the selected channel")
+    listing.add_argument("--available", action="store_true", help="list packages available in the channel")
+
+    install_parser = commands.add_parser("install", help="install signed Veyra extension packages")
+    install_parser.add_argument("packages", nargs="+")
+
+    remove_parser = commands.add_parser("remove", help="remove Veyra extension packages")
+    remove_parser.add_argument("packages", nargs="+")
+
+    commands.add_parser("upgrade", help="upgrade installed Veyra extension packages")
+    commands.add_parser("sync", help=argparse.SUPPRESS)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = build_parser().parse_args(argv)
+    try:
+        if arguments.command == "channel":
+            if arguments.name:
+                if arguments.name != selected_channel():
+                    set_channel(arguments.name)
+                else:
+                    print(f"Veyra package channel: {arguments.name}")
+            else:
+                print(f"Veyra package channel: {selected_channel()}")
+        elif arguments.command == "repos":
+            print(f"Selected Veyra channel: {selected_channel()} ({repo_id()})")
+            require_root()
+            dnf(["repo", "list", "--all"])
+        elif arguments.command == "search":
+            require_root()
+            dnf(["search", *arguments.terms])
+        elif arguments.command == "info":
+            require_root()
+            validate_package_specs(arguments.packages)
+            dnf(["info", *arguments.packages])
+        elif arguments.command == "list":
+            require_root()
+            if arguments.available:
+                dnf(["list", "--available"])
+            else:
+                dnf(["list", "--installed-from-repo=veyra-main,veyra-testing"])
+        elif arguments.command == "install":
+            install(arguments.packages)
+        elif arguments.command == "remove":
+            remove(arguments.packages)
+        elif arguments.command == "upgrade":
+            upgrade()
+        elif arguments.command == "sync":
+            sync()
+    except VpkgError as error:
+        print(f"vpkg: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
