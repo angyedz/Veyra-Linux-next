@@ -1,6 +1,6 @@
 # Veyra Next architecture — working proposal
 
-**Status:** first Fedora KDE disk-image recipe is being built. A/B update, verified boot, user-state migration, installer, Recovery and Developer Mode are specified only as goals. This is not a release claim.
+**Status:** source now defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfer definitions and a three-try boot-assessment policy. CI must build and inspect the image, and a VM must prove update and rollback. There is no signed release channel, installer, Recovery or Developer Mode yet. This is not a release claim.
 
 ## Product shape
 
@@ -10,29 +10,29 @@ Kinoite informs the desktop experience: Plasma, Discover, Flatpak and an atomic-
 
 ## Selected prototype foundation
 
-The current implementation uses Fedora 44, glibc and systemd. This replaces the earlier ADR's OpenRC preference for the new project: systemd is already the native service manager on Fedora and provides the boot, partition and image-update tools being evaluated. `mkosi` composes the image; `systemd-repart` defines its disk; `systemd-sysupdate` is the leading A/B update candidate. None of the update, rollback or Recovery pieces are implemented yet. They will be proved as Veyra behavior rather than inherited from Kinoite.
+The current implementation uses Fedora 44, glibc and systemd. This replaces the earlier ADR's OpenRC preference for the new project: systemd is already the native service manager on Fedora and provides the boot, partition and image-update tools being evaluated. `mkosi` composes the image, `systemd-repart` lays out its disk, and `systemd-sysupdate` stages updates. Their end-to-end behavior still needs to be demonstrated as Veyra behavior rather than inherited from Kinoite.
 
 The current UKIs are unsigned and the VM uses ordinary UEFI. Secure Boot is deliberately not claimed or enabled until key ownership, signing and enrollment are designed.
 
 ## Build and release direction
 
-1. `mkosi` consumes a versioned Fedora package manifest and Veyra configuration.
-2. The build produces a bootable disk image and UKI. A future image layout will include two system slots, matching integrity data and persistent user state.
-3. A release pipeline will produce versioned artifacts plus a cryptographically signed manifest. The signing policy and key rotation need to be designed before publication.
-4. On the machine, `systemd-sysupdate` will stage the complete new resource set into the inactive slot. `systemd-repart` will define and grow the partition layout.
-5. `systemd-boot` trial-boot counting and a Veyra health check will mark the image good only after the desktop reaches the chosen healthy state. A failed trial returns to the previous slot.
+1. `mkosi` builds the Fedora 44 package set and two fixed-size root slots. Slot A is EROFS with a matching dm-verity hash partition; slot B starts empty. The current roots are each 8 GiB, and each verity slot is 512 MiB.
+2. The image also has writable ext4 partitions for `/etc` and `/var`, mounted from the initrd before switch-root, and a separate persistent `/home` partition. Cross-version compatibility and migration for persistent state still need a policy.
+3. `systemd-sysupdate` transfers the matching verity and root images to the unused partitions. Release filenames carry the two halves of the dm-verity root hash; `PartitionUUID=@u` preserves those UUIDs when writing the new slots. The UKI is transferred last and receives three boot attempts; its presence is the entry point for the new version. The current version is protected while an update is staged.
+4. Update definitions require GPG verification of `SHA256SUMS` (`Verify=yes`). The build compresses split root artifacts and versions the UKI, but release publication and the trusted Veyra update key are not configured yet. The updater therefore has no usable signed channel today.
+5. `systemd-boot` boot counting and an enabled systemd boot health check are configured to bless a trial only after the boot reaches the completion target without failed units. The A→B transition and automatic return after three failed attempts remain to be demonstrated in a VM.
 
 This reuses systemd's image, partition and boot tools instead of writing a replacement package manager or custom cryptographic format. The A/B layout is two versions of one OS, never two concurrently running user environments.
 
 ## Integrity layers
 
 - Fedora RPM signatures authenticate source packages during image composition.
-- A signed Veyra release manifest authenticates the files distributed by the update channel.
-- A UKI signed for Secure Boot authenticates the boot entry and its embedded root digest.
+- A signed Veyra release manifest is required by the updater before accepting downloaded update files, but no release key is provisioned yet.
 - dm-verity verifies the immutable system image while it is read.
+- The current UKIs are unsigned, so the embedded root hash is not yet anchored by Secure Boot.
 - SELinux remains enforcing; privileged system changes are explicit.
 
-These checks protect different stages. A signed manifest alone does not authenticate the machine's boot path. Key enrollment, recovery from lost signing keys and key rotation are not implemented yet.
+These checks protect different stages. A signed manifest alone does not authenticate the machine's boot path. Secure Boot signing/enrollment, recovery from lost signing keys and key rotation are not implemented yet.
 
 ## Desktop and applications
 
@@ -40,9 +40,9 @@ The base image carries the coherent kernel, graphics stack, KDE session, display
 
 The default image includes common native development tools. Additional per-project environments may use Toolbx or other containers as optional conveniences; everyday coding must work directly in the host account.
 
-## Persistent state — unresolved
+## Persistent state — initial layout configured
 
-`/home` must survive OS updates and rollback. We still need to define how `/etc` machine configuration and `/var` service state migrate between versions, and what happens if a rollback encounters data written by the newer release. The policy must avoid silently reverting user files or booting an older image against incompatible state.
+The image recipe keeps `/etc`, `/var` and `/home` on writable partitions outside both root slots. The custom initrd mounts `/etc` and `/var` before switch-root; systemd discovers the home partition by its GPT type. This prevents ordinary root replacement from erasing those trees. It does not yet solve schema changes in `/var` or `/etc`: a rollback can run an older OS against state written by a newer one, so update releases need compatibility checks and migrations before this is safe for daily use.
 
 ## Recovery and developer use — not implemented
 

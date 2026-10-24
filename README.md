@@ -6,28 +6,28 @@ Veyra Next is a new Fedora-based desktop OS project. The intended user experienc
 
 ## Current stage
 
-This repository is building its first bootable Fedora 44 + KDE image with `mkosi`. It includes KDE Plasma Setup for first-boot account creation, Plasma Login Manager, Wayland, Flatpak/Discover, Flathub, PipeWire, Git and common native development tools.
+This repository is building its first bootable Fedora 44 + KDE image with `mkosi`. It includes KDE Plasma Setup for first-boot account creation, Plasma Login Manager, Wayland, Flatpak/Discover, Flathub, PipeWire, Git and common native development tools. The disk recipe now lays out two EROFS root slots with dm-verity data, plus separate persistent `/etc`, `/var` and `/home` partitions. The initrd mounts the writable state before switching to the installed system.
 
-This is an image-building prototype, not a usable installer or pre-alpha release yet. The first-boot account flow is configured but still needs VM validation. A/B updates, verified boot, automatic rollback, Recovery and Developer Mode are not implemented. It has not been tested on real hardware. Steam/Proton, Discord screen sharing and NVIDIA/AMD compatibility are not yet qualified.
+This is an image-building prototype, not a usable installer or pre-alpha release yet. `systemd-sysupdate` is configured to stage the matching verity partition and root into the inactive slot and install the UKI last with three boot attempts. A boot health check is enabled. The transition and failed-boot rollback still need an A→B VM test. Release publication and the trusted update-signing key are not configured, so there is no usable update channel yet. The first-boot account flow also needs VM validation. A graphical installer, Recovery and Developer Mode are not implemented. It has not been tested on real hardware. Steam/Proton, Discord screen sharing and NVIDIA/AMD compatibility are not yet qualified.
 
-The test image uses unsigned UKIs and therefore boots with Secure Boot disabled. Secure Boot enrollment and signed boot artifacts remain future work.
+The root image is read-only EROFS and has dm-verity integrity data. Update transfers require signed `SHA256SUMS` manifests (`Verify=yes`), but a release signing key is not provisioned yet. The UKIs are unsigned, so the current image boots with Secure Boot disabled and does not authenticate the dm-verity root hash against a hardware trust root.
 
 ## Build
 
-Requirements: Linux with systemd 254+, `uv`, user namespaces, and the dependencies reported by `scripts/mkosi.sh dependencies`. The builder itself is pinned to an upstream mkosi revision.
+Requirements: Linux with systemd 254+, `uv`, user namespaces, and the dependencies reported by `scripts/mkosi.sh dependencies`. Allow a 64 GiB virtual disk for the current fixed-size A/B prototype. The builder itself is pinned to an upstream mkosi revision.
 
 ```sh
 python3 scripts/smoke.py
 scripts/mkosi.sh --force build
 ```
 
-The disk image and UKI artifacts are written to `mkosi.output/`. Boot the image in a disposable VM with:
+The disk image, versioned UKI, and compressed root/verity update artifacts are written to `mkosi.output/`. CI checks the GPT layout and artifact set. Boot the image in a disposable VM with:
 
 ```sh
 scripts/mkosi.sh vm --console=gui
 ```
 
-The image is configured to offer KDE Plasma Setup on first boot so the user can create an ordinary account before reaching Plasma. Verify that flow in the disposable VM before treating the image as usable.
+The image is configured to offer KDE Plasma Setup on first boot so the user can create an ordinary account before reaching Plasma. Verify that flow, both persistent state mounts, and an A→B update followed by a deliberately failed trial boot before treating the image as usable. The source currently has no signed release bundle or trusted update key, so the configured updater cannot install a published release yet.
 
 ## How the finished desktop should feel
 

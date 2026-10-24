@@ -21,7 +21,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes \
             btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
-            debian-archive-keyring gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
+            debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
             systemd-container systemd-ukify xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
@@ -31,12 +31,19 @@ jobs:
         run: |
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
           rpm -q \
-            glibc systemd plasma-workspace plasma-login-manager plasma-setup \
+            glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
             flatpak gcc git cmake python3 nodejs22
+          test -x /usr/lib/systemd/systemd-sysupdate
           test -x /usr/bin/startplasma-wayland
           node --version
           test -s /usr/share/veyra/branding/veyra-logo.svg
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
           '
       - name: Check that mkosi produced a disk image
-        run: test -s mkosi.output/veyra-next.raw
+        run: |
+          version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          test -s mkosi.output/veyra-next.raw
+          python3 scripts/check-image.py mkosi.output/veyra-next.raw
+          test -s "mkosi.output/veyra-next_${version}.efi"
+          find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root.raw.zst" -type f -size +0c | grep -q .
+          find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .
