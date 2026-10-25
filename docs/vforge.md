@@ -193,11 +193,17 @@ service mounts the source checkout read-only through QEMU 9p and invokes
 KVM acceleration, writes serial output and the final pass/fail marker under
 the run directory, then powers the guest off. No Vforge command runs on the
 host. The test guest needs outbound network access to pull the Fedora 44 image
-and package. In its first Fedora 44 guest attempt, systemd firstboot presets
-removed the injected test unit, so the Vforge lifecycle never ran. The
-disposable fixture now seeds a unique machine ID before boot; its retry is
-pending. Source-level or preparation tests do not prove the OverlayFS lifecycle
-or Veyra-generation integration.
+and package. The first guest attempt stopped before running the Vforge scenario:
+systemd firstboot presets removed the injected test unit because the base image
+had an uninitialized machine ID. The fixture now seeds a unique machine ID, and
+the second guest boot ran the service and its 53 source tests as the unprivileged
+user. That attempt stopped at `vforge create --size 2GiB` because the validated
+Fedora 44 image did not contain `e2fsprogs` (`mkfs.ext4` and `fuse2fs`); no
+container lifecycle or ENOSPC assertion ran. The current image configuration
+includes `e2fsprogs`, and the runner now checks the image RPM manifest before
+starting QEMU. A new image artifact containing this package is required for the
+next runtime attempt. Source-level or preparation tests do not prove the
+OverlayFS lifecycle or Veyra-generation integration.
 
 Vforge also relies on Podman defaults for user namespaces, seccomp and SELinux
 policy. It does not yet audit every global Podman hook/configuration, expose
