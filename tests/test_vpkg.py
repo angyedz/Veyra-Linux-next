@@ -5,6 +5,7 @@ from importlib.machinery import SourceFileLoader
 import json
 import subprocess
 import stat
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,125 @@ SPEC.loader.exec_module(vpkg)
 
 
 class VpkgPolicyTests(unittest.TestCase):
+    def test_prepare_for_empty_intents_returns_ready_without_creating_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            output = layer_dir / "generation-candidate"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "load_pending_update", return_value=None),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                result = vpkg.prepare_for_base(root, "a" * 64, output)
+            self.assertEqual(result["status"], "ready")
+            self.assertIsNone(result["generation"])
+            self.assertFalse(output.exists())
+
+    def test_running_uki_version_is_read_from_its_osrel_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            uki = Path(temporary) / "current.efi"
+            image = bytearray(0x600)
+            pe_offset = 0x80
+            image[0:2] = b"MZ"
+            struct.pack_into("<I", image, 0x3C, pe_offset)
+            image[pe_offset : pe_offset + 4] = b"PE\0\0"
+            struct.pack_into("<H", image, pe_offset + 6, 1)
+            struct.pack_into("<H", image, pe_offset + 20, 0xF0)
+            section = pe_offset + 24 + 0xF0
+            image[section : section + 6] = b".osrel"
+            osrel = b'ID=fedora\nIMAGE_VERSION="1.2.3-test"\n\0'
+            struct.pack_into("<I", image, section + 8, len(osrel))
+            struct.pack_into("<I", image, section + 16, len(osrel))
+            struct.pack_into("<I", image, section + 20, 0x400)
+            image[0x400 : 0x400 + len(osrel)] = osrel
+            uki.write_bytes(image)
+            with patch.object(
+                vpkg,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, str(uki) + "\n", ""),
+            ):
+                self.assertEqual(vpkg.running_uki_version(), "1.2.3-test")
+
+    def test_pending_completion_requires_exact_roothash_and_uki_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "pending.json"
+            marker.write_text(
+                json.dumps({"schema": 1, "target_roothash": "a" * 64, "version": "1.0.1"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.0.2"),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "exact target roothash and UKI version"):
+                    vpkg.complete_pending_update()
+            self.assertTrue(marker.exists())
+            with (
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.0.1"),
+            ):
+                vpkg.complete_pending_update()
+            self.assertFalse(marker.exists())
+
+    def test_binding_creates_target_mapping_and_pending_lock_under_one_vpkg_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            mapping_dir = root / "deployments"
+            marker = root / "pending.json"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "DEPLOYMENT_BINDING_DIR", mapping_dir),
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                vpkg.bind_generation("b" * 64, "none", "1.2.3")
+            binding = json.loads((mapping_dir / f"{'b' * 64}.json").read_text(encoding="utf-8"))
+            pending = json.loads(marker.read_text(encoding="utf-8"))
+            self.assertEqual(binding["generation"], None)
+            self.assertEqual(binding["requests"], [])
+            self.assertEqual(pending["target_roothash"], "b" * 64)
+            self.assertEqual(pending["version"], "1.2.3")
+
+    def test_binding_rejects_stale_candidate_before_pending_lock_is_created(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            candidate = layer_dir / "generation-candidate"
+            candidate.mkdir()
+            (candidate / "manifest.json").write_text(
+                json.dumps({
+                    "schema": 1,
+                    "base_roothash": "b" * 64,
+                    "requests": [{"kind": "repo", "name": "htop"}],
+                    "installed": {},
+                }),
+                encoding="utf-8",
+            )
+            marker = root / "pending.json"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "DEPLOYMENT_BINDING_DIR", root / "deployments"),
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "intents are stale"):
+                    vpkg.bind_generation("b" * 64, str(candidate), "1.2.3")
+            self.assertFalse(marker.exists())
+            self.assertFalse((root / "deployments" / f"{'b' * 64}.json").exists())
+
     def test_upstream_package_policy_blocks_kernel_init_boot_and_driver_packages(self) -> None:
         for name in (
             "kernel-core",
@@ -127,8 +247,21 @@ class VpkgPolicyTests(unittest.TestCase):
             classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
         self.assertEqual(classification, "REJECT")
         self.assertEqual(added, {})
-        self.assertIn("declares RPM scriptlets or triggers", reason or "")
+        self.assertIn("declares RPM scriptlets, triggers, or SYSUSERS actions", reason or "")
         validate_payloads.assert_not_called()
+
+    def test_rpm_sysusers_metadata_is_rejected_without_executing_it(self) -> None:
+        outputs = ["", "", "", "absent", "u example - - /var/lib/example"]
+        with patch.object(
+            vpkg,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0, output, "") for output in outputs
+            ],
+        ) as mocked_run:
+            self.assertTrue(vpkg.rpm_package_has_execution_hooks(Path("/stage"), "example"))
+        self.assertEqual(mocked_run.call_count, 5)
+        self.assertIn("%{SYSUSERS}", mocked_run.call_args.args[0][-2])
 
     def test_rpm_hook_inspection_detects_package_triggers_without_running_them(self) -> None:
         with patch.object(
