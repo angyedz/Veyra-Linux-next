@@ -159,6 +159,36 @@ def append_account_record(
         os.close(directory)
 
 
+def inject_test_machine_id(etc_root: pathlib.Path) -> str:
+    path = etc_root / "machine-id"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(info.st_mode):
+            raise VforgeQemuError("guest /etc/machine-id must be a regular file")
+
+    machine_id = uuid.uuid4().hex
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, flags, 0o444)
+    try:
+        os.write(descriptor, (machine_id + "\n").encode("ascii"))
+        os.fchown(descriptor, 0, 0)
+        os.fchmod(descriptor, 0o444)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return machine_id
+
+
 def inject_test_user(etc_root: pathlib.Path, home_root: pathlib.Path) -> None:
     passwd = etc_root / "passwd"
     group = etc_root / "group"
@@ -339,6 +369,7 @@ def prepare_test_image(base_image: pathlib.Path, output_dir: pathlib.Path, offse
     try:
         with mounted_ext4(image, offsets["VEYRA_ETC"][0], etc_mount) as etc_root:
             with mounted_ext4(image, offsets["home"][0], home_mount) as home_root:
+                inject_test_machine_id(etc_root)
                 inject_test_user(etc_root, home_root)
                 write_guest_test_service(etc_root)
     finally:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -97,6 +98,32 @@ class VforgeQemuRunnerTests(unittest.TestCase):
 
             with self.assertRaisesRegex(runner.VforgeQemuError, "UID 4242"):
                 runner.inject_test_user(etc, home)
+
+    def test_initializes_machine_id_to_avoid_systemd_firstboot_preset_removing_fixture_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            etc = pathlib.Path(temporary) / "etc"
+            etc.mkdir()
+            machine_id_path = etc / "machine-id"
+            machine_id_path.write_text("uninitialized\n", encoding="ascii")
+
+            with patch.object(runner.os, "fchown") as fchown:
+                machine_id = runner.inject_test_machine_id(etc)
+
+            self.assertRegex(machine_id, re.compile(r"^[0-9a-f]{32}$"))
+            self.assertEqual(machine_id_path.read_text(encoding="ascii"), machine_id + "\n")
+            self.assertEqual(machine_id_path.stat().st_mode & 0o777, 0o444)
+            fchown.assert_called_once()
+
+    def test_rejects_symlinked_guest_machine_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            etc = pathlib.Path(temporary) / "etc"
+            etc.mkdir()
+            target = pathlib.Path(temporary) / "machine-id-target"
+            target.write_text("uninitialized\n", encoding="ascii")
+            (etc / "machine-id").symlink_to(target)
+
+            with self.assertRaisesRegex(runner.VforgeQemuError, "regular file"):
+                runner.inject_test_machine_id(etc)
 
     def test_guest_boot_runner_is_valid_shell_and_uses_ro_source_as_normal_user(self) -> None:
         script = runner.test_runner_script()

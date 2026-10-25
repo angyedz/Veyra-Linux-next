@@ -185,8 +185,9 @@ python3 scripts/run-vforge-qemu.py \
 
 The runner verifies the image sidecars and GPT layout, makes a sparse
 disposable copy, and changes only that copy. It adds a locked test-only UID
-4242 account and rootless sub-ID ranges to persistent `/etc`, creates its home
-on persistent `/home`, and installs a one-shot systemd test service. The
+4242 account and rootless sub-ID ranges to persistent `/etc`, writes a unique
+machine ID there to avoid firstboot presets removing the test unit, creates its
+home on persistent `/home`, and installs a one-shot systemd test service. The
 service mounts the source checkout read-only through QEMU 9p and invokes
 `scripts/test-vforge-qemu.sh` as that unprivileged account. It boots only with
 KVM acceleration, writes serial output and the final pass/fail marker under
