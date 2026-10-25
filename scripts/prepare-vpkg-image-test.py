@@ -54,6 +54,16 @@ def install_file(source: pathlib.Path, destination: pathlib.Path, mode: str = "0
     run(["install", "-D", "-m", mode, str(source), str(destination)], privileged=True)
 
 
+def remove_upstream_repo_configs(repo_directory: pathlib.Path) -> None:
+    """Remove Fedora/RPM Fusion configs from the disposable mounted image."""
+    for repo_file in repo_directory.glob("*.repo"):
+        if repo_file.name.startswith("veyra-"):
+            continue
+        content = run(["cat", str(repo_file)], privileged=True).stdout
+        if any(f"[{repository_id}]" in content for repository_id in UPSTREAM_REPOSITORIES):
+            run(["rm", "-f", str(repo_file)], privileged=True)
+
+
 def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
     if not image.is_file():
         raise RuntimeError(f"Missing Veyra disk image: {image}")
@@ -96,6 +106,7 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             test_sources = [
                 pathlib.Path("scripts/build-extension-rpm.py"),
                 pathlib.Path("scripts/mirror-package-site.py"),
+                pathlib.Path("scripts/prepare-vpkg-image-test.py"),
                 pathlib.Path("scripts/test-ab-boot.py"),
                 pathlib.Path("scripts/test-sysupdate-image.py"),
                 pathlib.Path("mkosi.extra/usr/bin/vpkg"),
@@ -142,12 +153,7 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             )
             install_file(test_repo, etc / "yum.repos.d/veyra-testing.repo")
 
-            for repo_file in (etc / "yum.repos.d").glob("*.repo"):
-                if repo_file.name.startswith("veyra-"):
-                    continue
-                content = repo_file.read_text(encoding="utf-8", errors="replace")
-                if any(f"[{repository_id}]" in content for repository_id in UPSTREAM_REPOSITORIES):
-                    repo_file.unlink()
+            remove_upstream_repo_configs(etc / "yum.repos.d")
             upstream_repo = work / "veyra-vpkg-ci-upstream.repo"
             baseurl = "file:///var/lib/veyra/vpkg-ci-repo/local-upstream/x86_64/"
             sections = []
