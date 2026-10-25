@@ -135,6 +135,7 @@ def create(name: str, network: str) -> None:
             f"{LABEL}=1",
             "--network",
             network,
+            "--init",
             FEDORA_IMAGE,
             "/usr/bin/sleep",
             "infinity",

@@ -52,6 +52,7 @@ class VforgeCommandTests(unittest.TestCase):
         self.assertEqual(argv[0:2], ["container", "create"])
         self.assertIn(vforge.FEDORA_IMAGE, argv)
         self.assertEqual(argv[argv.index("--network") + 1], "none")
+        self.assertIn("--init", argv)
         self.assertIn(f"{vforge.LABEL}=1", argv)
         self.assertFalse(any(arg in {"--volume", "-v", "--device", "--privileged"} for arg in argv))
 
