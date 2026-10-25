@@ -74,6 +74,7 @@ class VpkgPolicyTests(unittest.TestCase):
             prefix,
         )
         self.assertTrue(any("localpkg_gpgcheck=True" in item for item in prefix))
+        self.assertIn("--setopt=tsflags=noscripts,notriggers", prefix)
         self.assertFalse(any("veyra-main" in item or "veyra-testing" in item for item in prefix))
 
     def test_user_app_rpm_transaction_keeps_base_inventory_unchanged(self) -> None:
@@ -83,7 +84,11 @@ class VpkgPolicyTests(unittest.TestCase):
             "tree": {"tree-0:2.1.1-1.x86_64"},
             "gpg-pubkey": {"gpg-pubkey-123"},
         }
-        with patch.object(vpkg, "rpm_records", return_value=installed):
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
+            patch.object(vpkg, "validate_installed_app_payloads"),
+        ):
             added = vpkg.package_records_after_install(Path("/stage"), base)
         self.assertEqual(added, {"tree": "tree-0:2.1.1-1.x86_64"})
 
@@ -91,8 +96,63 @@ class VpkgPolicyTests(unittest.TestCase):
         base = {"systemd": {"systemd-0:257-1.x86_64"}}
         installed = {"systemd": {"systemd-0:258-1.x86_64"}}
         with patch.object(vpkg, "rpm_records", return_value=installed):
-            with self.assertRaisesRegex(vpkg.VpkgError, "changes base package systemd"):
+            with self.assertRaisesRegex(vpkg.VpkgError, "REJECT: transaction changes protected base package"):
                 vpkg.package_records_after_install(Path("/stage"), base)
+
+    def test_user_app_transaction_classifies_safe_additions_as_live(self) -> None:
+        base = {"bash": {"bash-0:5.2-1.x86_64"}}
+        installed = {
+            **base,
+            "tree": {"tree-0:2.1.1-1.x86_64"},
+            "gpg-pubkey": {"gpg-pubkey-123"},
+        }
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
+            patch.object(vpkg, "validate_installed_app_payloads"),
+        ):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "LIVE")
+        self.assertEqual(added, {"tree": "tree-0:2.1.1-1.x86_64"})
+        self.assertIsNone(reason)
+
+    def test_user_app_transaction_rejects_rpm_scriptlets_and_triggers(self) -> None:
+        base = {"bash": {"bash-0:5.2-1.x86_64"}}
+        installed = {**base, "example": {"example-1-1.x86_64"}}
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=True),
+            patch.object(vpkg, "validate_installed_app_payloads") as validate_payloads,
+        ):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("declares RPM scriptlets or triggers", reason or "")
+        validate_payloads.assert_not_called()
+
+    def test_rpm_hook_inspection_detects_package_triggers_without_running_them(self) -> None:
+        with patch.object(
+            vpkg,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "trigger script", ""),
+            ],
+        ) as mocked_run:
+            self.assertTrue(vpkg.rpm_package_has_execution_hooks(Path("/stage"), "example"))
+        self.assertEqual(mocked_run.call_count, 2)
+        self.assertEqual(mocked_run.call_args_list[0].args[0][4], "--scripts")
+        self.assertEqual(mocked_run.call_args_list[1].args[0][4], "--triggers")
+
+    def test_user_app_transaction_rejects_unsupported_staged_replacements(self) -> None:
+        base = {"python3": {"python3-0:3.13-1.x86_64"}}
+        installed = {"python3": {"python3-0:3.14-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value=installed):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("staged system-package generations", reason or "")
+        self.assertIn("does not support yet", reason or "")
 
     def test_user_app_rpm_payload_policy_accepts_additive_application_files(self) -> None:
         regular = stat.S_IFREG | 0o755
@@ -171,6 +231,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")),
                 patch.object(vpkg, "user_package_dnf_prefix", return_value=["dnf5", "--installroot=/tmp/root"]),
                 patch.object(vpkg, "extension_release_text", return_value="ID=fedora\nVERSION_ID=44\nSYSEXT_LEVEL=test\n"),
+                patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
                 patch.object(vpkg, "validate_installed_app_payloads"),
                 patch.object(vpkg, "run") as run,
             ):

@@ -2,7 +2,12 @@
 set -euo pipefail
 
 if [[ "${CI:-}" != "true" || "${VEYRA_PACKAGE_CI_TEST:-}" != "1" ]]; then
-  echo "This integration test is only allowed in the disposable package CI container." >&2
+  echo "This integration test is only allowed in disposable CI." >&2
+  exit 2
+fi
+virtualizer="$(systemd-detect-virt --vm 2>/dev/null || true)"
+if [[ "$virtualizer" != "qemu" && "$virtualizer" != "kvm" ]]; then
+  echo "Run Veyra package tests only inside a QEMU/KVM guest with virtual disks." >&2
   exit 2
 fi
 if (( EUID != 0 )); then

@@ -1,6 +1,12 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+virtualizer="$(systemd-detect-virt --vm 2>/dev/null || true)"
+if [[ "$virtualizer" != "qemu" && "$virtualizer" != "kvm" ]]; then
+    echo "Run Veyra package tests only inside a QEMU/KVM guest with virtual disks." >&2
+    exit 2
+fi
+
 root=/var/lib/veyra/vpkg/root
 repo=/var/lib/veyra/vpkg-ci-repo
 marker="persistent state created before the A/B update"
@@ -37,6 +43,11 @@ if [[ -e "$complete" ]]; then
     echo "VEYRA_VPKG_CI_PASS"
     exit 0
 fi
+
+echo "Veyra vpkg VM test: run package safety unit tests"
+python3 -m unittest discover \
+    --start-directory /var/lib/veyra/vpkg-ci-tests/repo/tests \
+    --pattern 'test_*.py'
 
 echo "Veyra vpkg VM test: initialize isolated RPM database"
 mkdir -p "$root"

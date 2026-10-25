@@ -173,7 +173,7 @@ def validate_user_package_name(name: str) -> None:
         lowered.startswith(prefix) for prefix in BLOCKED_PACKAGE_PREFIXES
     ):
         raise VpkgError(
-            f"Refusing {name}: kernels, graphics drivers, boot components, and base-system packages "
+            f"REJECT: refusing {name}: kernels, graphics drivers, boot components, and base-system packages "
             "must be changed through a Veyra A/B system update or v-dri."
         )
 
@@ -261,6 +261,10 @@ def user_package_dnf_prefix(installroot: Path) -> list[str]:
         "--setopt=install_weak_deps=False",
         "--setopt=localpkg_gpgcheck=True",
         "--setopt=keepcache=False",
+        # Run the package transaction only in the disposable installroot, with
+        # all RPM scriptlets and triggers disabled. The transaction classifier
+        # below rejects packages that declare these hooks.
+        "--setopt=tsflags=noscripts,notriggers",
     ]
 
 
@@ -489,24 +493,97 @@ def extension_release_text() -> str:
     return f"ID=fedora\nVERSION_ID={FEDORA_RELEASE}\nSYSEXT_LEVEL={level}\n"
 
 
-def package_records_after_install(installroot: Path, base_records: dict[str, set[str]]) -> dict[str, str]:
-    installed = rpm_records(installroot)
-    for name, base_nevras in base_records.items():
-        if name == "gpg-pubkey":
-            continue
-        if installed.get(name, set()) != base_nevras:
-            raise VpkgError(
-                f"Refusing transaction that changes base package {name}; "
-                "base RPMs can only change in an A/B system update."
+def rpm_package_has_execution_hooks(installroot: Path, name: str) -> bool:
+    """Check installed RPM metadata without executing package hooks."""
+    for option in ("--scripts", "--triggers", "--filetriggers"):
+        output = run(
+            ["rpm", "--root", str(installroot), "-q", option, name],
+            capture=True,
+        ).stdout
+        if output.strip():
+            return True
+    transfiletriggers = run(
+        [
+            "rpm", "--root", str(installroot), "-q", "--qf",
+            "%|TRANSFILETRIGGERSCRIPTS?{present}:{absent}|", name,
+        ],
+        capture=True,
+    ).stdout.strip()
+    return transfiletriggers != "absent"
+
+
+def classify_user_app_transaction(
+    installroot: Path,
+    base_records: dict[str, set[str]],
+) -> tuple[str, dict[str, str], str | None]:
+    """Classify the resolved RPM transaction from its actual installroot state."""
+    try:
+        installed = rpm_records(installroot)
+    except VpkgError as error:
+        return "REJECT", {}, f"could not inspect the resolved RPM transaction: {error}"
+    changed_base = sorted(
+        name
+        for name, base_nevras in base_records.items()
+        if name != "gpg-pubkey" and installed.get(name, set()) != base_nevras
+    )
+    if changed_base:
+        protected = [
+            name for name in changed_base
+            if name.lower() in BLOCKED_PACKAGE_NAMES
+            or any(name.lower().startswith(prefix) for prefix in BLOCKED_PACKAGE_PREFIXES)
+        ]
+        if protected:
+            return (
+                "REJECT",
+                {},
+                "transaction changes protected base package(s) "
+                + ", ".join(protected)
+                + "; these components can only change through an official A/B system update.",
             )
+        return (
+            "REJECT",
+            {},
+            "transaction changes base package(s) "
+            + ", ".join(changed_base)
+            + "; this would require staged system-package generations, which vpkg does not support yet.",
+        )
+
     added: dict[str, str] = {}
     for name, nevras in installed.items():
         if name == "gpg-pubkey" or name in base_records:
             continue
-        validate_user_package_name(name)
+        try:
+            validate_user_package_name(name)
+        except VpkgError as error:
+            return "REJECT", {}, str(error)
         if len(nevras) != 1:
-            raise VpkgError(f"Refusing multiple installed versions of app package {name}.")
+            return "REJECT", {}, f"multiple installed versions of app package {name} are unsupported."
         added[name] = next(iter(nevras))
+
+    for name in sorted(added):
+        try:
+            has_execution_hooks = rpm_package_has_execution_hooks(installroot, name)
+        except VpkgError as error:
+            return "REJECT", {}, f"could not inspect RPM scripts or triggers for {name}: {error}"
+        if has_execution_hooks:
+            return (
+                "REJECT",
+                {},
+                f"package {name} declares RPM scriptlets or triggers; vpkg suppresses their execution "
+                "and cannot safely apply this transaction yet.",
+            )
+    try:
+        validate_installed_app_payloads(installroot, added)
+    except VpkgError as error:
+        return "REJECT", {}, str(error)
+    return "LIVE", added, None
+
+
+def package_records_after_install(installroot: Path, base_records: dict[str, set[str]]) -> dict[str, str]:
+    """Return application RPMs only when the resolved transaction is LIVE."""
+    classification, added, reason = classify_user_app_transaction(installroot, base_records)
+    if classification != "LIVE":
+        raise VpkgError(f"{classification}: {reason or 'transaction is not supported'}")
     return added
 
 
@@ -609,8 +686,9 @@ def build_user_app_generation(
             env=environment,
         )
 
-        added = package_records_after_install(installroot, base_records)
-        validate_installed_app_payloads(installroot, added)
+        classification, added, reason = classify_user_app_transaction(installroot, base_records)
+        if classification != "LIVE":
+            raise VpkgError(f"{classification}: {reason or 'transaction is not supported'}")
         system_image_state = installroot / "usr/lib/sysimage"
         if system_image_state.exists():
             shutil.rmtree(system_image_state)
@@ -750,6 +828,7 @@ def install_user_apps(specifications: list[str]) -> None:
             return
         generation = build_user_app_generation(requests, local_sources)
         activate_user_app_generation(generation)
+        print("LIVE transaction: activated as an additive vpkg-apps layer.")
         names = ", ".join(
             request["name"] for request in requests if request["kind"] == "repo"
         )
