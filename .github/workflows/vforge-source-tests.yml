@@ -1,0 +1,37 @@
+name: Vforge source checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/vforge-source-tests.yml'
+      - 'mkosi.extra/usr/bin/vforge'
+      - 'scripts/**'
+      - 'tests/**'
+  push:
+    branches: [feature/vforge]
+    paths:
+      - '.github/workflows/vforge-source-tests.yml'
+      - 'mkosi.extra/usr/bin/vforge'
+      - 'scripts/**'
+      - 'tests/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Vforge source and policy tests
+        run: python3 -m unittest discover -s tests -q
+      - name: Run repository smoke checks
+        run: python3 scripts/smoke.py
+      - name: Check Python and shell syntax
+        run: |
+          python3 -m py_compile scripts/run-vforge-qemu.py scripts/test-vforge-integration-qemu.py
+          bash -n scripts/test-vforge-qemu.sh
+      - name: Check patch whitespace
+        run: git diff --check
