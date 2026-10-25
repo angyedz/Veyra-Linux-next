@@ -1,6 +1,6 @@
 # Veyra Next architecture — working proposal
 
-**Status:** source defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfers and a three-try boot-assessment policy. CI prepares signed test artifacts on the host, then runs `veyra-update` and all OTA actions inside a disposable QEMU/OVMF guest. The guest verifies preflight conflict handling, mutation locking, old-UKI selection, blessing, persistent `/etc`, `/var` and `/home`, and fallback after three deliberately failed trial boots. The VM also exercises signed `vpkg` install/upgrade/remove with the real `systemd-sysext`, then checks that a deliberately invalid extension image causes its RPM transaction to roll back. Separate package CI covers transaction rollback after a controlled activation failure. No production update or package channel is signed or published yet; installer, Recovery and Developer Mode are not implemented.
+**Status:** source defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfers and a three-try boot-assessment policy. CI prepares signed test artifacts on the host, then runs `veyra-update` and OTA actions inside a disposable QEMU/OVMF guest. The guest verifies preflight conflict handling, mutation locking, old-UKI selection, blessing, persistent `/etc`, `/var` and `/home`, and fallback after three deliberately failed trial boots. The VM also exercises signed `vpkg` install/upgrade/remove with the real `systemd-sysext`, then checks that a deliberately invalid extension image causes its RPM transaction to roll back. A separate Fedora 44 Recovery UKI is now built into the ESP; its independent boot and one-shot rollback path still need QEMU validation. No production update or package channel is signed or published yet; installer and Developer Mode are not implemented.
 
 ## Product shape
 
@@ -67,10 +67,21 @@ The image recipe keeps `/etc`, `/var` and `/home` on writable partitions outside
 
 The A/B image carries Veyra's selected Fedora kernel. Installing a custom kernel is outside the current product scope; `vpkg` does not provide this operation, and A/B updates replace the kernel with the version in the new image. A standalone UKI copied to EFI is unmanaged and may no longer match the system's modules.
 
-## Recovery and developer use — design in progress
+## Recovery — source implementation, QEMU validation pending
 
-Recovery must boot independently of the installed system, offer logs and a
-rescue shell, and allow selecting a known-good deployment. Developer Mode is
+A separate minimal Fedora 44 UKI is configured to be built into the ESP. It includes its own
+kernel and userspace in the UKI initrd and does not start the installed Veyra
+root or KDE. Its initial console offers read-only boot-entry and journal
+inspection, a rescue shell, and one-time boot of a previously successful Veyra
+deployment. Only uncounted Veyra UKIs other than the current entry are eligible;
+the selected identifier is passed as one argument to `bootctl set-oneshot`
+after an explicit confirmation. The recovery path does not edit system
+partitions. It is unsigned in this prototype and is not Secure-Boot protected.
+Its independent QEMU boot, journal access, and previous-deployment selection
+still need runtime validation. Vpkg-generation and filesystem repair are not
+provided yet.
+
+Developer Mode is
 an opt-in mutable mode for the installed host, separate from Vforge's isolated
 development environments. On Fedora 44, systemd 259's `systemd-sysext`
 `Mutable=yes` support is a practical starting point: writes to merged `/usr`
@@ -85,7 +96,7 @@ and that package, driver, boot or service changes can break the system. A
 Recovery path must be able to boot without the mutable layer and either
 preserve it for repair or reset it before normal A/B updates resume. This
 feature is not implemented yet and needs Fedora VM tests for enable/disable,
-RPM changes, recovery and update blocking.
+RPM changes, Recovery without the mutable layer, and update blocking.
 
 ## Acceptance boundary
 
