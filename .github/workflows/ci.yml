@@ -2,6 +2,7 @@ name: Fedora image
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
 
