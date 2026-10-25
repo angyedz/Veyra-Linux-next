@@ -259,17 +259,17 @@ def main() -> int:
                 old_key_path = Path(temporary) / "RPM-GPG-KEY-VEYRA"
                 old_key_path.write_bytes(old_key)
                 subprocess.run(["gpg", "--batch", "--import", str(old_key_path)], check=True)
-            expected = args.expected_fingerprint.replace(" ", "").upper()
-            if not re.fullmatch(r"[0-9A-F]{40,64}", expected):
-                raise MirrorError("The expected RPM key fingerprint is malformed.")
-            fingerprints = list_primary_key_fingerprints()
-            if fingerprints != {expected}:
-                raise MirrorError(
-                    "Published RPM repository key fingerprint does not match the configured "
-                    f"signing key ({', '.join(sorted(fingerprints)) or 'no key found'}). "
-                    "Refusing unverified key changes."
-                )
-            subprocess.run(["rpm", "--import", str(old_key_path)], check=True)
+                expected = args.expected_fingerprint.replace(" ", "").upper()
+                if not re.fullmatch(r"[0-9A-F]{40,64}", expected):
+                    raise MirrorError("The expected RPM key fingerprint is malformed.")
+                fingerprints = list_primary_key_fingerprints()
+                if fingerprints != {expected}:
+                    raise MirrorError(
+                        "Published RPM repository key fingerprint does not match the configured "
+                        f"signing key ({', '.join(sorted(fingerprints)) or 'no key found'}). "
+                        "Refusing unverified key changes."
+                    )
+                subprocess.run(["rpm", "--import", str(old_key_path)], check=True)
         else:
             expected = args.expected_fingerprint.replace(" ", "").upper()
             if not re.fullmatch(r"[0-9A-F]{40,64}", expected):

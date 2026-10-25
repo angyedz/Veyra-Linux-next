@@ -151,11 +151,12 @@ def main() -> int:
                     source, args.transfer_dir, f"http://127.0.0.1:{args.port}/"
                 )
                 command = [
-                    str(sysupdate), f"--definitions={definitions}", f"--image={image}",
+                    "env", "SYSTEMD_LOG_LEVEL=debug", str(sysupdate),
+                    f"--definitions={definitions}", f"--image={image}",
                     "--verify=yes", "--no-pager", "update", version,
                 ]
                 if args.sudo_sysupdate:
-                    command.insert(0, "sudo")
+                    command[0:1] = ["sudo", "env"]
                 run(command)
             finally:
                 server.shutdown()
