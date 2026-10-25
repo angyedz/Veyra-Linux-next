@@ -211,7 +211,7 @@ jobs:
         run: |
           dnf5 install --assumeyes \
             btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs erofs-utils \
-            fdisk gnupg2 kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
+            fdisk git gnupg2 kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
             cryptsetup sudo systemd-container systemd-ukify uv xz zstd
       - name: Gate the build container and Fedora 44 repositories
         run: python3 scripts/check-build-environment.py
