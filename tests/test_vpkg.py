@@ -414,6 +414,25 @@ class VpkgPolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(vpkg.VpkgError, "REJECT: transaction changes protected base package"):
                 vpkg.package_records_after_install(Path("/stage"), base)
 
+    def test_protected_core_policy_is_machine_readable_and_fail_closed(self) -> None:
+        policy_path = Path(__file__).resolve().parents[1] / "mkosi.extra/usr/share/veyra/vpkg/protected-core.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        self.assertEqual(policy["schema"], 1)
+        self.assertEqual(policy["supported_base"], {"id": "fedora", "version_id": "44"})
+        self.assertIn("glibc", policy["protected_packages"]["names"])
+        with patch.object(vpkg, "VPKG_POLICY_FILE", policy_path):
+            vpkg.load_vpkg_policy()
+            with self.assertRaisesRegex(vpkg.VpkgError, "protected system path"):
+                vpkg.validate_user_package_paths(["/usr/lib/modules/test.ko"])
+        with tempfile.TemporaryDirectory() as temporary:
+            malformed = Path(temporary) / "policy.json"
+            malformed.write_text('{"schema": 1}', encoding="utf-8")
+            with patch.object(vpkg, "VPKG_POLICY_FILE", malformed):
+                with self.assertRaisesRegex(vpkg.VpkgError, "malformed or targets an unsupported base"):
+                    vpkg.load_vpkg_policy()
+                with self.assertRaisesRegex(vpkg.VpkgError, "malformed or targets an unsupported base"):
+                    vpkg.validate_user_package_name("example")
+
     def test_user_app_transaction_classifies_safe_additions_as_live(self) -> None:
         base = {"bash": {"bash-0:5.2-1.x86_64"}}
         installed = {
@@ -477,10 +496,19 @@ class VpkgPolicyTests(unittest.TestCase):
         installed = {"python3": {"python3-0:3.14-1.x86_64"}}
         with patch.object(vpkg, "rpm_records", return_value=installed):
             classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "STAGED")
+        self.assertEqual(added, {})
+        self.assertIn("immutable system-generation backend", reason or "")
+        self.assertIn("cannot be activated by the current app-layer backend", reason or "")
+
+    def test_user_app_transaction_rejects_protected_core_mutation_from_policy(self) -> None:
+        base = {"glibc": {"glibc-0:2.40-1.x86_64"}}
+        installed = {"glibc": {"glibc-0:2.41-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value=installed):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
         self.assertEqual(classification, "REJECT")
         self.assertEqual(added, {})
-        self.assertIn("staged system-package generations", reason or "")
-        self.assertIn("does not support yet", reason or "")
+        self.assertIn("protected base package(s) glibc", reason or "")
 
     def test_user_app_rpm_payload_policy_accepts_additive_application_files(self) -> None:
         regular = stat.S_IFREG | 0o755

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import json
 import re
 import sys
 
@@ -126,7 +127,8 @@ def main() -> int:
         "systemd-sysext",
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
         "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
-        "BLOCKED_PACKAGE_PREFIXES",
+        "VPKG_POLICY_FILE = Path(\"/usr/share/veyra/vpkg/protected-core.json\")",
+        "load_vpkg_policy()",
         "check_user_app_base_conflicts",
         "Refusing non-Veyra RPM",
         "System files must be delivered by an A/B OS update",
@@ -138,6 +140,18 @@ def main() -> int:
     backend = ROOT / "mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"
     if not backend.is_file():
         return fail("vpkg must install its libdnf5 API adapter")
+    protected_policy = ROOT / "mkosi.extra/usr/share/veyra/vpkg/protected-core.json"
+    try:
+        policy = json.loads(protected_policy.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return fail(f"vpkg must ship a valid machine-readable protected-core policy: {error}")
+    if (
+        policy.get("schema") != 1
+        or policy.get("supported_base") != {"id": "fedora", "version_id": "44"}
+        or "glibc" not in policy.get("protected_packages", {}).get("names", [])
+        or "/usr/lib/modules/" not in policy.get("payload_paths", {}).get("denied_prefixes", [])
+    ):
+        return fail("vpkg protected-core policy must target Fedora 44 and protect critical core payloads")
     backend_content = backend.read_text(encoding="utf-8")
     for expected in ("libdnf5.base.Base()", "libdnf5.base.Goal", "transaction.run()", '"noscripts", "notriggers"'):
         if expected not in backend_content:
