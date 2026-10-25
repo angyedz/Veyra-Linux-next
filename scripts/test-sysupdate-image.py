@@ -28,8 +28,12 @@ def next_version(version: str) -> str:
     return ".".join(components)
 
 
-def write_compressed(source: pathlib.Path, destination: pathlib.Path) -> None:
-    run(["zstd", "-q", "-T1", "-f", str(source), "-o", str(destination)])
+def write_xz(source: pathlib.Path, destination: pathlib.Path) -> None:
+    # Ubuntu 24 CI uses systemd 255, whose importer supports xz but not zstd.
+    # Fedora 44's systemd 259 handles both; xz lets this staging fixture run
+    # on both versions without changing the production zstd release format.
+    with destination.open("wb") as output:
+        subprocess.run(["xz", "-T1", "-c", str(source)], check=True, stdout=output)
 
 
 def write_manifest(source: pathlib.Path, assets: list[str], fingerprint: str) -> None:
@@ -68,6 +72,8 @@ def write_test_definitions(
         )
         if replacements != 1:
             raise RuntimeError(f"Could not redirect the release source in {name}.")
+        content = content.replace(".root-verity.raw.zst", ".root-verity.raw.xz")
+        content = content.replace(".root.raw.zst", ".root.raw.xz")
         # Ubuntu 24.04 CI ships systemd 255, which still enumerates .conf
         # definitions. Fedora 44's systemd 259 reads .transfer and retains
         # .conf as a backwards-compatible suffix.
@@ -137,11 +143,11 @@ def main() -> int:
             root_raw.write_bytes(root_payload)
             verity_raw.write_bytes(verity_payload)
 
-            root_asset = f"veyra-next_{version}_{root_uuid}.root.raw.zst"
-            verity_asset = f"veyra-next_{version}_{verity_uuid}.root-verity.raw.zst"
+            root_asset = f"veyra-next_{version}_{root_uuid}.root.raw.xz"
+            verity_asset = f"veyra-next_{version}_{verity_uuid}.root-verity.raw.xz"
             uki_asset = f"veyra-next_{version}.efi"
-            write_compressed(root_raw, source / root_asset)
-            write_compressed(verity_raw, source / verity_asset)
+            write_xz(root_raw, source / root_asset)
+            write_xz(verity_raw, source / verity_asset)
             # The staging test validates transfer and boot-count naming. It deliberately
             # does not boot this placeholder UKI or make a rollback claim.
             (source / uki_asset).write_bytes(f"Veyra CI non-bootable UKI placeholder {version}\n".encode())

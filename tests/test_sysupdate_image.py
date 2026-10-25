@@ -42,9 +42,11 @@ class SysupdateImageTests(unittest.TestCase):
                 content = path.read_text(encoding="utf-8")
                 self.assertIn("Path=http://127.0.0.1:8765/", content)
                 self.assertIn("Verify=yes", content)
+                self.assertNotIn(".raw.zst", content)
                 if path.name == "99-uki.conf":
                     self.assertIn("Type=regular-file", content)
                 else:
+                    self.assertIn(".raw.xz", content)
                     self.assertIn("Type=partition", content)
 
 
