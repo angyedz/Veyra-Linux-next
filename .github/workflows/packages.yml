@@ -91,7 +91,10 @@ jobs:
 
       - name: Exercise vpkg transactions against the signed testing channel
         shell: bash
-        run: VPKG_CI_TEST=1 scripts/test-vpkg-transaction.sh "$PWD/build/site"
+        env:
+          CI: "true"
+          VEYRA_PACKAGE_CI_TEST: "1"
+        run: scripts/test-vpkg-transaction.sh "$PWD/build/site"
 
       - name: Upload test repository snapshot
         uses: actions/upload-artifact@v4
