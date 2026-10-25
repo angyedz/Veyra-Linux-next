@@ -9,13 +9,15 @@ import pty
 import select
 import shutil
 import errno
-import json
 import hashlib
+import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from importlib.machinery import SourceFileLoader
 
 
 def require_qemu_guest() -> None:
@@ -32,6 +34,11 @@ def require_qemu_guest() -> None:
     host_release = os_release_fields(pathlib.Path("/etc/os-release").read_text(encoding="utf-8"))
     if host_release.get("VERSION_ID") != "44" or "rawhide" in host_release.get("VERSION_CODENAME", "").lower():
         raise RuntimeError(f"Vforge QEMU tests require a validated Fedora 44 Veyra guest, found {host_release!r}")
+    root_filesystem = subprocess.run(
+        ["findmnt", "-n", "-o", "FSTYPE", "--target", "/"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    require_veyra_ero_root(root_filesystem)
 
     checkout = pathlib.Path(__file__).resolve().parents[1]
     try:
@@ -45,6 +52,11 @@ def require_qemu_guest() -> None:
         raise RuntimeError("could not verify the source checkout mount") from error
     if "ro" not in options:
         raise RuntimeError("mount the source checkout read-only inside the disposable QEMU guest")
+
+
+def require_veyra_ero_root(filesystem: str) -> None:
+    if filesystem != "erofs":
+        raise RuntimeError(f"Vforge integration needs the current EROFS Veyra lower, found root filesystem {filesystem!r}")
 
 
 def os_release_fields(contents: str) -> dict[str, str]:
@@ -164,6 +176,19 @@ def vforge_store() -> pathlib.Path:
     return pathlib.Path(run(["vforge", "config", "show"], capture=True).stdout.strip())
 
 
+def load_vforge_module():
+    executable = shutil.which("vforge")
+    if executable is None:
+        raise RuntimeError("could not locate the Vforge implementation for runtime metadata checks")
+    loader = SourceFileLoader("veyra_vforge_guest_test", executable)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("could not load the Vforge implementation for runtime metadata checks")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def podman_roots(graphroot: pathlib.Path | None = None) -> list[str]:
     graphroot = graphroot or (vforge_store() / "containers")
     graphroot.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -187,6 +212,7 @@ def main() -> int:
         os.environ["XDG_STATE_HOME"] = str(pathlib.Path(xdg.name) / "state")
         if not shutil.which("vforge") or not shutil.which("podman"):
             raise RuntimeError("the Veyra guest must contain both vforge and Podman")
+        vforge_module = load_vforge_module()
 
         rootless = run(
             ["podman", "--remote=false", "info", "--format", "{{.Host.Security.Rootless}}"],
@@ -221,6 +247,9 @@ def main() -> int:
             created_name = name
             metadata = json.loads((vforge_store() / "state/environments.json").read_text())
             environment = metadata["environments"][name]
+            runtime_id = vforge_module.host_runtime_id()
+            if environment.get("host_runtime") != runtime_id:
+                raise RuntimeError("environment metadata is not bound to the active Veyra runtime identity")
             if environment.get("size_bytes") != size_bytes:
                 raise RuntimeError("Vforge did not persist the requested environment size cap")
             data_root = pathlib.Path(environment["data_root"])
@@ -250,6 +279,27 @@ def main() -> int:
             ).stdout.strip()
             if not host_abi or container_abi != host_abi:
                 raise RuntimeError("integrated environment did not read the active Veyra /usr lower layer")
+
+            # A persisted integrated environment must fail closed when its
+            # recorded Veyra generation no longer matches the active lower.
+            run(["vforge", "stop", name])
+            state_path = vforge_module.common_state_directory() / "environments.json"
+            environment_state = vforge_module.read_store_state(
+                "environments.json", {"version": vforge_module.STATE_VERSION, "environments": {}}
+            )
+            stored_environment = environment_state["environments"][name]
+            try:
+                stored_environment["host_runtime"] = "stale-ota-generation"
+                vforge_module.write_json_file(state_path, environment_state)
+                stale_start = run(["vforge", "start", name], capture=True, check=False)
+                stale_error = (stale_start.stdout or "") + (stale_start.stderr or "")
+                if stale_start.returncode == 0 or "different Veyra runtime" not in stale_error:
+                    raise RuntimeError("Vforge did not block an environment bound to a stale Veyra generation")
+            finally:
+                stored_environment["host_runtime"] = runtime_id
+                vforge_module.write_json_file(state_path, environment_state)
+            run(["vforge", "start", name])
+
             container_release = os_release_fields(run(
                 ["vforge", "exec", name, "--", "/bin/cat", "/etc/os-release"], capture=True
             ).stdout)

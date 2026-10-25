@@ -6,10 +6,11 @@ from pathlib import Path
 import io
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "mkosi.extra/usr/bin/vforge"
@@ -84,6 +85,134 @@ class VforgeCommandTests(unittest.TestCase):
 
         argv = call.call_args.args[0]
         self.assertEqual(argv[argv.index("--network") + 1], "bridge")
+
+    def test_named_network_permission_fails_closed_without_interactive_approval(self) -> None:
+        with patch.object(vforge.sys.stdin, "isatty", return_value=False), patch.object(
+            vforge, "podman"
+        ) as podman, patch.object(vforge, "ensure_veyra_overlay") as overlay:
+            with self.assertRaisesRegex(vforge.VforgeError, "interactive approval"):
+                vforge.create("backend", "bridge")
+
+        podman.assert_not_called()
+        overlay.assert_not_called()
+
+    def test_named_graphics_permission_requires_trusted_profile_and_interactive_consent(self) -> None:
+        with patch.object(vforge.sys.stdin, "isatty", return_value=False), \
+             patch.object(vforge, "host_runtime_id") as runtime, \
+             patch.object(vforge, "podman") as podman:
+            with self.assertRaisesRegex(vforge.VforgeError, "require --isolation trusted"):
+                vforge.create("backend", "none", wayland=True)
+            with self.assertRaisesRegex(vforge.VforgeError, "interactive approval"):
+                vforge.create("backend", "none", isolation="trusted", wayland=True)
+
+        runtime.assert_not_called()
+        podman.assert_not_called()
+
+    def test_home_permissions_map_only_the_selected_host_home_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            expected_home = f"{home.resolve()}:/home/host:ro"
+            for mode, expected in (("none", None), ("read-only", expected_home),
+                                   ("read-write", f"{home.resolve()}:/home/host:rw")):
+                with self.subTest(mode=mode), patch.object(vforge, "exists", return_value=False), \
+                     patch.object(vforge, "ensure_veyra_overlay", return_value={
+                         "usr": Path("/tmp/vforge-test/usr"),
+                         "rpmdb": Path("/tmp/vforge-test/rpmdb"),
+                         "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
+                     }), patch.object(vforge, "podman") as podman, \
+                     patch.object(Path, "home", return_value=home):
+                    vforge.create_container(
+                        "backend", "none", layer_id="a" * 32,
+                        resources={"home": mode},
+                    )
+                argv = podman.call_args.args[0]
+                volumes = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--volume"]
+                if expected is None:
+                    self.assertFalse(any(value.startswith(f"{home.resolve()}:") for value in volumes))
+                else:
+                    self.assertIn(expected, volumes)
+
+    def test_project_only_does_not_mount_the_whole_host_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project"
+            project.mkdir()
+            with patch.object(vforge, "exists", return_value=False), patch.object(
+                vforge, "ensure_veyra_overlay", return_value={
+                    "usr": Path("/tmp/vforge-test/usr"),
+                    "rpmdb": Path("/tmp/vforge-test/rpmdb"),
+                    "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
+                }
+            ), patch.object(vforge, "podman") as podman:
+                vforge.create_container(
+                    "backend", "none", layer_id="a" * 32,
+                    mounts=[{"source": str(project), "target": "/workspace", "access": "read-write"}],
+                    resources={"home": "project-only", "project": str(project)},
+                )
+
+            argv = podman.call_args.args[0]
+            volumes = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--volume"]
+            self.assertIn(f"{project.resolve()}:/workspace:rw", volumes)
+            self.assertFalse(any(value.endswith(":/home/host:ro") or value.endswith(":/home/host:rw") for value in volumes))
+
+    def test_trusted_host_resources_bind_only_approved_user_sockets_and_gpu_devices(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "runtime"
+            runtime.mkdir()
+            wayland_path = runtime / "wayland-0"
+            pipewire_path = runtime / "pipewire-0"
+            bus_path = runtime / "bus"
+            sockets = []
+            for path in (wayland_path, pipewire_path, bus_path):
+                channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                channel.bind(str(path))
+                sockets.append(channel)
+            self.addCleanup(lambda: [channel.close() for channel in sockets])
+            device = Path("/dev/dri/renderD128")
+            original_glob = Path.glob
+
+            def devices(path: Path, pattern: str):
+                if path == Path("/dev/dri"):
+                    return iter([device])
+                return original_glob(path, pattern)
+
+            with patch.dict(os.environ, {
+                "XDG_RUNTIME_DIR": str(runtime),
+                "WAYLAND_DISPLAY": "wayland-0",
+                "DBUS_SESSION_BUS_ADDRESS": f"unix:path={bus_path}",
+            }), patch.object(Path, "glob", devices), patch.object(Path, "is_char_device", return_value=True), \
+                 patch.object(vforge, "exists", return_value=False), patch.object(
+                    vforge, "ensure_veyra_overlay", return_value={
+                        "usr": Path("/tmp/vforge-test/usr"),
+                        "rpmdb": Path("/tmp/vforge-test/rpmdb"),
+                        "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
+                    }
+                 ), patch.object(vforge, "podman") as podman:
+                vforge.create_container(
+                    "backend", "none", isolation="trusted", layer_id="a" * 32,
+                    resources={"home": "none", "gpu": True, "wayland": True,
+                               "audio": True, "system_bus": True},
+                )
+
+            argv = podman.call_args.args[0]
+            volumes = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--volume"]
+            self.assertIn(f"{wayland_path}:/run/vforge/wayland.sock:rw", volumes)
+            self.assertIn(f"{pipewire_path}:/run/vforge/pipewire-0:rw", volumes)
+            self.assertIn(f"{bus_path}:/run/vforge/user-bus.sock:rw", volumes)
+            self.assertNotIn("/run/dbus/system_bus_socket", " ".join(argv))
+            self.assertIn("--device", argv)
+            self.assertIn(str(device), argv)
+
+    def test_create_container_rejects_trusted_resources_in_integrated_profile(self) -> None:
+        with patch.object(vforge, "exists") as exists, patch.object(vforge, "podman") as podman:
+            with self.assertRaisesRegex(vforge.VforgeError, "require isolation = 'trusted'"):
+                vforge.create_container(
+                    "backend", "none", isolation="integrated", layer_id="a" * 32,
+                    resources={"home": "none", "gpu": True},
+                )
+
+        exists.assert_not_called()
+        podman.assert_not_called()
 
     def test_podman_is_forced_to_use_local_connection_and_clears_remote_environment(self) -> None:
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
@@ -164,8 +293,94 @@ class VforgeCommandTests(unittest.TestCase):
         first = vforge.runtime_digest(identity, "glibc=1;systemd=1", "1", "a" * 64)
         second = vforge.runtime_digest(identity, "glibc=1;systemd=1", "1", "b" * 64)
         self.assertNotEqual(first, second)
+        self.assertNotEqual(
+            first, vforge.runtime_digest(identity, "glibc=2;systemd=1", "1", "a" * 64)
+        )
+        self.assertNotEqual(
+            first, vforge.runtime_digest(identity, "glibc=1;systemd=1", "2", "a" * 64)
+        )
         with self.assertRaisesRegex(vforge.VforgeError, "compatibility metadata is incomplete"):
             vforge.runtime_digest(identity, "glibc=1", "1", "")
+
+    def test_host_runtime_identity_reads_os_release_abi_rpm_evr_and_verity_root_hash(self) -> None:
+        root_hash = "c" * 64
+        contents = {
+            Path("/etc/os-release"): 'ID=fedora\nVERSION_ID="44"\n',
+            Path("/usr/share/veyra/sysext-level"): "1\n",
+            Path("/proc/cmdline"): f"quiet roothash={root_hash}\n",
+        }
+        original_read_text = Path.read_text
+
+        def read_runtime_metadata(path: Path, *args, **kwargs):
+            if path in contents:
+                return contents[path]
+            return original_read_text(path, *args, **kwargs)
+
+        rpm = subprocess.CompletedProcess([], 0, "glibc=2.39-1.fc44;systemd=256-1.fc44;\n", "")
+        with patch.object(Path, "read_text", read_runtime_metadata), patch.object(
+            vforge.subprocess, "run", return_value=rpm
+        ) as run:
+            result = vforge.host_runtime_id()
+
+        run.assert_called_once_with(
+            ["rpm", "-q", "--qf", "%{NAME}=%{VERSION}-%{RELEASE};", "glibc", "systemd"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(
+            result,
+            vforge.runtime_digest(
+                {"ID": "fedora", "VERSION_ID": "44"},
+                "glibc=2.39-1.fc44;systemd=256-1.fc44;", "1", root_hash,
+            ),
+        )
+
+    def test_integrated_environment_refuses_to_start_after_veyra_generation_changes(self) -> None:
+        metadata = {"State": {"Status": "exited"}}
+        record = {
+            "isolation": "integrated", "host_runtime": "old-generation",
+            "layer_id": "a" * 32, "data_root": "/tmp/vforge-store",
+        }
+        with patch.object(vforge, "require_environment", return_value=("vforge-backend", metadata)), \
+             patch.object(vforge, "env_state", return_value={"backend": record}), \
+             patch.object(vforge, "host_runtime_id", return_value="new-generation"), \
+             patch.object(vforge, "podman") as podman:
+            with self.assertRaisesRegex(vforge.VforgeError, "different Veyra runtime"):
+                vforge.ensure_running("backend")
+
+        podman.assert_not_called()
+
+    def test_strict_environment_can_start_after_veyra_generation_changes(self) -> None:
+        metadata = {"State": {"Status": "exited"}}
+        record = {"isolation": "strict", "host_runtime": "old-generation"}
+        with patch.object(vforge, "require_environment", return_value=("vforge-backend", metadata)), \
+             patch.object(vforge, "env_state", return_value={"backend": record}), \
+             patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")) as podman:
+            vforge.ensure_running("backend")
+
+        self.assertEqual(podman.call_args.args[0], ["container", "start", "vforge-backend"])
+
+    def test_upgrade_rebinds_integrated_environment_to_current_veyra_generation(self) -> None:
+        container = {"State": {"Status": "running"}}
+        metadata = {
+            "isolation": "integrated", "host_runtime": "old-generation",
+            "network": "none", "layer_id": "b" * 32, "data_root": "/tmp/vforge-store",
+        }
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(vforge, "require_environment", return_value=("vforge-backend", container)), \
+             patch.object(vforge, "env_state", return_value={"backend": metadata}), \
+             patch.object(vforge, "host_runtime_id", return_value="new-generation"), \
+             patch.object(vforge, "make_snapshot", return_value="before-upgrade") as snapshot, \
+             patch.object(vforge, "podman", return_value=result) as podman, \
+             patch.object(vforge, "save_environment") as save:
+            vforge.upgrade("backend")
+
+        snapshot.assert_called_once_with("backend", ANY)
+        commands = [invocation.args[0] for invocation in podman.call_args_list]
+        self.assertIn(["network", "connect", "bridge", "vforge-backend"], commands)
+        self.assertIn(["container", "exec", "vforge-backend", "dnf", "upgrade", "-y"], commands)
+        self.assertIn(["network", "disconnect", "bridge", "vforge-backend"], commands)
+        self.assertEqual(metadata["host_runtime"], "new-generation")
+        save.assert_called_once_with("backend", metadata)
 
     def test_size_units_convert_to_exact_byte_caps(self) -> None:
         self.assertEqual(vforge.parse_size_bytes("20GiB"), 20 * 1024**3)
@@ -418,6 +633,29 @@ class VforgeCommandTests(unittest.TestCase):
             config = vforge.parse_project_config(project)
             self.assertEqual(config["permissions"]["home"], "none")
 
+    def test_project_hardware_permissions_require_trusted_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as project_dir:
+            project = Path(project_dir)
+            for permission in ("gpu", "wayland", "audio", "system_bus"):
+                with self.subTest(permission=permission):
+                    (project / vforge.PROJECT_CONFIG).write_text(
+                        f'[environment]\nname="backend"\nisolation="integrated"\n'
+                        f'[permissions]\n{permission}=true\n',
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(vforge.VforgeError, "require isolation = 'trusted'"):
+                        vforge.parse_project_config(project)
+
+    def test_project_config_rejects_arbitrary_device_grants(self) -> None:
+        with tempfile.TemporaryDirectory() as project_dir:
+            project = Path(project_dir)
+            (project / vforge.PROJECT_CONFIG).write_text(
+                '[environment]\nname="backend"\n[permissions]\ndevices=["/dev/kvm"]\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(vforge.VforgeError, r"unsupported \[permissions\] setting.*devices"):
+                vforge.parse_project_config(project)
+
     def test_project_approval_is_stored_outside_checkout_and_expansion_prompts_again(self) -> None:
         with tempfile.TemporaryDirectory() as project_dir:
             project = Path(project_dir)
@@ -435,6 +673,16 @@ class VforgeCommandTests(unittest.TestCase):
             with patch.object(vforge.sys.stdin, "isatty", return_value=True), patch("builtins.input", return_value="yes") as prompt:
                 vforge.approve_project(expanded, project)
             prompt.assert_called_once()
+
+    def test_named_network_permission_fails_closed_without_interactive_approval(self) -> None:
+        with patch.object(vforge.sys.stdin, "isatty", return_value=False), patch.object(
+            vforge, "podman"
+        ) as podman, patch.object(vforge, "ensure_veyra_overlay") as overlay:
+            with self.assertRaisesRegex(vforge.VforgeError, "interactive approval"):
+                vforge.create("backend", "bridge")
+
+        podman.assert_not_called()
+        overlay.assert_not_called()
 
     def test_snapshot_commits_persistent_container_state(self) -> None:
         metadata = {"State": {"Status": "running"}}

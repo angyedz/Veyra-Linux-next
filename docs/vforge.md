@@ -24,8 +24,10 @@ Network is disabled by default. `--network bridge` is an explicit, interactively
 approved grant. `--home` accepts `none`, `project-only`, `read-only`, or
 `read-write`; `project-only` does not mount the whole host Home. GPU, Wayland,
 PipeWire and the user's session D-Bus socket require `--isolation trusted` and
-interactive approval. The whole system D-Bus is never exposed. `strict` rejects
-all host mounts/resources and does not use the Veyra `/usr` overlay.
+interactive approval. GPU access is limited to present character devices under
+`/dev/dri`; arbitrary host-device grants are not configurable. The whole system
+D-Bus is never exposed. `strict` rejects all host mounts/resources and does not
+use the Veyra `/usr` overlay.
 
 The common named-environment root is user-selectable. By default it is
 `$XDG_DATA_HOME/vforge`, or `~/.local/share/vforge` when XDG_DATA_HOME is unset.
@@ -120,9 +122,12 @@ Those uppers live under the named environment's data directory or the project
 `.vforge/` directory. The container receives the merged `/usr` and merged RPM
 database as writable mounts. Thus writes to those mounted system paths should
 go to that environment's upper, while the Veyra lower remains unchanged. The
-QEMU scenario checks the active Veyra `sysext-level` through the container,
-checks that a `/usr` write appears only in the private upper, and checks that a
-snapshot rollback restores that write.
+QEMU scenario is designed to check the active Veyra `sysext-level` through the
+container, require an EROFS guest root, verify the environment is bound to the
+current runtime identity, prove a stale generation is blocked until metadata
+is restored, check that a `/usr` write appears only in the private upper, and
+check that snapshot rollback restores that write. These runtime checks have not
+passed in Fedora 44 QEMU yet.
 
 The compatibility identity includes the active dm-verity `roothash`, distro
 version, glibc/systemd RPM versions and Veyra sysext level. A changed root hash

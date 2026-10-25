@@ -1375,10 +1375,30 @@ def create_container(
     image: str = FEDORA_IMAGE,
     extra_labels: dict[str, str] | None = None,
 ) -> None:
+    if isolation not in PROFILES:
+        raise VforgeError(f"unsupported isolation profile: {isolation}")
+    if network not in NETWORKS:
+        raise VforgeError(f"unsupported network mode: {network}")
+    if resources is not None and not isinstance(resources, dict):
+        raise VforgeError("container permission metadata must be a table")
+    resource_model = resources or {}
+    if mounts is not None and not isinstance(mounts, list):
+        raise VforgeError("container mounts must be a list")
+    home_mode = resource_model.get("home", "none")
+    if not isinstance(home_mode, str) or home_mode not in HOME_MODES:
+        raise VforgeError(f"unsupported Home permission mode: {home_mode!r}")
+    flags = {key: resource_model.get(key, False) for key in ("gpu", "wayland", "audio", "system_bus")}
+    if any(not isinstance(value, bool) for value in flags.values()):
+        raise VforgeError("GPU, Wayland, audio and user D-Bus permissions must be true or false")
+    if isolation == "strict" and (any(flags.values()) or home_mode != "none" or mounts):
+        raise VforgeError("strict isolation forbids host resources, Home access and custom mounts")
+    if isolation != "trusted" and any(flags.values()):
+        raise VforgeError("GPU, Wayland, audio and user D-Bus access require isolation = 'trusted'")
+    if home_mode == "project-only" and not isinstance(resource_model.get("project"), str):
+        raise VforgeError("project-only Home access is available only for project environments")
     podman_name = container_name(name)
     if exists(podman_name, podman_root):
         raise VforgeError(f"environment '{name}' already exists")
-    resource_model = resources or {}
     command = [
         "container", "create", "--pull=missing", "--name", podman_name,
         "--hostname", name, "--label", f"{LABEL}=1",
@@ -1401,7 +1421,6 @@ def create_container(
         overlay_mounts = ensure_veyra_overlay(layer_id, data_root, layer_stack, name)
         all_mounts.append({"source": str(overlay_mounts["usr"]), "target": "/usr", "access": "read-write"})
         all_mounts.append({"source": str(overlay_mounts["rpmdb"]), "target": str(overlay_mounts["rpmdb-target"]), "access": "read-write"})
-    home_mode = resource_model.get("home", "none")
     if home_mode in {"read-only", "read-write"}:
         all_mounts.append({
             "source": str(Path.home().resolve()),
@@ -1462,8 +1481,10 @@ def create(
     size: str | None = None,
 ) -> None:
     size_bytes = parse_size_bytes(size)
-    if isolation not in PROFILES or home_mode not in HOME_MODES:
-        raise VforgeError("invalid isolation profile or Home permission")
+    if isolation not in PROFILES or home_mode not in HOME_MODES or network not in NETWORKS:
+        raise VforgeError("invalid isolation profile, Home permission or network mode")
+    if any(not isinstance(value, bool) for value in (gpu, wayland, audio, user_bus)):
+        raise VforgeError("GPU, Wayland, audio and user D-Bus permissions must be true or false")
     if home_mode == "project-only":
         raise VforgeError("--home project-only is available only for project environments")
     resources: dict[str, object] = {

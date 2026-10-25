@@ -14,6 +14,11 @@ SPEC = importlib.util.spec_from_file_location("vforge_qemu_runner", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
+FIXTURE_SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts/test-vforge-integration-qemu.py"
+FIXTURE_SPEC = importlib.util.spec_from_file_location("vforge_guest_fixture", FIXTURE_SCRIPT)
+assert FIXTURE_SPEC is not None and FIXTURE_SPEC.loader is not None
+fixture = importlib.util.module_from_spec(FIXTURE_SPEC)
+FIXTURE_SPEC.loader.exec_module(fixture)
 
 
 class VforgeQemuRunnerTests(unittest.TestCase):
@@ -120,6 +125,18 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         self.assertIn("q35,accel=kvm", command)
         self.assertTrue(any("readonly=on" in item for item in command))
         self.assertTrue(any("security_model=none,readonly=on" in item for item in command))
+
+    def test_guest_fixture_loads_extensionless_vforge_executable_for_runtime_identity(self) -> None:
+        with patch.object(fixture.shutil, "which", return_value=str(SCRIPT.parents[1] / "mkosi.extra/usr/bin/vforge")):
+            module = fixture.load_vforge_module()
+
+        self.assertTrue(callable(module.host_runtime_id))
+        self.assertTrue(callable(module.common_state_directory))
+
+    def test_veyra_lower_fixture_requires_erofs_root(self) -> None:
+        fixture.require_veyra_ero_root("erofs")
+        with self.assertRaisesRegex(RuntimeError, "current EROFS Veyra lower"):
+            fixture.require_veyra_ero_root("ext4")
 
 
 if __name__ == "__main__":
