@@ -89,6 +89,10 @@ jobs:
           test -s "$source_rpm"
           cmp -- "$source_rpm" "$mirrored_rpm"
 
+      - name: Exercise vpkg transactions against the signed testing channel
+        shell: bash
+        run: VPKG_CI_TEST=1 scripts/test-vpkg-transaction.sh "$PWD/build/site"
+
       - name: Upload test repository snapshot
         uses: actions/upload-artifact@v4
         with:
