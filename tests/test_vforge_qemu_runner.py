@@ -104,6 +104,23 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         self.assertIn(runner.PASS_MARKER, script)
         self.assertIn(runner.FAIL_MARKER, script)
 
+    def test_qemu_command_requires_kvm_and_mounts_checkout_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            code = root / "OVMF_CODE.fd"
+            variables = root / "OVMF_VARS.fd"
+            variables_copy = root / "OVMF_VARS.copy.fd"
+            for path in (code, variables):
+                path.write_bytes(b"firmware")
+            command = runner.qemu_command(
+                "qemu-system-x86_64", root / "guest.raw", root / "checkout",
+                code, variables, variables_copy, root / "serial.log",
+            )
+
+        self.assertIn("q35,accel=kvm", command)
+        self.assertTrue(any("readonly=on" in item for item in command))
+        self.assertTrue(any("security_model=none,readonly=on" in item for item in command))
+
 
 if __name__ == "__main__":
     unittest.main()
