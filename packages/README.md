@@ -37,9 +37,37 @@ The configured repository locations are:
 Both repos require RPM signatures and signed `repomd.xml` metadata. The
 publisher must sign each RPM and repository metadata with the same trusted
 Veyra RPM key. No release key is checked into this repository, and publication
-must fail closed until the owner provisions the key. CI uses a throwaway key
+fails closed until the owner provisions `VEYRA_RPM_SIGNING_KEY` in GitHub
+Actions. Keep an offline backup and revocation material for this dedicated key;
+do not reuse the separate system-update signing key. CI uses a throwaway key
 only to verify the build and repository-signature path; it is never a client
 trust key.
+
+The manual **Publish Veyra RPM repository** workflow publishes a rebuilt
+`testing` snapshot or promotes the exact already-signed testing RPMs into
+`main`. Promotion requires the package name to appear in both channel manifests.
+Before each deployment it downloads the current channel RPMs, validates signed
+metadata, checks RPM checksums and signatures, and preserves all existing
+versions. A package filename may not be replaced by different bytes; bump its
+RPM version/release for changed content. The workflow publishes both channel
+directories and their signed metadata together as a GitHub Pages artifact.
+The publisher pins the existing site's RPM key to the signing secret's
+fingerprint and refuses an unplanned key change.
+Before the first deployment, set the repository's Pages source to **GitHub
+Actions** in **Settings → Pages**; the repository does not have a Pages site
+enabled yet.
+
+The RPM workflow expects an unencrypted, dedicated signing key in
+`VEYRA_RPM_SIGNING_KEY` because `rpmsign` runs non-interactively. Keep an
+offline protected backup of the key and revocation material. To add a prepared
+armored signing-key export to GitHub Actions:
+
+```sh
+gh secret set VEYRA_RPM_SIGNING_KEY < veyra-rpm-signing-key.asc
+```
+
+Never store that private-key file in Git. A separate
+`VEYRA_UPDATE_SIGNING_KEY` is used for OS updates.
 
 The first package source is `veyra-shell-tools`, an optional set of
 `bash-completion`, `fzf`, `jq`, and `ripgrep` tools. Its binary payload is built

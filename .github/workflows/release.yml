@@ -43,7 +43,11 @@ jobs:
           export GNUPGHOME="$RUNNER_TEMP/veyra-update-gnupg"
           install -d -m 0700 "$GNUPGHOME"
           printf '%s' "$VEYRA_UPDATE_SIGNING_KEY" | gpg --batch --import
-          mapfile -t fingerprints < <(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10 }')
+          mapfile -t fingerprints < <(gpg --batch --with-colons --list-secret-keys | awk -F: '
+            $1 == "sec" { primary = 1; next }
+            $1 == "ssb" { primary = 0; next }
+            $1 == "fpr" && primary { print $10; primary = 0 }
+          ')
           if ((${#fingerprints[@]} != 1)); then
             echo "The update-signing secret must contain exactly one private key." >&2
             exit 1

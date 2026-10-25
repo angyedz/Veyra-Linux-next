@@ -1,6 +1,6 @@
 # Veyra Next architecture — working proposal
 
-**Status:** source now defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfer definitions and a three-try boot-assessment policy. CI must build and inspect the image, and a VM must prove update and rollback. There is no signed release channel, installer, Recovery or Developer Mode yet. This is not a release claim.
+**Status:** source defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfers and a three-try boot-assessment policy. CI builds and inspects the image and stages a signed test update into the inactive slots of a disposable image. A VM must still prove successful A→B boot and failed-boot return. No production update is signed or published yet; installer, Recovery and Developer Mode are not implemented.
 
 ## Product shape
 
@@ -19,7 +19,7 @@ The current UKIs are unsigned and the VM uses ordinary UEFI. Secure Boot is deli
 1. `mkosi` builds the Fedora 44 package set and two fixed-size root slots. Slot A is EROFS with a matching dm-verity hash partition; slot B starts empty. The current roots are each 8 GiB, and each verity slot is 512 MiB.
 2. The image also has writable ext4 partitions for `/etc` and `/var`, mounted from the initrd before switch-root, and a separate persistent `/home` partition. Cross-version compatibility and migration for persistent state still need a policy.
 3. `systemd-sysupdate` transfers the matching verity and root images to the unused partitions. Release filenames carry the two halves of the dm-verity root hash; `PartitionUUID=@u` preserves those UUIDs when writing the new slots. The UKI is transferred last and receives three boot attempts; its presence is the entry point for the new version. The current version is protected while an update is staged.
-4. Update definitions require GPG verification of `SHA256SUMS` (`Verify=yes`). The build compresses split root artifacts and versions the UKI, but release publication and the trusted Veyra update key are not configured yet. The updater therefore has no usable signed channel today.
+4. Update definitions require GPG verification of `SHA256SUMS` (`Verify=yes`). The manual release workflow builds with the public half of a dedicated Veyra update key, signs the root/verity/UKI manifest and publishes those assets. Until its private key is provisioned and the workflow is run from `main`, there is no usable signed release today.
 5. `systemd-boot` boot counting and an enabled systemd boot health check are configured to bless a trial only after the boot reaches the completion target without failed units. The A→B transition and automatic return after three failed attempts remain to be demonstrated in a VM.
 
 This reuses systemd's image, partition and boot tools instead of writing a replacement package manager or custom cryptographic format. The A/B layout is two versions of one OS, never two concurrently running user environments.
@@ -32,7 +32,7 @@ The first `vpkg` implementation delegates dependency solving and RPM database tr
 
 System extensions provide additive `/usr` and `/opt` content and can be activated without rebooting. Their extension-release metadata must match the Fedora release used by the base image. The first extension source, `veyra-shell-tools`, resolves Fedora dependencies in a root seeded with the Veyra base package set, rejects changes to any already-installed base package, and copies only newly introduced files into the extension image. A package that needs to replace a base file is rejected and must instead be delivered in a complete A/B system update. This gives Veyra two explicit transaction paths: add-on applications/extensions use DNF5 plus systemd-sysext; changes to the system image use A/B sysupdate.
 
-The package build scripts and repository directory manifests are in `packages/` and `scripts/`. CI is intended to build and sign a disposable test repository to validate the format. No production RPM key is committed or provisioned, no Pages site is enabled, and no package channel is published yet. A generated CI key must never become the key trusted by Veyra clients.
+The package build scripts and repository directory manifests are in `packages/` and `scripts/`. CI builds and signs a disposable test repository, verifies both channels, and exercises mirroring. The manual publisher is ready to create `testing` snapshots and promote selected signed packages to `main`, but the production RPM key is not provisioned, Pages is not enabled and no package channel is published. A generated CI key must never become the key trusted by Veyra clients.
 
 ## Integrity layers
 

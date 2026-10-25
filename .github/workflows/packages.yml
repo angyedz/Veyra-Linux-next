@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install RPM repository build tools
-        run: dnf5 install --assumeyes createrepo_c dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
+        run: dnf5 install --assumeyes createrepo_c curl dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
 
       - name: Check package-manager safety rules
         run: python3 -m unittest discover --start-directory tests --pattern 'test_*.py'
@@ -33,6 +33,7 @@ jobs:
           fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
           test -n "$fingerprint"
           gpg --batch --armor --export "$fingerprint" > build/site/RPM-GPG-KEY-TEST
+          cp build/site/RPM-GPG-KEY-TEST build/site/RPM-GPG-KEY-VEYRA
           rpm --import build/site/RPM-GPG-KEY-TEST
           rpmsign --define "_gpg_name $fingerprint" --addsign build/rpms/*.rpm
           scripts/build-package-repo.sh testing build/rpms build/site
@@ -62,6 +63,31 @@ jobs:
           dnf5 --config="$PWD/build/dnf.conf" --assumeyes --repo=veyra-main \
             --refresh repoquery --available
           python3 scripts/check-extension-rpms.py build/rpms
+
+      - name: Test mirroring the signed channels, including an empty stable channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory build/site \
+            > build/http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"; wait "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8765/RPM-GPG-KEY-VEYRA >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          python3 scripts/mirror-package-site.py \
+            --base-url http://127.0.0.1:8765 \
+            --site build/mirrored-site \
+            --expected-fingerprint "$fingerprint"
+          test -z "$(find build/mirrored-site/packages/main -name '*.rpm' -print -quit)"
+          source_rpm="$(find build/site/packages/testing -name '*.rpm' -print -quit)"
+          mirrored_rpm="build/mirrored-site/packages/testing/x86_64/$(basename "$source_rpm")"
+          test -s "$source_rpm"
+          cmp -- "$source_rpm" "$mirrored_rpm"
 
       - name: Upload test repository snapshot
         uses: actions/upload-artifact@v4

@@ -20,6 +20,14 @@ if ! command -v createrepo_c >/dev/null 2>&1; then
     exit 1
 fi
 
+rpm_signatures_are_valid() {
+    local output="$1"
+    local signature_count valid_signature_count
+    signature_count="$(grep -Eic 'signature' <<<"$output" || true)"
+    valid_signature_count="$(grep -Eic 'signature.*:[[:space:]]*OK[[:space:]]*$' <<<"$output" || true)"
+    [[ "$signature_count" -gt 0 && "$signature_count" -eq "$valid_signature_count" ]]
+}
+
 repo_directory="$site_directory/packages/$channel/x86_64"
 mkdir -p "$repo_directory"
 
@@ -54,7 +62,7 @@ for rpm in "$rpm_directory"/*.rpm; do
         exit 1
     fi
     signature="$(rpm --checksig --verbose "$rpm")"
-    if ! grep -Eiq 'signature.*OK' <<<"$signature"; then
+    if ! rpm_signatures_are_valid "$signature"; then
         echo "Refusing unsigned or invalid RPM: $rpm" >&2
         exit 1
     fi
@@ -79,7 +87,7 @@ for rpm in "$repo_directory"/*.rpm; do
         exit 1
     fi
     signature="$(rpm --checksig --verbose "$rpm")"
-    if ! grep -Eiq 'signature.*OK' <<<"$signature"; then
+    if ! rpm_signatures_are_valid "$signature"; then
         echo "Refusing unsigned or invalid RPM already present in $channel: $rpm" >&2
         exit 1
     fi
