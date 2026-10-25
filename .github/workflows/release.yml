@@ -100,7 +100,14 @@ jobs:
           test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
           test -s mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- \
-            test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
+            sh -eu -c '
+              grep -Fxq VERSION_ID=44 /usr/lib/os-release
+              rpm -q --qf "%{EVR}\\n" fedora-release | grep -Eq "^44-"
+              for package in systemd systemd-udev kernel-core; do
+                rpm -q --qf "%{EVR}\\n" "$package" | grep -Eq "\\.fc44$"
+              done
+              test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
+            '
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Sign the update manifest

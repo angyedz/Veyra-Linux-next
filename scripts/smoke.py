@@ -299,8 +299,10 @@ def main() -> int:
         return fail("signed OTA installation and updates must run inside the restricted QEMU guest")
     if re.search(r"systemd-sysupdate[^\n]*--image", ota_vm_test_content):
         return fail("CI must not exercise systemd-sysupdate against a host-mounted image")
-    if "--qemu-accel" not in ota_vm_test_content or "--qemu-cpu" not in ota_vm_test_content:
-        return fail("the OTA QEMU test must allow explicit KVM acceleration and host CPU selection")
+    if any(option not in ota_vm_test_content for option in (
+        "--qemu-accel", "--qemu-cpu", "--qemu-memory-mib", "--log-directory",
+    )):
+        return fail("the OTA QEMU test must support KVM, adequate guest memory, and retained serial logs")
     update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
     if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
         return fail("the image must install the veyra-update command")

@@ -109,6 +109,8 @@ def patch_uki(
         "systemd.firstboot=no",
         f"systemd.unit={unit}",
         "console=ttyS0,115200n8",
+        "systemd.show_status=1",
+        "systemd.log_target=console",
         *extra_cmdline,
     )).encode("ascii") + b"\0"
     with destination.open("r+b") as stream:
@@ -444,13 +446,17 @@ def main() -> int:
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--qemu-accel", default="tcg")
     parser.add_argument("--qemu-cpu", default="max")
+    parser.add_argument("--qemu-memory-mib", default=4096, type=int)
     parser.add_argument("--qemu-data-dir", type=pathlib.Path)
+    parser.add_argument("--log-directory", type=pathlib.Path)
     parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
     parser.add_argument("--ovmf-vars", required=True, type=pathlib.Path)
     parser.add_argument("--boot-timeout", type=int, default=300)
     args = parser.parse_args()
 
     try:
+        if args.qemu_memory_mib < 4096:
+            raise RuntimeError("OTA boots require at least 4096 MiB so persistent /home growth can finish.")
         version = next_version(args.current_version)
         image = args.image.resolve()
         if not image.is_file():
@@ -554,11 +560,14 @@ def main() -> int:
                     "--qemu", args.qemu,
                     "--accel", args.qemu_accel,
                     "--cpu", args.qemu_cpu,
+                    "--memory-mib", str(args.qemu_memory_mib),
                     "--ovmf-code", str(args.ovmf_code.resolve()),
                     "--ovmf-vars", str(args.ovmf_vars.resolve()),
                     "--boot-timeout", str(args.boot_timeout),
                     "--ota-port", str(args.port),
                 ]
+                if args.log_directory:
+                    boot_command.extend(["--log-directory", str(args.log_directory.resolve())])
                 if args.qemu_data_dir:
                     boot_command.extend(["--qemu-data-dir", str(args.qemu_data_dir.resolve())])
                 if args.vpkg_test_repo:

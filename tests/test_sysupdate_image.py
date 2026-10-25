@@ -96,6 +96,8 @@ class SysupdateImageTests(unittest.TestCase):
             self.assertIn(f"roothash={roothash}", cmdline)
             self.assertIn("systemd.firstboot=no", cmdline)
             self.assertIn("systemd.unit=graphical.target", cmdline)
+            self.assertIn("systemd.show_status=1", cmdline)
+            self.assertIn("systemd.log_target=console", cmdline)
             self.assertEqual(sysupdate_image.os_release_value(destination, "VERSION_ID"), "44")
             self.assertEqual(sysupdate_image.os_release_value(destination, "IMAGE_VERSION"), "0.1.1")
 

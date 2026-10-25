@@ -240,9 +240,16 @@ def boot_until(
     timeout: int,
     accel: str = "tcg",
     cpu: str = "max",
+    memory_mib: int = 4096,
+    persistent_log_dir: pathlib.Path | None = None,
     ota_port: int = 8765,
 ) -> str:
     log_path.unlink(missing_ok=True)
+    if persistent_log_dir:
+        persistent_log_dir.mkdir(parents=True, exist_ok=True)
+        (persistent_log_dir / log_path.name).unlink(missing_ok=True)
+        log_path.touch()
+        os.link(log_path, persistent_log_dir / log_path.name)
     command = [qemu]
     if qemu_data_dir:
         command.extend(["-L", str(qemu_data_dir)])
@@ -250,7 +257,7 @@ def boot_until(
         "-machine", f"q35,accel={accel}",
         "-cpu", cpu,
         "-smp", "2",
-        "-m", "2048",
+        "-m", str(memory_mib),
         "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
         "-drive", f"if=pflash,format=raw,unit=1,file={vars_path}",
         "-device", "ich9-ahci,id=ahci",
@@ -314,6 +321,8 @@ def main() -> int:
     parser.add_argument("--qemu-data-dir", type=pathlib.Path)
     parser.add_argument("--accel", default="tcg")
     parser.add_argument("--cpu", default="max")
+    parser.add_argument("--memory-mib", default=4096, type=int)
+    parser.add_argument("--log-directory", type=pathlib.Path)
     parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
     parser.add_argument("--ovmf-vars", required=True, type=pathlib.Path)
     parser.add_argument("--boot-timeout", default=300, type=int)
@@ -324,6 +333,8 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        if args.memory_mib < 4096:
+            raise RuntimeError("OTA boots require at least 4096 MiB for persistent /home growth.")
         if not shutil.which(args.qemu):
             raise RuntimeError(f"QEMU executable not found: {args.qemu}")
         if not shutil.which(args.mcopy) or not shutil.which(args.mdir):
@@ -368,6 +379,8 @@ def main() -> int:
                 timeout=args.boot_timeout,
                 accel=args.accel,
                 cpu=args.cpu,
+                memory_mib=args.memory_mib,
+                persistent_log_dir=args.log_directory,
                 ota_port=args.ota_port,
             )
             if "device-mapper: verity" in successful_log or "metadata block" in successful_log:
@@ -465,6 +478,8 @@ def main() -> int:
                     timeout=args.boot_timeout,
                     accel=args.accel,
                     cpu=args.cpu,
+                    memory_mib=args.memory_mib,
+                    persistent_log_dir=args.log_directory,
                     ota_port=args.ota_port,
                 )
                 listing = mdir(test_image, esp_offset, args.mdir)
@@ -492,6 +507,8 @@ def main() -> int:
                 timeout=args.boot_timeout,
                 accel=args.accel,
                 cpu=args.cpu,
+                memory_mib=args.memory_mib,
+                persistent_log_dir=args.log_directory,
                 ota_port=args.ota_port,
             )
             if "Reached target emergency.target" in rollback:
