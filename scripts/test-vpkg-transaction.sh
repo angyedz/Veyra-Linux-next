@@ -143,7 +143,6 @@ createrepo_c --database --update "$testing_repo"
 gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
   --output "$testing_repo/repodata/repomd.xml.asc" \
   "$testing_repo/repodata/repomd.xml"
-rm -rf /var/cache/veyra/vpkg
 PATH="$shim:$PATH" "$vpkg" upgrade
 installed_version="$(rpm --root "$install_root" -q --qf '%{VERSION}' veyra-shell-tools)"
 if [[ "$installed_version" != "0.2.0" ]]; then

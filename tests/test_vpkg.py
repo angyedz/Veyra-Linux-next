@@ -64,6 +64,18 @@ class VpkgPolicyTests(unittest.TestCase):
                     channel=channel,
                 )
 
+    def test_upgrade_preflight_refreshes_repository_metadata(self) -> None:
+        with (
+            patch.object(vpkg, "selected_channel", return_value="testing"),
+            patch.object(vpkg, "run") as run,
+            patch.object(vpkg, "inspect_extension_rpms", return_value=[]),
+        ):
+            self.assertFalse(vpkg.download_for_inspection("upgrade"))
+
+        command = run.call_args.args[0]
+        self.assertIn("--refresh", command)
+        self.assertLess(command.index("--refresh"), command.index("upgrade"))
+
     def test_extension_rpm_policy_allows_only_var_extension_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             rpm_file = Path(temporary) / "veyra-shell-tools.rpm"

@@ -172,6 +172,10 @@ def download_for_inspection(action: str, packages: list[str] | None = None) -> b
     with tempfile.TemporaryDirectory(prefix="veyra-vpkg-") as temporary:
         directory = Path(temporary)
         common = dnf_prefix(channel)
+        # Explicitly refresh before selecting RPMs for inspection. Otherwise an
+        # explicit `vpkg upgrade` can miss newly published versions while DNF's
+        # cached repository metadata is still within its expiry window.
+        common.append("--refresh")
         download_options = [
             "download",
             "--resolve",
