@@ -510,6 +510,28 @@ class VpkgPolicyTests(unittest.TestCase):
         self.assertEqual(added, {})
         self.assertIn("protected base package(s) glibc", reason or "")
 
+    def test_user_app_transaction_rejects_protected_core_removal(self) -> None:
+        base = {"systemd": {"systemd-0:259-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value={}):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("protected base package(s) systemd", reason or "")
+
+    def test_user_app_transaction_rejects_when_hook_metadata_cannot_be_inspected(self) -> None:
+        base = {"bash": {"bash-0:5.2-1.x86_64"}}
+        installed = {**base, "example": {"example-0:1-1.x86_64"}}
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", side_effect=vpkg.VpkgError("rpm query failed")),
+            patch.object(vpkg, "validate_installed_app_payloads") as validate_payloads,
+        ):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("could not inspect RPM scripts or triggers", reason or "")
+        validate_payloads.assert_not_called()
+
     def test_user_app_rpm_payload_policy_accepts_additive_application_files(self) -> None:
         regular = stat.S_IFREG | 0o755
         symlink = stat.S_IFLNK | 0o777
