@@ -48,6 +48,23 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.VforgeQemuError, "current Fedora 44"):
             runner.require_fedora44_veyra("ID=fedora\nVERSION_ID=46\nIMAGE_ID=veyra-next\n")
 
+    def test_qemu_base_gate_rejects_fedora44_image_without_size_cap_tools(self) -> None:
+        manifest = json.dumps({"packages": [
+            {"type": "rpm", "name": "e2fsprogs-libs"},
+            {"type": "rpm", "name": "podman"},
+        ]})
+
+        with self.assertRaisesRegex(runner.VforgeQemuError, "e2fsprogs"):
+            runner.require_size_cap_packages(manifest)
+
+    def test_qemu_base_gate_accepts_fedora44_image_with_size_cap_tools(self) -> None:
+        manifest = json.dumps({"packages": [
+            {"type": "rpm", "name": "e2fsprogs"},
+            {"type": "rpm", "name": "podman"},
+        ]})
+
+        runner.require_size_cap_packages(manifest)
+
     def test_partition_layout_requires_persistent_etc_and_home(self) -> None:
         layout = {"partitiontable": {"sectorsize": 512, "partitions": [
             {"start": 1, "size": 2, "name": "VEYRA_ETC"},

@@ -64,6 +64,26 @@ def require_fedora44_veyra(contents: str) -> dict[str, str]:
     return fields
 
 
+def require_size_cap_packages(contents: str) -> None:
+    try:
+        manifest = json.loads(contents)
+        packages = manifest["packages"]
+        if not isinstance(packages, list):
+            raise TypeError("packages is not a list")
+        names = {
+            package["name"]
+            for package in packages
+            if isinstance(package, dict) and package.get("type") == "rpm" and isinstance(package.get("name"), str)
+        }
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise VforgeQemuError("Veyra image RPM manifest is malformed") from error
+    missing = {"e2fsprogs"} - names
+    if missing:
+        raise VforgeQemuError(
+            "Fedora 44 Veyra image is missing size-cap runtime packages: " + ", ".join(sorted(missing))
+        )
+
+
 def partition_offsets(contents: str) -> dict[str, tuple[int, int]]:
     try:
         table = json.loads(contents)["partitiontable"]
@@ -90,12 +110,14 @@ def validate_base_image(image: pathlib.Path) -> tuple[dict[str, tuple[int, int]]
     if not image.is_file() or image.stat().st_size < 1024**3:
         raise VforgeQemuError(f"not a Veyra disk image: {image}")
     osrelease_path = image.with_name(f"{image.stem}.osrelease")
+    manifest_path = image.with_name(f"{image.stem}.manifest")
     roothash_path = image.with_name("veyra-next.roothash")
     try:
         osrelease = require_fedora44_veyra(osrelease_path.read_text(encoding="utf-8"))
+        require_size_cap_packages(manifest_path.read_text(encoding="utf-8"))
         roothash = roothash_path.read_text(encoding="ascii").strip().lower()
     except OSError as error:
-        raise VforgeQemuError(f"image metadata sidecars are missing next to {image}") from error
+        raise VforgeQemuError(f"image metadata sidecars (including RPM manifest) are missing next to {image}") from error
     if not re.fullmatch(r"[0-9a-f]{64}", roothash):
         raise VforgeQemuError("Veyra image has an invalid dm-verity root hash sidecar")
     run([sys.executable, str(ROOT / "scripts/check-image.py"), str(image)])
