@@ -1,6 +1,6 @@
 # Veyra Next architecture — working proposal
 
-**Status:** source defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfers and a three-try boot-assessment policy. CI builds a signed test update, applies it to a disposable image, boots the new slot in QEMU/OVMF, checks dm-verity and boot blessing, then observes fallback after three deliberately failed trial boots. No production update is signed or published yet; installer, Recovery and Developer Mode are not implemented.
+**Status:** source defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfers and a three-try boot-assessment policy. The CI image job is set up to apply a signed test update, boot it in QEMU/OVMF, verify persistent `/etc`, `/var` and `/home`, exercise signed `vpkg` install/upgrade/remove with the real `systemd-sysext`, then observe fallback after three deliberately failed trial boots. The VM also installs a deliberately invalid extension image and checks that real `systemd-sysext` failure rolls its RPM transaction back. Separate package CI covers transaction rollback after a controlled activation failure. No production update or package channel is signed or published yet; installer, Recovery and Developer Mode are not implemented.
 
 ## Product shape
 
@@ -32,7 +32,7 @@ The first `vpkg` implementation delegates dependency solving and RPM database tr
 
 System extensions provide additive `/usr` and `/opt` content and can be activated without rebooting. Their extension-release metadata must match the Fedora release used by the base image. The first extension source, `veyra-shell-tools`, resolves Fedora dependencies in a root seeded with the Veyra base package set, rejects changes to any already-installed base package, and copies only newly introduced files into the extension image. A package that needs to replace a base file is rejected and must instead be delivered in a complete A/B system update. This gives Veyra two explicit transaction paths: add-on applications/extensions use DNF5 plus systemd-sysext; changes to the system image use A/B sysupdate.
 
-The package build scripts and repository directory manifests are in `packages/` and `scripts/`. CI builds and signs a disposable test repository, verifies both channels, and exercises mirroring. The manual publisher is ready to create `testing` snapshots and promote selected signed packages to `main`, but the production RPM key is not provisioned, Pages is not enabled and no package channel is published. A generated CI key must never become the key trusted by Veyra clients.
+The package build scripts and repository directory manifests are in `packages/` and `scripts/`. CI builds and signs a disposable test repository, verifies both channels, and exercises mirroring. The manual publisher is ready to create `testing` snapshots and promote selected signed packages to `main`, but the production RPM key is not provisioned, Pages is not enabled and no package channel is published. A generated CI key must never become the key trusted by Veyra clients. The image CI also injects a temporary signed two-version repository into a disposable VM image and checks install, upgrade and remove against the booted system. These CI signatures are test-only.
 
 ## Integrity layers
 

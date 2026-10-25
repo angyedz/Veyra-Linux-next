@@ -120,6 +120,7 @@ def main() -> int:
     parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
     parser.add_argument("--ovmf-vars", required=True, type=pathlib.Path)
     parser.add_argument("--boot-timeout", default=300, type=int)
+    parser.add_argument("--expect-vpkg-test", action="store_true")
     parser.add_argument("--mcopy", default="mcopy")
     parser.add_argument("--mdir", default="mdir")
     args = parser.parse_args()
@@ -151,6 +152,14 @@ def main() -> int:
             shutil.copyfile(pristine_vars, vars_path)
 
             boot_log = work / "boot-b.log"
+            successful_markers = [
+                f"roothash={args.roothash}",
+                "Reached target graphical.target",
+                "Reached target boot-complete.target",
+                "Current Boot Loader Entry as Good",
+            ]
+            if args.expect_vpkg_test:
+                successful_markers.append("VEYRA_VPKG_CI_PASS")
             successful_log = boot_until(
                 image=test_image,
                 log_path=boot_log,
@@ -158,12 +167,7 @@ def main() -> int:
                 vars_path=vars_path,
                 qemu=args.qemu,
                 qemu_data_dir=args.qemu_data_dir,
-                expected=(
-                    f"roothash={args.roothash}",
-                    "Reached target graphical.target",
-                    "Reached target boot-complete.target",
-                    "Current Boot Loader Entry as Good",
-                ),
+                expected=tuple(successful_markers),
                 timeout=args.boot_timeout,
             )
             if "device-mapper: verity" in successful_log or "metadata block" in successful_log:
@@ -174,6 +178,8 @@ def main() -> int:
                 raise RuntimeError("systemd-boot did not bless the successful trial UKI")
             print(f"Booted signed update {args.version} from the inactive slot and observed dm-verity.", flush=True)
             print("systemd reached graphical.target and boot-complete.target, then blessed the UKI.", flush=True)
+            if args.expect_vpkg_test:
+                print("The signed vpkg install, upgrade and remove test passed inside Veyra.", flush=True)
 
             # Add a higher-priority emergency UKI to simulate the next update's
             # application failing during boot. Its version and roothash refer to

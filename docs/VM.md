@@ -29,4 +29,4 @@ This pre-alpha image has unsigned UKIs. mkosi is configured to use ordinary UEFI
 
 ## What this test proves
 
-A VM boot can prove that the disk layout, kernel, initramfs, systemd, first-boot setup and Plasma Login Manager start together in that virtual machine. It does not prove real GPU support, screen sharing, Proton game compatibility, A/B rollback or Secure Boot.
+A VM boot can prove that the disk layout, kernel, initramfs, systemd, first-boot setup and Plasma Login Manager start together in that virtual machine. The CI A/B test additionally stages a signed update, checks `/etc`, `/var` and `/home` across the slot change, exercises signed `vpkg` install/upgrade/remove through the real `systemd-sysext`, and tests boot-count rollback. It does not prove real GPU support, screen sharing, Proton game compatibility or Secure Boot.

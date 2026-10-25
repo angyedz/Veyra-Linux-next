@@ -9,11 +9,113 @@ permissions:
   contents: read
 
 jobs:
+  vpkg-image-fixture:
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install package build and signing tools
+        run: dnf5 install --assumeyes createrepo_c cpio dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
+      - name: Build two versions of the Veyra extension RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/rpms build/site build/empty-rpms build/v2/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          python3 scripts/build-extension-rpm.py --channel testing --output build/rpms
+          rpm_v1="$(find build/rpms -maxdepth 1 -name 'veyra-shell-tools-*.rpm' -print -quit)"
+          test -s "$rpm_v1"
+          mkdir -p build/v2/extract
+          rpm2cpio "$rpm_v1" | (cd build/v2/extract && cpio --quiet --extract --make-directories)
+          cp build/v2/extract/var/lib/extensions/veyra-shell-tools.raw build/v2/SOURCES/veyra-shell-tools.raw
+          cat > build/v2/SPECS/veyra-shell-tools.spec <<'EOF'
+          Name:           veyra-shell-tools
+          Version:        0.2.0
+          Release:        1.fc44
+          Summary:        Veyra shell tools system-extension CI fixture
+          License:        GPL-2.0-or-later AND MIT AND Unlicense
+          BuildArch:      x86_64
+          Source0:        veyra-shell-tools.raw
+
+          %description
+          Signed upgrade fixture for Veyra vpkg image integration tests.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/var/lib/extensions/veyra-shell-tools.raw
+          %files
+          /var/lib/extensions/veyra-shell-tools.raw
+          EOF
+          rpmbuild -bb build/v2/SPECS/veyra-shell-tools.spec \
+            --define "_topdir $PWD/build/v2" \
+            --define "_sourcedir $PWD/build/v2/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          cp build/v2/RPMS/x86_64/*.rpm build/rpms/
+          mkdir -p build/broken/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          printf 'This is deliberately not a filesystem image.\n' > build/broken/SOURCES/veyra-broken-extension.raw
+          cat > build/broken/SPECS/veyra-broken-extension.spec <<'EOF'
+          Name:           veyra-broken-extension
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Deliberately invalid system-extension CI fixture
+          License:        MIT
+          BuildArch:      x86_64
+          Source0:        veyra-broken-extension.raw
+
+          %description
+          Used only to verify that vpkg rolls back when systemd-sysext refuses an image.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/var/lib/extensions/veyra-broken-extension.raw
+          %files
+          /var/lib/extensions/veyra-broken-extension.raw
+          EOF
+          rpmbuild -bb build/broken/SPECS/veyra-broken-extension.spec \
+            --define "_topdir $PWD/build/broken" \
+            --define "_sourcedir $PWD/build/broken/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+      - name: Sign the disposable VM test repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          gpg --batch --passphrase '' --quick-generate-key 'Veyra VM CI Test Key <veyra-vm-ci@example.invalid>' rsa3072 sign 0
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          gpg --batch --armor --export "$fingerprint" > build/site/RPM-GPG-KEY-VEYRA
+          rpm --import build/site/RPM-GPG-KEY-VEYRA
+          rpmsign --define "_gpg_name $fingerprint" --addsign build/rpms/*.rpm build/broken/RPMS/x86_64/*.rpm
+          scripts/build-package-repo.sh testing build/rpms build/site
+          scripts/build-package-repo.sh main build/empty-rpms build/site
+          testing_repo=build/site/packages/testing/x86_64
+          cp build/broken/RPMS/x86_64/*.rpm "$testing_repo/"
+          createrepo_c --database --update "$testing_repo"
+          for channel in main testing; do
+            metadata="build/site/packages/$channel/x86_64/repodata/repomd.xml"
+            gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
+              --output "$metadata.asc" "$metadata"
+          done
+          test "$(find build/site/packages/testing/x86_64 -maxdepth 1 -name 'veyra-shell-tools-*.rpm' | wc -l)" -eq 2
+          test -s build/site/packages/testing/x86_64/veyra-broken-extension-0.1.0-1.fc44.x86_64.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veyra-vpkg-image-fixture
+          path: build/site/
+          if-no-files-found: error
+          retention-days: 1
+
   build:
+    needs: vpkg-image-fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: veyra-vpkg-image-fixture
+          path: build/vpkg-site
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -107,6 +209,7 @@ jobs:
             --image mkosi.output/veyra-next.raw \
             --current-version "$version" \
             --transfer-dir mkosi.extra/usr/lib/sysupdate.d \
+            --vpkg-test-repo build/vpkg-site \
             --fingerprint "$fingerprint" \
             --ovmf-code "$ovmf_code" \
             --ovmf-vars "$ovmf_vars" \

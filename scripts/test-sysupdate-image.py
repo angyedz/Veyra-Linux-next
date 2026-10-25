@@ -236,6 +236,7 @@ def main() -> int:
     parser.add_argument("--image", required=True, type=pathlib.Path)
     parser.add_argument("--current-version", required=True)
     parser.add_argument("--transfer-dir", required=True, type=pathlib.Path)
+    parser.add_argument("--vpkg-test-repo", type=pathlib.Path)
     parser.add_argument("--fingerprint", required=True)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--sudo-sysupdate", action="store_true")
@@ -269,6 +270,14 @@ def main() -> int:
             source = pathlib.Path(temporary)
             staged_image = source / "veyra-ab-test.raw"
             run(["cp", "--reflink=auto", "--sparse=always", str(image), str(staged_image)])
+            if args.vpkg_test_repo:
+                prepare_vpkg = pathlib.Path(__file__).with_name("prepare-vpkg-image-test.py")
+                run([
+                    sys.executable,
+                    str(prepare_vpkg),
+                    "--image", str(staged_image),
+                    "--repository", str(args.vpkg_test_repo.resolve()),
+                ])
             root_raw = source / "root.raw"
             verity_raw = source / "verity.raw"
             root_hash_path = source / "roothash"
@@ -361,6 +370,8 @@ def main() -> int:
             ]
             if args.qemu_data_dir:
                 boot_command.extend(["--qemu-data-dir", str(args.qemu_data_dir.resolve())])
+            if args.vpkg_test_repo:
+                boot_command.append("--expect-vpkg-test")
             run(boot_command)
 
         print(f"Signed sysupdate staged and booted Veyra {version} in the inactive A/B slot.")
