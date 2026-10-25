@@ -155,8 +155,7 @@ def main() -> int:
             successful_markers = [
                 f"roothash={args.roothash}",
                 "Reached target graphical.target",
-                "Reached target boot-complete.target",
-                "Current Boot Loader Entry as Good",
+                "VEYRA_BOOT_BLESS_CI_PASS",
             ]
             if args.expect_vpkg_test:
                 successful_markers.append("VEYRA_VPKG_CI_PASS")
@@ -177,7 +176,7 @@ def main() -> int:
             if stable_entry.lower() not in listing.lower():
                 raise RuntimeError("systemd-boot did not bless the successful trial UKI")
             print(f"Booted signed update {args.version} from the inactive slot and observed dm-verity.", flush=True)
-            print("systemd reached graphical.target and boot-complete.target, then blessed the UKI.", flush=True)
+            print("systemd reached graphical.target, completed boot health checks, and blessed the UKI.", flush=True)
             if args.expect_vpkg_test:
                 print("The signed vpkg install, upgrade and remove test passed inside Veyra.", flush=True)
 
