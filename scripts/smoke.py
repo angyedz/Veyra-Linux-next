@@ -340,6 +340,19 @@ def main() -> int:
         return fail("the built GPT layout must be checked in CI")
     if not (ROOT / "scripts/test-ab-boot.py").is_file():
         return fail("CI must boot a staged A/B update and exercise boot-count rollback")
+    update_image_test = ROOT / "scripts/test-sysupdate-image.py"
+    if not update_image_test.is_file():
+        return fail("CI must create the signed A/B test update")
+    update_image_content = update_image_test.read_text(encoding="utf-8")
+    for expected in (
+        "def add_serial_to_initial_uki(",
+        '"console=ttyS0,115200n8"',
+        '"systemd.show_status=1"',
+        '"systemd.log_target=console"',
+        "add_serial_to_initial_uki(staged_image)",
+    ):
+        if expected not in update_image_content:
+            return fail(f"the disposable initial UKI must expose test boot markers over serial: {expected!r}")
     update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
     if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
         return fail("the image must install the veyra-update command")
