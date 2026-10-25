@@ -52,7 +52,43 @@ repo_gpgcheck=1
 gpgkey=file://$key
 EOF
 
+# Empty RPM Fusion definitions let package discovery exercise its normal
+# source selection without contacting public mirrors in this isolated test.
+rpmfusion_fixture=/var/cache/veyra/vpkg-ci-empty-rpmfusion
+mkdir -p "$rpmfusion_fixture"
+createrepo_c --database "$rpmfusion_fixture"
+cat > /etc/yum.repos.d/rpmfusion-ci.repo <<EOF
+[rpmfusion-free]
+name=Empty RPM Fusion free package CI fixture
+baseurl=file://$rpmfusion_fixture/
+enabled=1
+gpgcheck=0
+repo_gpgcheck=0
+
+[rpmfusion-free-updates]
+name=Empty RPM Fusion free updates package CI fixture
+baseurl=file://$rpmfusion_fixture/
+enabled=1
+gpgcheck=0
+repo_gpgcheck=0
+
+[rpmfusion-nonfree]
+name=Empty RPM Fusion nonfree package CI fixture
+baseurl=file://$rpmfusion_fixture/
+enabled=1
+gpgcheck=0
+repo_gpgcheck=0
+
+[rpmfusion-nonfree-updates]
+name=Empty RPM Fusion nonfree updates package CI fixture
+baseurl=file://$rpmfusion_fixture/
+enabled=1
+gpgcheck=0
+repo_gpgcheck=0
+EOF
+
 mkdir -p "$install_root" /run/veyra-vpkg-ci /etc/extensions
+install -D -m 0644 "$key" /usr/share/veyra/RPM-GPG-KEY-VEYRA
 rpm --import "$key"
 rpm --root "$install_root" --initdb
 rpm --root "$install_root" --import "$key"

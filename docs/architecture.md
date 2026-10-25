@@ -65,9 +65,25 @@ The image recipe keeps `/etc`, `/var` and `/home` on writable partitions outside
 
 The A/B image carries Veyra's selected Fedora kernel. Installing a custom kernel is outside the current product scope; `vpkg` does not provide this operation, and A/B updates replace the kernel with the version in the new image. A standalone UKI copied to EFI is unmanaged and may no longer match the system's modules.
 
-## Recovery and developer use — not implemented
+## Recovery and developer use — design in progress
 
-Recovery should boot independently of the installed system, offer logs and a rescue shell, and allow selecting a known-good deployment. Developer Mode should build/test a separate Veyra image and boot it through the same explicit trial process; normal app use must not weaken the boot trust policy.
+Recovery must boot independently of the installed system, offer logs and a
+rescue shell, and allow selecting a known-good deployment. Developer Mode is
+an opt-in mutable mode for the installed host, separate from Vforge's isolated
+development environments. On Fedora 44, systemd 259's `systemd-sysext`
+`Mutable=yes` support is a practical starting point: writes to merged `/usr`
+and `/opt` are routed to persistent state under
+`/var/lib/extensions.mutable/`, while the original EROFS + dm-verity slot stays
+unchanged. See the [Developer Mode design](developer-mode.md).
+
+While this mode is active, Veyra's system-update commands must refuse to stage
+or boot A/B updates. Enabling it must also refuse a pending trial update. The
+desktop and command line must warn that mutable files are outside dm-verity
+and that package, driver, boot or service changes can break the system. A
+Recovery path must be able to boot without the mutable layer and either
+preserve it for repair or reset it before normal A/B updates resume. This
+feature is not implemented yet and needs Fedora VM tests for enable/disable,
+RPM changes, recovery and update blocking.
 
 ## Acceptance boundary
 

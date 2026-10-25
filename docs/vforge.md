@@ -65,6 +65,10 @@ project source tree. Containers share the host kernel; Vforge is a development
 environment boundary, not a virtual machine or a substitute for the OS update
 and recovery security model.
 
+Vforge is separate from the host's Developer Mode. It remains the normal way
+to create a mutable development environment without changing Veyra's system
+files or disabling A/B updates.
+
 The first implementation still needs a precise command contract for image
 selection, image upgrades, persistent storage, network access, project mounts
 and backup/restore. These examples describe the intended behavior; Vforge is
