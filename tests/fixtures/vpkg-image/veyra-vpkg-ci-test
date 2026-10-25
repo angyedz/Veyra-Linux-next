@@ -6,6 +6,19 @@ repo=/var/lib/veyra/vpkg-ci-repo
 marker="persistent state created before the A/B update"
 complete=/var/lib/veyra/vpkg-ci-complete
 
+assert_extension_active() {
+    local name="$1" status
+    if ! status="$(systemd-sysext status)"; then
+        echo "systemd-sysext status failed while checking $name." >&2
+        return 1
+    fi
+    if [[ "$status" != *"$name"* ]]; then
+        echo "Expected system extension $name to remain active; status was:" >&2
+        printf '%s\n' "$status" >&2
+        return 1
+    fi
+}
+
 grep -Fxq "$marker" /etc/veyra/vpkg-ci-persisted
 grep -Fxq "$marker" /var/lib/veyra/vpkg-ci-persisted
 grep -Fxq "$marker" /home/.veyra-vpkg-ci-persisted
@@ -39,7 +52,7 @@ installed="$(rpm --root "$root" -q --qf '%{VERSION}' veyra-shell-tools)"
 test "$installed" = "0.1.0"
 command -v fzf >/dev/null
 command -v jq >/dev/null
-systemd-sysext status | grep -Fq veyra-shell-tools
+assert_extension_active veyra-shell-tools
 echo "Veyra vpkg VM test: signed install activated through systemd-sysext"
 
 failure_log=/var/lib/veyra/vpkg-ci-incompatible-extension.log
@@ -58,7 +71,7 @@ if [[ -e /etc/extensions/veyra-incompatible-extension.raw || -L /etc/extensions/
     echo "vpkg left the incompatible extension symlink after rollback." >&2
     exit 1
 fi
-systemd-sysext status | grep -Fq veyra-shell-tools
+assert_extension_active veyra-shell-tools
 echo "Veyra vpkg VM test: incompatible system-extension level triggered an RPM rollback"
 
 # The initial signed repository has only v0.1.0. Switch to the separately
@@ -68,7 +81,7 @@ vpkg upgrade
 upgraded="$(rpm --root "$root" -q --qf '%{VERSION}' veyra-shell-tools)"
 test "$upgraded" = "0.2.0"
 command -v fzf >/dev/null
-systemd-sysext status | grep -Fq veyra-shell-tools
+assert_extension_active veyra-shell-tools
 echo "Veyra vpkg VM test: signed upgrade activated through systemd-sysext"
 
 failure_log=/var/lib/veyra/vpkg-ci-invalid-extension.log
@@ -88,7 +101,7 @@ if [[ -e /etc/extensions/veyra-broken-extension.raw || -L /etc/extensions/veyra-
     exit 1
 fi
 command -v fzf >/dev/null
-systemd-sysext status | grep -Fq veyra-shell-tools
+assert_extension_active veyra-shell-tools
 echo "Veyra vpkg VM test: real systemd-sysext failure triggered an RPM rollback"
 
 vpkg remove veyra-shell-tools
