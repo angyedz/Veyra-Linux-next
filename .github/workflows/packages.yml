@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install RPM repository build tools
-        run: dnf5 install --assumeyes createrepo_c dnf5-plugins gnupg2 rpm-build rpm-sign squashfs-tools
+        run: dnf5 install --assumeyes createrepo_c dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
 
       - name: Check package-manager safety rules
         run: python3 -m unittest discover --start-directory tests --pattern 'test_*.py'

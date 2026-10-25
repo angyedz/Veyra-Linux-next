@@ -76,6 +76,18 @@ def parse_release() -> str:
     raise RuntimeError("Could not read Fedora release from mkosi.conf.")
 
 
+def package_list(channel: str) -> list[str]:
+    manifest = ROOT / "packages" / channel / "packages.list"
+    names = [
+        line.strip()
+        for line in manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if any(not name.startswith("veyra-") for name in names):
+        raise RuntimeError(f"The {channel} channel may list only Veyra package names.")
+    return names
+
+
 def copy_extension_files(
     root: Path, extension_root: Path, new_packages: list[str], base_files: set[str]
 ) -> None:
@@ -119,6 +131,87 @@ def copy_extension_files(
         raise RuntimeError("The extension package set produced no files under /usr or /opt.")
 
 
+def build_extension_rpm(name: str, release: str, output: Path, work: Path) -> Path:
+    package_manifest = PACKAGE_SOURCES / f"{name}.packages"
+    spec = PACKAGE_SOURCES / f"{name}.spec"
+    if not package_manifest.is_file() or not spec.is_file():
+        raise RuntimeError(f"Package {name} needs both {package_manifest.name} and {spec.name}.")
+
+    package_names = [
+        line.strip()
+        for line in package_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not package_names:
+        raise RuntimeError(f"The {name} extension has no Fedora package list.")
+
+    package_work = work / name
+    root = package_work / "root"
+    extension_root = package_work / "extension"
+    topdir = package_work / "rpmbuild"
+    for directory in (
+        root, extension_root, topdir / "BUILD", topdir / "RPMS",
+        topdir / "SOURCES", topdir / "SPECS", topdir / "SRPMS",
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    dnf_args = [
+        "dnf5",
+        "--use-host-config",
+        "--installroot=" + str(root),
+        "--releasever=" + release,
+        "--forcearch=x86_64",
+        "--setopt=install_weak_deps=False",
+        "--setopt=tsflags=nodocs",
+        "--assumeyes",
+        "install",
+    ]
+    run([*dnf_args, *package_set_from_mkosi()])
+    base_packages = installed_packages(root)
+    base_files = installed_files(root)
+
+    run([*dnf_args, *package_names])
+    final_packages = installed_packages(root)
+    changed_base = [
+        package for package, nevra in base_packages.items()
+        if final_packages.get(package) != nevra
+    ]
+    if changed_base:
+        raise RuntimeError(
+            f"Extension {name} dependencies would change base packages: "
+            + ", ".join(changed_base)
+            + ". Update the OS image first, then rebuild the extension."
+        )
+    new_packages = sorted(
+        nevra for package, nevra in final_packages.items() if package not in base_packages
+    )
+    copy_extension_files(root, extension_root, new_packages, base_files)
+
+    release_metadata = extension_root / f"usr/lib/extension-release.d/extension-release.{name}"
+    release_metadata.parent.mkdir(parents=True, exist_ok=True)
+    release_metadata.write_text(f"ID=fedora\nVERSION_ID={release}\n", encoding="utf-8")
+
+    raw_image = topdir / f"SOURCES/{name}.raw"
+    run(["mksquashfs", str(extension_root), str(raw_image), "-noappend", "-all-root", "-no-progress"])
+    run([
+        "rpmbuild", "-bb", str(spec),
+        "--define", f"_topdir {topdir}",
+        "--define", f"_sourcedir {topdir / 'SOURCES'}",
+        "--define", "_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm",
+    ])
+
+    built = list((topdir / "RPMS/x86_64").glob("*.rpm"))
+    if len(built) != 1:
+        raise RuntimeError(f"Expected one RPM from {spec.name}, found {len(built)}.")
+    output.mkdir(parents=True, exist_ok=True)
+    for stale in output.glob(f"{name}-*.rpm"):
+        stale.unlink()
+    destination = output / built[0].name
+    shutil.copy2(built[0], destination)
+    print(f"Built {destination}.")
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--channel", choices=("main", "testing"), required=True)
@@ -126,15 +219,7 @@ def main() -> int:
     arguments = parser.parse_args()
 
     release = parse_release()
-    package_names = (PACKAGE_SOURCES / "veyra-shell-tools.packages").read_text(
-        encoding="utf-8"
-    ).splitlines()
-    package_names = [
-        line.strip() for line in package_names
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    if not package_names:
-        raise RuntimeError("The shell-tools extension has no Fedora package list.")
+    packages = package_list(arguments.channel)
 
     required_commands = ("dnf5", "rpm", "rpmbuild", "mksquashfs")
     missing = [command for command in required_commands if shutil.which(command) is None]
@@ -143,70 +228,12 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="veyra-extension-build-") as temporary:
         work = Path(temporary)
-        root = work / "root"
-        extension_root = work / "extension"
-        topdir = work / "rpmbuild"
-        for directory in (
-            root, extension_root, topdir / "BUILD", topdir / "RPMS",
-            topdir / "SOURCES", topdir / "SPECS", topdir / "SRPMS",
-        ):
-            directory.mkdir(parents=True, exist_ok=True)
-
-        dnf_args = [
-            "dnf5",
-            "--use-host-config",
-            "--installroot=" + str(root),
-            "--releasever=" + release,
-            "--forcearch=x86_64",
-            "--setopt=install_weak_deps=False",
-            "--setopt=tsflags=nodocs",
-            "--assumeyes",
-            "install",
-        ]
-        run([*dnf_args, *package_set_from_mkosi()])
-        base_packages = installed_packages(root)
-        base_files = installed_files(root)
-
-        run([*dnf_args, *package_names])
-        final_packages = installed_packages(root)
-        changed_base = [
-            name for name, nevra in base_packages.items()
-            if final_packages.get(name) != nevra
-        ]
-        if changed_base:
-            raise RuntimeError(
-                "Extension dependencies would change base packages: "
-                + ", ".join(changed_base)
-                + ". Update the OS image first, then rebuild the extension."
-            )
-        new_packages = sorted(
-            nevra for name, nevra in final_packages.items() if name not in base_packages
-        )
-        copy_extension_files(root, extension_root, new_packages, base_files)
-
-        release_metadata = extension_root / "usr/lib/extension-release.d/extension-release.veyra-shell-tools"
-        release_metadata.parent.mkdir(parents=True, exist_ok=True)
-        release_metadata.write_text(f"ID=fedora\nVERSION_ID={release}\n", encoding="utf-8")
-
-        raw_image = topdir / "SOURCES/veyra-shell-tools.raw"
-        run(["mksquashfs", str(extension_root), str(raw_image), "-noappend", "-all-root", "-no-progress"])
-        spec = PACKAGE_SOURCES / "veyra-shell-tools.spec"
-        run([
-            "rpmbuild", "-bb", str(spec),
-            "--define", f"_topdir {topdir}",
-            "--define", f"_sourcedir {topdir / 'SOURCES'}",
-            "--define", "_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm",
-        ])
-
-        built = list((topdir / "RPMS/x86_64").glob("*.rpm"))
-        if len(built) != 1:
-            raise RuntimeError(f"Expected one RPM from the shell-tools spec, found {len(built)}.")
-        arguments.output.mkdir(parents=True, exist_ok=True)
-        for stale in arguments.output.glob("veyra-shell-tools-*.rpm"):
-            stale.unlink()
-        destination = arguments.output / built[0].name
-        shutil.copy2(built[0], destination)
-        print(f"Built {destination} for the {arguments.channel} package channel.")
+        for name in packages:
+            if not name.startswith("veyra-"):
+                raise RuntimeError(f"Refusing non-Veyra package source: {name}")
+            build_extension_rpm(name, release, arguments.output, work)
+    if not packages:
+        print(f"The {arguments.channel} channel manifest is empty; no RPMs were built.")
     return 0
 
 
