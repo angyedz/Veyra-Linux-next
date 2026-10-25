@@ -26,6 +26,7 @@ class PrepareVpkgImageTests(unittest.TestCase):
             Path("mkosi.extra/usr/lib/sysupdate.d/10-root-verity.transfer"),
             Path("mkosi.extra/usr/lib/sysupdate.d/20-root.transfer"),
             Path("mkosi.extra/usr/lib/sysupdate.d/99-uki.transfer"),
+            Path("mkosi.images/initrd/mkosi.extra/usr/libexec/veyra-vpkg-initrd.py"),
         }
         sources = set(prepare.unit_test_sources())
         self.assertTrue(required <= sources)
