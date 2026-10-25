@@ -135,14 +135,38 @@ blocks `enter`/`start` until `vforge upgrade` is run. Upgrade makes a snapshot,
 temporarily connects the container to the bridge to run `dnf upgrade`, and
 restores the checkpoint if that operation fails.
 
-This is a deliberately bounded integrated slice, not the full lower-layer
-model in the master specification: only `/usr` and the RPM database use Veyra
-lowers. The container's Fedora 44 `/etc`, `/var`, `/bin`, `/lib` and other root
-paths are not a filtered view of Veyra. Host `/etc` is not exposed because it
-contains host secrets and mutable machine configuration. A filtered `/etc`
-generation-specific lower and a coherent whole-root Veyra runtime remain
-unimplemented; do not claim complete 6.1/6.2 integration until that boundary
-is designed and tested.
+This is a deliberately bounded prototype, not the integrated-root model in the
+master specification: environments are created from
+`registry.fedoraproject.org/fedora:44`; only Veyra `/usr` and the host RPM
+database are mounted over that Fedora root. The container's Fedora 44 `/etc`,
+`/var`, `/bin`, `/lib` and other root paths are not a filtered view of Veyra.
+Host `/etc` is not exposed because it contains host secrets and mutable machine
+configuration. A Veyra-root-derived base, a filtered `/etc` lower and a
+coherent whole-root CoW runtime remain unimplemented; do not claim complete
+6.1/6.2 integration until that boundary is designed and tested.
+
+## Required integrated-root direction
+
+The owner has clarified that an integrated environment must inherit the Veyra
+system base and provide `vpkg` inside the environment. The current Fedora 44
+root plus two Veyra mounts does not satisfy that requirement. The CLI currently
+tells users to install packages with DNF; `vforge upgrade` also runs the DNF
+CLI. These are implementation gaps, not the target behavior.
+
+Podman may remain the rootless OCI/container runtime, but using Podman does not
+itself provide a Veyra lower layer. The target environment must use an immutable
+Veyra runtime root identified by its deployment identity, with a private
+writable CoW layer for the environment. It must not expose mutable host `/etc`
+or host `/var` state. `vpkg` must resolve and apply package transactions to the
+environment's own root/RPM database and state, without writing host Veyra
+generations or relying on the DNF CLI. Vforge must retain the existing explicit
+permission model and tie each environment to the exact Veyra base it uses.
+
+Implementation choices for constructing and sharing that immutable runtime
+root remain open. Any candidate must be checked in QEMU for package installation
+through `vpkg`, full-root write isolation, persistence, project storage under
+`.vforge`, snapshot/rollback and compatibility after a Veyra OTA. Until those
+checks pass, describe the current code as a partial Fedora-based prototype.
 
 Integrated snapshots commit the container writable layer and freeze the
 current Veyra /usr and RPM database upper directories by same-store renames.
