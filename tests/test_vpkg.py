@@ -19,6 +19,21 @@ vpkg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vpkg)
 
 
+def running_in_qemu_vm() -> bool:
+    try:
+        result = subprocess.run(
+            ["systemd-detect-virt", "--vm"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+@unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
 class VpkgPolicyTests(unittest.TestCase):
     def test_prepare_for_empty_intents_returns_ready_without_creating_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -97,11 +112,12 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
                 patch.object(vpkg, "require_root"),
                 patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
-                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_deployment_roothash", return_value="b" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.2.2"),
                 patch.object(vpkg, "load_user_app_intents", return_value=[]),
             ):
-                vpkg.bind_generation("b" * 64, "none", "1.2.3")
-            binding = json.loads((mapping_dir / f"{'b' * 64}.json").read_text(encoding="utf-8"))
+                vpkg.bind_generation("b" * 64, "1.2.3", "none")
+            binding = json.loads((mapping_dir / f"{'b' * 64}--1.2.3.json").read_text(encoding="utf-8"))
             pending = json.loads(marker.read_text(encoding="utf-8"))
             self.assertEqual(binding["generation"], None)
             self.assertEqual(binding["requests"], [])
@@ -132,12 +148,69 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "require_root"),
                 patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
                 patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.2.2"),
                 patch.object(vpkg, "load_user_app_intents", return_value=[]),
             ):
                 with self.assertRaisesRegex(vpkg.VpkgError, "intents are stale"):
-                    vpkg.bind_generation("b" * 64, str(candidate), "1.2.3")
+                    vpkg.bind_generation("b" * 64, "1.2.3", str(candidate))
             self.assertFalse(marker.exists())
-            self.assertFalse((root / "deployments" / f"{'b' * 64}.json").exists())
+            self.assertFalse((root / "deployments" / f"{'b' * 64}--1.2.3.json").exists())
+
+    def test_same_roothash_different_versions_selects_distinct_app_generations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            mapping_dir = root / "deployments"
+            generations = []
+            for version in ("1.0.0", "1.0.1"):
+                generation = layer_dir / f"generation-{version}"
+                generation.mkdir()
+                (generation / "manifest.json").write_text(
+                    json.dumps({
+                        "schema": 1,
+                        "base_roothash": "c" * 64,
+                        "requests": [],
+                        "installed": {"marker": version},
+                    }),
+                    encoding="utf-8",
+                )
+                generations.append(generation)
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "DEPLOYMENT_BINDING_DIR", mapping_dir),
+                patch.object(vpkg, "USER_APP_INTENTS", root / "intents.json"),
+                patch.object(vpkg, "set_user_app_current") as select_current,
+                patch.object(vpkg, "sync_user_app_extension_link"),
+                patch.object(vpkg, "write_user_app_intents"),
+            ):
+                vpkg.write_deployment_binding("c" * 64, "1.0.0", generations[0], [])
+                vpkg.write_deployment_binding("c" * 64, "1.0.1", generations[1], [])
+                vpkg.select_deployment_generation("c" * 64, "1.0.1")
+            self.assertEqual(select_current.call_args.args[0], generations[1])
+            self.assertTrue((mapping_dir / f"{'c' * 64}--1.0.0.json").is_file())
+            self.assertTrue((mapping_dir / f"{'c' * 64}--1.0.1.json").is_file())
+
+    def test_cancel_pending_requires_exact_pair_and_rejects_cancelling_running_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "pending.json"
+            marker.write_text(
+                json.dumps({"schema": 1, "target_roothash": "d" * 64, "version": "2.0.0"}),
+                encoding="utf-8",
+            )
+            with patch.object(vpkg, "PENDING_UPDATE_FILE", marker):
+                with self.assertRaisesRegex(vpkg.VpkgError, "does not match"):
+                    vpkg.cancel_pending_update("d" * 64, "2.0.1")
+                with (
+                    patch.object(vpkg, "running_deployment_roothash", return_value="d" * 64),
+                    patch.object(vpkg, "running_uki_version", return_value="2.0.0"),
+                ):
+                    with self.assertRaisesRegex(vpkg.VpkgError, "Cannot cancel"):
+                        vpkg.cancel_pending_update("d" * 64, "2.0.0")
+                self.assertTrue(marker.exists())
+                with patch.object(vpkg, "running_deployment_roothash", return_value="e" * 64):
+                    vpkg.cancel_pending_update("d" * 64, "2.0.0")
+            self.assertFalse(marker.exists())
 
     def test_upstream_package_policy_blocks_kernel_init_boot_and_driver_packages(self) -> None:
         for name in (
