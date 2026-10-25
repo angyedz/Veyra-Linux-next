@@ -14,7 +14,11 @@ if [[ ! "$sysext_level" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
     echo "Invalid Veyra system-extension level: $sysext_level" >&2
     exit 1
 fi
-os_release=/usr/lib/os-release
+os_release="$(readlink -f /usr/lib/os-release)"
+if [[ -z "$os_release" || ! -f "$os_release" ]]; then
+    echo "Cannot resolve the base system os-release file." >&2
+    exit 1
+fi
 level_count="$(grep -c '^SYSEXT_LEVEL=' "$os_release" || true)"
 if [[ "$level_count" -gt 1 ]]; then
     echo "The base os-release contains more than one SYSEXT_LEVEL field." >&2
