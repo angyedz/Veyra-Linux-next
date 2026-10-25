@@ -100,6 +100,56 @@ test -L "$extension_link"
 test "$(readlink -f "$extension_link")" = "$(realpath "$extension_image")"
 PATH="$shim:$PATH" "$vpkg" list | grep -Fq veyra-shell-tools
 PATH="$shim:$PATH" "$vpkg" info veyra-shell-tools | grep -Fq veyra-shell-tools
+
+# Add a second, signed version to the testing repository to exercise a real
+# DNF5 update transaction rather than only the already-up-to-date code path.
+upgrade_build=/run/veyra-vpkg-ci/upgrade-rpmbuild
+mkdir -p "$upgrade_build"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+cp "$extension_image" "$upgrade_build/SOURCES/veyra-shell-tools.raw"
+cat > "$upgrade_build/SPECS/veyra-shell-tools.spec" <<'EOF'
+Name:           veyra-shell-tools
+Version:        0.2.0
+Release:        1.fc44
+Summary:        Veyra package transaction integration fixture
+License:        GPL-2.0-or-later AND MIT AND Unlicense
+BuildArch:      x86_64
+Source0:        veyra-shell-tools.raw
+
+%description
+Veyra package transaction integration fixture.
+
+%prep
+
+%build
+
+%install
+install -D -m 0644 %{SOURCE0} %{buildroot}/var/lib/extensions/veyra-shell-tools.raw
+
+%files
+/var/lib/extensions/veyra-shell-tools.raw
+EOF
+rpmbuild -bb "$upgrade_build/SPECS/veyra-shell-tools.spec" \
+  --define "_topdir $upgrade_build" \
+  --define "_sourcedir $upgrade_build/SOURCES" \
+  --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+upgrade_rpm="$(find "$upgrade_build/RPMS" -type f -name '*.rpm' -print -quit)"
+test -s "$upgrade_rpm"
+fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+test -n "$fingerprint"
+rpmsign --define "_gpg_name $fingerprint" --addsign "$upgrade_rpm"
+testing_repo="$site/packages/testing/x86_64"
+cp "$upgrade_rpm" "$testing_repo/"
+createrepo_c --database --update "$testing_repo"
+gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
+  --output "$testing_repo/repodata/repomd.xml.asc" \
+  "$testing_repo/repodata/repomd.xml"
+rm -rf /var/cache/veyra/vpkg
+PATH="$shim:$PATH" "$vpkg" upgrade
+installed_version="$(rpm --root "$install_root" -q --qf '%{VERSION}' veyra-shell-tools)"
+if [[ "$installed_version" != "0.2.0" ]]; then
+  echo "vpkg did not upgrade veyra-shell-tools to 0.2.0 (found $installed_version)." >&2
+  exit 1
+fi
 PATH="$shim:$PATH" "$vpkg" upgrade
 
 "$vpkg" channel main
@@ -124,4 +174,4 @@ if rpm -q veyra-shell-tools >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "vpkg install, channel isolation, no-op upgrade, remove, and activation-failure rollback passed."
+echo "vpkg install, channel isolation, real upgrade, no-op upgrade, remove, and activation-failure rollback passed."
