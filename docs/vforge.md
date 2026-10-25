@@ -193,9 +193,11 @@ service mounts the source checkout read-only through QEMU 9p and invokes
 KVM acceleration, writes serial output and the final pass/fail marker under
 the run directory, then powers the guest off. No Vforge command runs on the
 host. The test guest needs outbound network access to pull the Fedora 44 image
-and package. This runner is source-tested; its first Fedora 44 guest execution
-is still pending, so source-level or preparation tests do not prove the
-OverlayFS lifecycle or Veyra-generation integration.
+and package. In its first Fedora 44 guest attempt, systemd firstboot presets
+removed the injected test unit, so the Vforge lifecycle never ran. The
+disposable fixture now seeds a unique machine ID before boot; its retry is
+pending. Source-level or preparation tests do not prove the OverlayFS lifecycle
+or Veyra-generation integration.
 
 Vforge also relies on Podman defaults for user namespaces, seccomp and SELinux
 policy. It does not yet audit every global Podman hook/configuration, expose
