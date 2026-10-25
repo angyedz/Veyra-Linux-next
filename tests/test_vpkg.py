@@ -48,7 +48,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
-                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "absent", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "digests signatures OK", ""),
@@ -79,6 +79,22 @@ class VpkgPolicyTests(unittest.TestCase):
             ]
             with patch.object(vpkg, "run", side_effect=responses):
                 with self.assertRaisesRegex(vpkg.VpkgError, "executable RPM scripts"):
+                    vpkg.inspect_extension_rpms(Path(temporary))
+
+    def test_extension_rpm_policy_rejects_transaction_file_triggers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            rpm_file = Path(temporary) / "veyra-bad.rpm"
+            rpm_file.touch()
+            responses = [
+                subprocess.CompletedProcess([], 0, "veyra-bad", ""),
+                subprocess.CompletedProcess([], 0, "/var/lib/extensions/veyra-bad.raw\n", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "present", ""),
+            ]
+            with patch.object(vpkg, "run", side_effect=responses):
+                with self.assertRaisesRegex(vpkg.VpkgError, "transaction file triggers"):
                     vpkg.inspect_extension_rpms(Path(temporary))
 
     def test_sync_links_extension_from_var_installroot_and_ignores_imported_key(self) -> None:

@@ -234,6 +234,13 @@ def main() -> int:
         return fail("the initial UKI filename must use the same version as the root slot")
     if not (ROOT / "scripts/check-image.py").is_file():
         return fail("the built GPT layout must be checked in CI")
+    update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
+    if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
+        return fail("the image must install the veyra-update command")
+    update_client_content = update_client.read_text(encoding="utf-8")
+    for expected in ("check-new", "--no-pager update", "--no-pager pending", "systemd-sysupdate reboot"):
+        if expected not in update_client_content:
+            return fail(f"veyra-update must expose {expected!r}")
     boot_complete = ROOT / "mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra.conf"
     boot_complete_content = boot_complete.read_text(encoding="utf-8")
     for expected in ("Requires=graphical.target", "systemd-boot-check-no-failures.service", "After=graphical.target"):

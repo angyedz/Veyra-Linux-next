@@ -139,10 +139,19 @@ def inspect_extension_rpms(
                 f"{expected_payload[0]}. System files must be delivered by an A/B OS update."
             )
 
-        for option in ("--scripts", "--triggers", "--filetriggers", "--transfiletriggers"):
+        for option in ("--scripts", "--triggers", "--filetriggers"):
             result = run(["rpm", "-qp", option, str(rpm)], capture=True)
             if result.stdout.strip():
                 raise VpkgError(f"Refusing {name}: extension RPM contains executable RPM scripts.")
+        transaction_triggers = run(
+            [
+                "rpm", "-qp", "--qf",
+                "%|TRANSFILETRIGGERSCRIPTS?{present}:{absent}|", str(rpm),
+            ],
+            capture=True,
+        ).stdout.strip()
+        if transaction_triggers != "absent":
+            raise VpkgError(f"Refusing {name}: extension RPM contains transaction file triggers.")
         for option in ("--obsoletes", "--conflicts"):
             result = run(["rpm", "-qp", option, str(rpm)], capture=True)
             if result.stdout.strip():

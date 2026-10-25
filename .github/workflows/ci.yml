@@ -35,6 +35,8 @@ jobs:
             flatpak dnf5 dnf5-plugins gcc git cmake python3 nodejs22
           test -x /usr/lib/systemd/systemd-sysupdate
           test -x /usr/bin/vpkg
+          test -x /usr/bin/veyra-update
+          /usr/bin/veyra-update --help >/dev/null
           test -x /usr/bin/startplasma-wayland
           node --version
           test -s /usr/share/veyra/branding/veyra-logo.svg
