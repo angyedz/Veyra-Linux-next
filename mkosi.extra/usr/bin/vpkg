@@ -566,18 +566,34 @@ def current_user_app_requests() -> list[dict[str, str]]:
     return load_user_app_intents()
 
 
-def deployment_binding_path(roothash: str) -> Path:
+def validate_deployment_version(version: str) -> None:
+    if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
+        raise VpkgError("The deployment IMAGE_VERSION contains unsupported characters.")
+
+
+def deployment_binding_path(roothash: str, version: str) -> Path:
     if not ROOTHASH_RE.fullmatch(roothash):
         raise VpkgError("The deployment roothash must be 64 lowercase hexadecimal characters.")
-    return DEPLOYMENT_BINDING_DIR / f"{roothash}.json"
+    validate_deployment_version(version)
+    return DEPLOYMENT_BINDING_DIR / f"{roothash}--{version}.json"
 
 
-def load_deployment_binding(roothash: str) -> dict[str, object] | None:
-    path = deployment_binding_path(roothash)
+def load_deployment_binding(
+    roothash: str,
+    version: str,
+    *,
+    legacy: bool = False,
+) -> dict[str, object] | None:
+    deployment_binding_path(roothash, version)  # validate both identity components
+    path = DEPLOYMENT_BINDING_DIR / f"{roothash}.json" if legacy else deployment_binding_path(roothash, version)
     if not path.exists() and not path.is_symlink():
         return None
     value = read_json_object(path, "deployment binding")
-    if value.get("schema") != 1 or value.get("roothash") != roothash:
+    if (
+        value.get("schema") != 1
+        or value.get("roothash") != roothash
+        or (not legacy and value.get("version") != version)
+    ):
         raise VpkgError(f"The deployment binding for {roothash} is malformed.")
     requests = validate_user_app_requests(value.get("requests"))
     generation_value = value.get("generation")
@@ -591,9 +607,13 @@ def load_deployment_binding(roothash: str) -> dict[str, object] | None:
         if not generation.is_absolute() or generation.is_symlink() or not generation.is_dir():
             raise VpkgError("The deployment binding points to a missing or unsafe app generation.")
         try:
-            generation.resolve(strict=True).relative_to(USER_APP_LAYER_DIR.resolve(strict=True))
+            layer_dir = USER_APP_LAYER_DIR.resolve(strict=True)
+            resolved_generation = generation.resolve(strict=True)
+            resolved_generation.relative_to(layer_dir)
         except (OSError, ValueError) as error:
             raise VpkgError("The deployment binding points outside vpkg app-layer state.") from error
+        if resolved_generation.parent != layer_dir:
+            raise VpkgError("The deployment binding points outside the direct app-layers directory.")
         manifest = read_json_object(generation / "manifest.json", "bound app-layer manifest")
         if manifest.get("schema") != 1 or validate_user_app_requests(manifest.get("requests")) != requests:
             raise VpkgError("The deployment binding and app-layer manifest disagree.")
@@ -602,11 +622,12 @@ def load_deployment_binding(roothash: str) -> dict[str, object] | None:
             raise VpkgError("The bound app generation was resolved for a different base deployment.")
     else:
         raise VpkgError("The deployment binding has an invalid generation path.")
-    return {"generation": generation, "requests": requests, "roothash": roothash}
+    return {"generation": generation, "requests": requests, "roothash": roothash, "version": version}
 
 
 def write_deployment_binding(
     roothash: str,
+    version: str,
     generation: Path | None,
     requests: list[dict[str, str]],
     *,
@@ -632,15 +653,16 @@ def write_deployment_binding(
     elif validated:
         raise VpkgError("A non-empty package intent set requires a resolved generation.")
 
-    path = deployment_binding_path(roothash)
+    path = deployment_binding_path(roothash, version)
     new_value: dict[str, object] = {
         "schema": 1,
         "roothash": roothash,
+        "version": version,
         "generation": str(generation) if generation is not None else None,
         "requests": validated,
     }
     if path.exists() or path.is_symlink():
-        current = load_deployment_binding(roothash)
+        current = load_deployment_binding(roothash, version)
         if current is not None:
             current_generation = current["generation"]
             same_generation = current_generation == generation
@@ -653,10 +675,32 @@ def write_deployment_binding(
     return new_value
 
 
-def select_deployment_generation(roothash: str) -> None:
+def select_deployment_generation(roothash: str, version: str) -> None:
     if USER_APP_INTENTS.exists() or USER_APP_INTENTS.is_symlink():
         load_user_app_intents()  # malformed intent state must not be treated as empty
-    binding = load_deployment_binding(roothash)
+    binding = load_deployment_binding(roothash, version)
+    if binding is None:
+        # Upgrade the pre-pair schema on the first boot that observes this
+        # identity. Preserve the legacy record for other booted versions.
+        legacy = load_deployment_binding(roothash, version, legacy=True)
+        if legacy is not None:
+            legacy_generation = legacy["generation"]
+            if isinstance(legacy_generation, Path):
+                legacy_manifest = read_json_object(
+                    legacy_generation / "manifest.json", "legacy bound app-layer manifest"
+                )
+                base_roothash = legacy_manifest.get("base_roothash")
+                if base_roothash not in (None, roothash):
+                    raise VpkgError("The legacy app generation belongs to a different base deployment.")
+                if base_roothash is None:
+                    legacy_manifest["base_roothash"] = roothash
+                    atomic_write_json(legacy_generation / "manifest.json", legacy_manifest)
+            binding = write_deployment_binding(
+                roothash,
+                version,
+                legacy_generation if isinstance(legacy_generation, Path) else None,
+                legacy["requests"],
+            )
     if binding is None:
         generation = active_user_app_generation()
         requests = current_user_app_requests()
@@ -670,7 +714,7 @@ def select_deployment_generation(roothash: str) -> None:
             if base_roothash is None:
                 manifest["base_roothash"] = roothash
                 atomic_write_json(generation / "manifest.json", manifest)
-        binding = write_deployment_binding(roothash, generation, requests)
+        binding = write_deployment_binding(roothash, version, generation, requests)
 
     generation = binding["generation"]
     set_user_app_current(generation if isinstance(generation, Path) else None)
@@ -707,11 +751,11 @@ def complete_pending_update() -> None:
     durable_unlink(PENDING_UPDATE_FILE)
 
 
-def cancel_pending_update(roothash: str) -> None:
+def cancel_pending_update(roothash: str, version: str) -> None:
     pending = load_pending_update()
     if pending is None:
         return
-    if pending["target_roothash"] != roothash:
+    if pending["target_roothash"] != roothash or pending["version"] != version:
         raise VpkgError("The requested deployment does not match the pending OTA target.")
     if (
         running_deployment_roothash() == roothash
@@ -1235,13 +1279,14 @@ def commit_user_app_generation(
     generation: Path | None,
     requests: list[dict[str, str]],
     roothash: str,
+    version: str,
 ) -> None:
     previous = active_user_app_generation()
     previous_requests = load_user_app_intents()
     activate_user_app_generation(generation)
     try:
         write_user_app_intents(requests)
-        write_deployment_binding(roothash, generation, requests, replace_existing=True)
+        write_deployment_binding(roothash, version, generation, requests, replace_existing=True)
     except VpkgError as error:
         try:
             write_user_app_intents(previous_requests)
@@ -1285,8 +1330,9 @@ def set_user_app_pin(package: str, evr: str | None) -> None:
                 return
             request["pin"] = evr
         roothash = running_deployment_roothash()
+        version = running_uki_version()
         generation = build_user_app_generation(updated, {}, base_roothash=roothash)
-        commit_user_app_generation(generation, updated, roothash)
+        commit_user_app_generation(generation, updated, roothash, version)
         print(f"Updated {package} version pin.")
 
     with_lock(transaction)
@@ -1303,8 +1349,9 @@ def install_user_apps(specifications: list[str]) -> None:
             print("The requested app packages are already installed.")
             return
         roothash = running_deployment_roothash()
+        version = running_uki_version()
         generation = build_user_app_generation(requests, local_sources, base_roothash=roothash)
-        commit_user_app_generation(generation, requests, roothash)
+        commit_user_app_generation(generation, requests, roothash, version)
         print("LIVE transaction: activated as an additive vpkg-apps layer.")
         names = ", ".join(
             request["name"] for request in requests if request["kind"] == "repo"
@@ -1337,8 +1384,9 @@ def remove_user_apps(specifications: list[str]) -> None:
         if not removed:
             raise VpkgError("None of the requested packages was explicitly installed in the app layer.")
         roothash = running_deployment_roothash()
+        version = running_uki_version()
         generation = build_user_app_generation(remaining, {}, base_roothash=roothash) if remaining else None
-        commit_user_app_generation(generation, remaining, roothash)
+        commit_user_app_generation(generation, remaining, roothash, version)
         print("Removed app packages: " + ", ".join(request["name"] for request in removed))
 
     with_lock(transaction)
@@ -1350,8 +1398,9 @@ def upgrade_user_apps() -> bool:
     if not current:
         return False
     roothash = running_deployment_roothash()
+    version = running_uki_version()
     generation = build_user_app_generation(current, {}, base_roothash=roothash)
-    commit_user_app_generation(generation, current, roothash)
+    commit_user_app_generation(generation, current, roothash, version)
     print("Updated the Fedora/RPM Fusion app layer.")
     return True
 
@@ -1756,7 +1805,7 @@ def sync() -> None:
     require_root()
 
     def synchronize() -> None:
-        select_deployment_generation(running_deployment_roothash())
+        select_deployment_generation(running_deployment_roothash(), running_uki_version())
         sync_extension_links()
 
     with_lock(synchronize)
@@ -1805,15 +1854,14 @@ def prepare_for_base(base_root: Path, roothash: str, output: Path) -> dict[str, 
     }
 
 
-def bind_generation(roothash: str, generation_text: str, version: str) -> None:
+def bind_generation(roothash: str, version: str, generation_text: str) -> None:
     require_root()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
-        raise VpkgError("The pending deployment version contains unsupported characters.")
+    validate_deployment_version(version)
 
     def bind() -> None:
         require_no_pending_update()
-        if running_deployment_roothash() == roothash:
-            raise VpkgError("The OTA target roothash must differ from the running deployment.")
+        if running_deployment_roothash() == roothash and running_uki_version() == version:
+            raise VpkgError("The exact target deployment identity is already running.")
         requests = load_user_app_intents()
         generation = None if generation_text == "none" else Path(generation_text)
         if generation is not None:
@@ -1826,7 +1874,7 @@ def bind_generation(roothash: str, generation_text: str, version: str) -> None:
                 raise VpkgError("The candidate generation does not match the OTA target roothash.")
         elif requests:
             raise VpkgError("A non-empty package intent set requires a candidate generation.")
-        write_deployment_binding(roothash, generation, requests, replace_existing=True)
+        write_deployment_binding(roothash, version, generation, requests, replace_existing=True)
         mark_pending_update(roothash, version)
 
     with_lock(bind)
@@ -1837,9 +1885,9 @@ def complete_pending() -> None:
     with_lock(complete_pending_update)
 
 
-def cancel_pending(roothash: str) -> None:
+def cancel_pending(roothash: str, version: str) -> None:
     require_root()
-    with_lock(lambda: cancel_pending_update(roothash))
+    with_lock(lambda: cancel_pending_update(roothash, version))
 
 
 def run_prepare_for_base(arguments: argparse.Namespace) -> int:
@@ -1912,12 +1960,13 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--output", required=True, type=Path)
     bind = commands.add_parser("bind-generation", help=argparse.SUPPRESS)
     bind.add_argument("--roothash", required=True)
+    bind.add_argument("--version", required=True)
     bind.add_argument("--generation", required=True)
-    bind.add_argument("--pending-version", required=True)
     complete = commands.add_parser("complete-pending", help=argparse.SUPPRESS)
     complete.add_argument("--current", action="store_true", required=True)
     cancel = commands.add_parser("cancel-pending", help=argparse.SUPPRESS)
     cancel.add_argument("--roothash", required=True)
+    cancel.add_argument("--version", required=True)
     commands.add_parser("sync", help=argparse.SUPPRESS)
     commands.add_parser("check-extensions", help=argparse.SUPPRESS)
     return parser
@@ -1961,11 +2010,11 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.command == "prepare-for-base":
             return run_prepare_for_base(arguments)
         elif arguments.command == "bind-generation":
-            bind_generation(arguments.roothash, arguments.generation, arguments.pending_version)
+            bind_generation(arguments.roothash, arguments.version, arguments.generation)
         elif arguments.command == "complete-pending":
             complete_pending()
         elif arguments.command == "cancel-pending":
-            cancel_pending(arguments.roothash)
+            cancel_pending(arguments.roothash, arguments.version)
         elif arguments.command == "sync":
             sync()
         elif arguments.command == "check-extensions":
