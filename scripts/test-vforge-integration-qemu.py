@@ -99,6 +99,16 @@ def exhaust_store_until_enospc(root: pathlib.Path) -> pathlib.Path:
     return filler
 
 
+def require_enospc_probe(result: subprocess.CompletedProcess[str]) -> None:
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        raise RuntimeError("vforge exec probe command did not complete successfully")
+    if "VFORGE_ENOSPC_PROBE_EXECUTED" not in output:
+        raise RuntimeError("ENOSPC probe did not reach the guest shell")
+    if "no space left on device" not in output.lower():
+        raise RuntimeError("integrated system write did not fail with ENOSPC")
+
+
 def run(command: list[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -295,15 +305,17 @@ def main() -> int:
             filler = exhaust_store_until_enospc(data_root)
             try:
                 probe = f"/usr/share/vforge-enospc-{suffix}"
-                failed_write = run(
-                    ["vforge", "exec", name, "--", "/bin/sh", "-ec",
-                     f"dd if=/dev/zero of='{probe}' bs=1M count=64 status=none"],
+                probe_command = (
+                    f"if dd if=/dev/zero of='{probe}' bs=1M count=64 status=none 2>&1; then "
+                    "printf '%s\\n' VFORGE_ENOSPC_UNEXPECTED_SUCCESS; exit 1; "
+                    "else status=$?; fi; "
+                    "printf '%s\\n' VFORGE_ENOSPC_PROBE_EXECUTED; test \"$status\" -ne 0"
+                )
+                write_probe = run(
+                    ["vforge", "exec", name, "--", "/bin/sh", "-ec", probe_command],
                     capture=True, check=False,
                 )
-                if failed_write.returncode == 0 or "no space left on device" not in (
-                    (failed_write.stdout or "") + (failed_write.stderr or "")
-                ).lower():
-                    raise RuntimeError("an integrated write did not fail with ENOSPC at the configured cap")
+                require_enospc_probe(write_probe)
             finally:
                 filler.unlink(missing_ok=True)
             run(["vforge", "exec", name, "--", "/bin/rm", "-f", probe], check=False)
