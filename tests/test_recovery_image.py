@@ -22,7 +22,9 @@ class RecoveryUkiInstallTests(unittest.TestCase):
         init_script = ROOT / "mkosi.images/recovery/mkosi.extra/init"
         recovery_doc = (ROOT / "docs/recovery.md").read_text(encoding="utf-8")
 
-        self.assertIn("Release=44", recovery_config)
+        self.assertIn("Release=44", main_config)
+        self.assertNotIn("Distribution=", recovery_config)
+        self.assertNotIn("Release=", recovery_config)
         self.assertIn("Format=uki", recovery_config)
         self.assertIn("ImageId=veyra-recovery", recovery_config)
         self.assertIn("rdinit=/init", recovery_config)
