@@ -18,6 +18,19 @@ SPEC.loader.exec_module(prepare)
 
 
 class PrepareVpkgImageTests(unittest.TestCase):
+    def test_guest_test_bundle_contains_runtime_imports_and_update_definitions(self) -> None:
+        required = {
+            Path("mkosi.extra/usr/lib/veyra/veyra_repo.py"),
+            Path("mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"),
+            Path("mkosi.extra/usr/share/veyra/vpkg/protected-core.json"),
+            Path("mkosi.extra/usr/lib/sysupdate.d/10-root-verity.transfer"),
+            Path("mkosi.extra/usr/lib/sysupdate.d/20-root.transfer"),
+            Path("mkosi.extra/usr/lib/sysupdate.d/99-uki.transfer"),
+        }
+        sources = set(prepare.unit_test_sources())
+        self.assertTrue(required <= sources)
+        self.assertTrue(all((prepare.PROJECT_ROOT / path).is_file() for path in required))
+
     def test_upstream_repo_configs_are_read_and_removed_with_privileges(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo_directory = Path(temporary)
