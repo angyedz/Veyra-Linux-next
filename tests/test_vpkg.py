@@ -42,6 +42,7 @@ class VpkgPolicyTests(unittest.TestCase):
             payload = tree / "usr/bin/example"
             payload.parent.mkdir(parents=True)
             payload.write_text("original", encoding="utf-8")
+            vpkg.seal_user_app_tree(tree)
             manifest = {
                 "schema": 1,
                 "generation_id": generation.name,
@@ -50,7 +51,6 @@ class VpkgPolicyTests(unittest.TestCase):
                 "integrity": {"tree_sha256": vpkg.user_app_tree_digest(tree)},
             }
             (generation / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            vpkg.seal_user_app_tree(tree)
             vpkg.seal_user_app_generation(generation)
             vpkg.verify_user_app_generation(generation)
             payload.write_text("modified", encoding="utf-8")
@@ -89,6 +89,7 @@ class VpkgPolicyTests(unittest.TestCase):
             for generation in (previous, current):
                 tree = generation / "tree"
                 tree.mkdir(parents=True)
+                vpkg.seal_user_app_tree(tree)
             previous_manifest = {
                 "schema": 1,
                 "generation_id": previous.name,
@@ -110,7 +111,6 @@ class VpkgPolicyTests(unittest.TestCase):
             }
             (current / "manifest.json").write_text(json.dumps(current_manifest), encoding="utf-8")
             for generation in (previous, current):
-                vpkg.seal_user_app_tree(generation / "tree")
                 vpkg.seal_user_app_generation(generation)
             state_dir.mkdir()
             current_link = state_dir / "current"
