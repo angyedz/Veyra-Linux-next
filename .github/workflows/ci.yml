@@ -135,6 +135,12 @@ jobs:
             gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
               --output "$metadata.asc" "$metadata"
           done
+          upstream=build/site/local-upstream/x86_64
+          mkdir -p "$upstream"
+          dnf5 --repo=fedora download --resolve --alldeps --destdir="$upstream" htop
+          createrepo_c --database "$upstream"
+          test -s "$upstream/repodata/repomd.xml"
+          test -n "$(find "$upstream" -maxdepth 1 -name 'htop-*.rpm' -print -quit)"
           test "$(find build/site/packages/testing/x86_64 -maxdepth 1 -name 'veyra-shell-tools-*.rpm' | wc -l)" -eq 2
           test -s build/site/packages/testing/x86_64/veyra-broken-extension-0.1.0-1.fc44.x86_64.rpm
       - uses: actions/upload-artifact@v4

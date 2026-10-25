@@ -8,25 +8,27 @@ Veyra.
 
 ## Transaction boundary
 
-The initial `vpkg` prototype uses DNF5 to resolve Veyra package dependencies
-inside a separate installroot on the writable `/var` partition. This keeps both
-the RPM database and DNF5 transaction state away from Fedora's immutable
-`/usr/lib/sysimage` database. It accepts only signed packages named `veyra-*`,
-with no RPM scripts and with a payload consisting solely of a `.raw`
-system-extension image under the separate installroot's
-`/var/lib/extensions/`. It validates the complete downloaded transaction before
-applying it, selects the Veyra channel for Veyra packages, creates symlinks under
-`/etc/extensions`, refreshes `systemd-sysext`, and asks DNF5 history to undo the
-RPM transaction if the extension cannot be activated. This lets additive
-`/usr` and `/opt` content be activated without changing the base RPM database or
-rebooting.
+`vpkg` has two transaction paths. Veyra-maintained RPMs are signed wrappers
+around one `.raw` system-extension image and are installed in a separate DNF5
+installroot on writable `/var`. For Fedora and RPM Fusion applications,
+`vpkg` copies the base RPM database into a disposable DNF5 installroot, resolves
+and installs the requested RPM set there, then rejects any transaction that
+changes a base package. The resulting `/usr` and `/opt` payload becomes a
+persistent directory system extension named `vpkg-apps`; the running base RPM
+database remains unchanged. Veyra wrapper RPM transactions create symlinks under
+`/etc/extensions`; the app layer uses one generation pointer. Both refresh
+`systemd-sysext` and restore the previous active generation if activation
+fails.
 
 The image also configures Fedora's official `fedora` and `updates` repositories
 and RPM Fusion's free and nonfree repositories for package discovery and
 dependency resolution. RPM Fusion is an independent third-party source; its
-nonfree repository makes proprietary packages available. Fedora and RPM Fusion
-package names and local RPM files are not yet accepted by `vpkg install` in
-this prototype. Fedora's base package set is still composed into the A/B image.
+nonfree repository makes proprietary packages available. `vpkg install NAME`
+accepts exact package names from those repositories, and `vpkg install
+/path/to/package.rpm` accepts a local RPM signed by a key trusted by Fedora or
+RPM Fusion. The Veyra `main`/`testing` channel selection applies only to
+`veyra-*` packages. Fedora's base package set is still composed into the A/B
+image.
 The two RPM Fusion public keys are embedded in the image and their full
 fingerprints are checked into this source:
 
@@ -35,6 +37,14 @@ fingerprints are checked into this source:
 
 Base OS, kernel, bootloader, and other packages that change the system image
 are not installable through `vpkg`; those belong in a signed A/B system update.
+The app layer currently accepts only additive `/usr` and `/opt` payloads. It
+rejects base-file collisions, packages that change a base RPM record, protected
+kernel, graphics-driver, init, bootloader, RPM-database and firmware paths,
+setuid/setgid files, Linux file capabilities, special files, and all payloads
+outside `/usr` and `/opt`. Existing shared directories such as `/usr/bin` are
+allowed, but existing files cannot be replaced. RPMs that ship `/etc`
+configuration and local packages signed by third-party keys are not supported
+until Veyra has a configuration-extension design and explicit key enrollment.
 The repository RPM is a small wrapper around a version-compatible system
 extension image. Extension images are built for Fedora 44 in this prototype
 and must be rebuilt and tested when Veyra changes Fedora base versions. They

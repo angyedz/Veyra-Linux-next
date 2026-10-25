@@ -121,9 +121,15 @@ def main() -> int:
     for expected in (
         "--installroot=",
         "--resolve",
+        "user_package_dnf_prefix",
+        "--use-host-config",
+        "localpkg_gpgcheck=True",
         "systemd-sysext",
         "--installed-from-repo=veyra-main,veyra-testing",
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
+        "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
+        "BLOCKED_PACKAGE_PREFIXES",
+        "check_user_app_base_conflicts",
         "Refusing non-Veyra RPM",
         "System files must be delivered by an A/B OS update",
         "check_extensions_active",
@@ -182,6 +188,8 @@ def main() -> int:
     sysext_dropin = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf"
     if not sync_service.is_file() or not sysext_dropin.is_file():
         return fail("systemd-sysext must sync Veyra package links before activation")
+    if "ConditionPathExists=/var/lib/veyra/vpkg/root" in sync_service.read_text(encoding="utf-8"):
+        return fail("Veyra app-layer links must synchronize at boot even when no Veyra RPMs are installed")
     if "Before=systemd-sysext.service" not in sync_service.read_text(encoding="utf-8"):
         return fail("Veyra package link synchronization must run before systemd-sysext")
     if "After=veyra-vpkg-sync.service" not in sysext_dropin.read_text(encoding="utf-8"):

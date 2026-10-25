@@ -47,9 +47,10 @@ application rollback is already available to users.
 
 System-extension images carry the Veyra `SYSEXT_LEVEL` in addition to the
 Fedora release. Before blessing a new slot, the boot health target waits for
-`systemd-sysext` and checks that every RPM recorded in the persistent `vpkg`
-installroot appears in the active extension set. If a new OS slot cannot
-activate a persisted extension, it is not accepted as a good boot.
+`systemd-sysext`, checks that every installed Veyra wrapper and the persistent
+`vpkg-apps` layer are active, and rejects app-layer paths that collide with
+files in the new base RPM inventory. A slot with an incompatible extension or
+new base-file collision is not accepted as a good boot.
 
 The image workflow also writes disposable markers to the separate `/etc`,
 `/var` and `/home` partitions before staging the update, then checks those

@@ -12,10 +12,12 @@ will cover two use cases without making either one mandatory:
    from the project directory. The configuration can be committed with the
    source so teammates can recreate the toolchain.
 2. **Persistent named environment:** a user creates an environment such as
-   `web-dev`, `rust`, or `python-data` independently of any project. Its
-   installed packages and environment state persist between sessions. It can
-   be entered from any directory, changed over time, listed, stopped and
-   removed without changing the host OS.
+   `web-dev`, `rust`, or `python-data` independently of any project. It has a
+   long-lived writable environment, so packages installed inside it and its
+   settings persist between sessions and host reboots. It can be entered from
+   any directory, renamed, stopped, started, upgraded and removed without
+   changing the host OS. A project directory is mounted only when the user
+   explicitly selects it.
 
 The first command shape is:
 
@@ -24,8 +26,17 @@ vforge create web-dev
 vforge list
 vforge enter web-dev
 vforge exec web-dev -- node --version
+vforge stop web-dev
+vforge start web-dev
+vforge rename web-dev web-dev-old
 vforge delete web-dev
 ```
+
+Entering an environment is the normal place to install a toolchain with Fedora
+packages, for example `dnf install nodejs python3`. Those changes belong to the
+named environment; they do not update Veyra's host RPM database or system
+image. `vpkg` remains the route for applications installed into Veyra's shared
+app layer.
 
 For a project environment, a project-local config will select the environment
 definition and provide the corresponding run/enter command. The config format
@@ -54,5 +65,7 @@ project source tree. Containers share the host kernel; Vforge is a development
 environment boundary, not a virtual machine or a substitute for the OS update
 and recovery security model.
 
-The eventual implementation still needs a clear policy for image selection,
-updates, persistent storage, network access, host mounts and backup/restore.
+The first implementation still needs a precise command contract for image
+selection, image upgrades, persistent storage, network access, project mounts
+and backup/restore. These examples describe the intended behavior; Vforge is
+still a design and no `vforge` command or runtime integration exists yet.

@@ -13,6 +13,14 @@ import tempfile
 
 
 HOME_PARTITION_TYPE = "933ac7e1-2eb4-4f13-b844-0e14e2aef915"
+UPSTREAM_REPOSITORIES = (
+    "fedora",
+    "updates",
+    "rpmfusion-free",
+    "rpmfusion-free-updates",
+    "rpmfusion-nonfree",
+    "rpmfusion-nonfree-updates",
+)
 
 
 def run(command: list[str], *, privileged: bool = False) -> subprocess.CompletedProcess[str]:
@@ -53,6 +61,9 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
     for repo in ("testing-initial", "testing"):
         if not (repository / f"packages/{repo}/x86_64/repodata/repomd.xml.asc").is_file():
             raise RuntimeError(f"The vpkg fixture must contain signed {repo} metadata.")
+    upstream = repository / "local-upstream/x86_64"
+    if not (upstream / "repodata/repomd.xml").is_file() or not list(upstream.glob("*.rpm")):
+        raise RuntimeError("The vpkg fixture must contain an offline Fedora RPM repository.")
 
     partitions = partition_layout(image)
     with tempfile.TemporaryDirectory(prefix="veyra-vpkg-image-setup-") as temporary:
@@ -105,8 +116,36 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             )
             install_file(test_repo, etc / "yum.repos.d/veyra-testing.repo")
 
+            for repo_file in (etc / "yum.repos.d").glob("*.repo"):
+                if repo_file.name.startswith("veyra-"):
+                    continue
+                content = repo_file.read_text(encoding="utf-8", errors="replace")
+                if any(f"[{repository_id}]" in content for repository_id in UPSTREAM_REPOSITORIES):
+                    repo_file.unlink()
+            upstream_repo = work / "veyra-vpkg-ci-upstream.repo"
+            baseurl = "file:///var/lib/veyra/vpkg-ci-repo/local-upstream/x86_64/"
+            sections = []
+            for repository_id in UPSTREAM_REPOSITORIES:
+                sections.append(
+                    f"[{repository_id}]\n"
+                    f"name=Veyra offline vpkg fixture ({repository_id})\n"
+                    f"baseurl={baseurl}\n"
+                    "enabled=1\n"
+                    "gpgcheck=1\n"
+                    "repo_gpgcheck=0\n"
+                    "metadata_expire=0\n"
+                )
+            upstream_repo.write_text("\n".join(sections), encoding="utf-8")
+            install_file(upstream_repo, etc / "yum.repos.d/veyra-vpkg-ci-upstream.repo")
+
             dnf_config = work / "dnf.conf"
-            dnf_config.write_text("[main]\nassumeyes=True\ninstall_weak_deps=False\n", encoding="utf-8")
+            dnf_config.write_text(
+                "[main]\n"
+                "assumeyes=True\n"
+                "install_weak_deps=False\n"
+                "reposdir=/etc/yum.repos.d\n",
+                encoding="utf-8",
+            )
             install_file(dnf_config, etc / "dnf/dnf.conf")
             channel = work / "channel"
             channel.write_text("testing\n", encoding="ascii")

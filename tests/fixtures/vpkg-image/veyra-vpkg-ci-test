@@ -96,6 +96,50 @@ command -v fzf >/dev/null
 assert_extension_active veyra-shell-tools
 echo "Veyra vpkg VM test: signed upgrade activated through systemd-sysext"
 
+base_htop="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+vpkg install htop
+command -v htop >/dev/null
+htop --version >/dev/null
+assert_extension_active vpkg-apps
+vpkg list | grep -Fq "htop:"
+if [[ -n "$base_htop" ]]; then
+    echo "htop unexpectedly appeared in the base RPM database before the app transaction." >&2
+    exit 1
+fi
+if rpm -q htop >/dev/null 2>&1; then
+    echo "vpkg modified the immutable base RPM database while installing htop." >&2
+    exit 1
+fi
+echo "Veyra vpkg VM test: Fedora repository package installed as a separate system extension"
+vpkg remove htop
+if command -v htop >/dev/null 2>&1; then
+    echo "systemd-sysext left htop active after removing the app-layer request." >&2
+    exit 1
+fi
+assert_extension_active veyra-shell-tools
+
+local_rpm="$(find "$repo/local-upstream/x86_64" -maxdepth 1 -name 'htop-*.rpm' -print -quit)"
+test -s "$local_rpm"
+vpkg install "$local_rpm"
+command -v htop >/dev/null
+htop --version >/dev/null
+assert_extension_active vpkg-apps
+vpkg remove htop
+if command -v htop >/dev/null 2>&1; then
+    echo "systemd-sysext left locally installed htop active after removal." >&2
+    exit 1
+fi
+echo "Veyra vpkg VM test: signed local RPM installed and removed transactionally"
+
+protected_kernel="$(rpm -q --qf '%{NEVRA}' kernel-core)"
+if vpkg install kernel-core >/var/lib/veyra/vpkg-ci-protected-package.log 2>&1; then
+    echo "vpkg unexpectedly accepted a kernel package." >&2
+    exit 1
+fi
+grep -Fq "kernels, graphics drivers, boot components" /var/lib/veyra/vpkg-ci-protected-package.log
+test "$(rpm -q --qf '%{NEVRA}' kernel-core)" = "$protected_kernel"
+echo "Veyra vpkg VM test: kernel package installation was rejected without changing the base"
+
 failure_log=/var/lib/veyra/vpkg-ci-invalid-extension.log
 if vpkg install veyra-broken-extension >"$failure_log" 2>&1; then
     cat "$failure_log"
