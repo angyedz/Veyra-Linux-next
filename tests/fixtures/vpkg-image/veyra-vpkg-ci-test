@@ -55,6 +55,7 @@ command -v jq >/dev/null
 assert_extension_active veyra-shell-tools
 echo "Veyra vpkg VM test: signed install activated through systemd-sysext"
 
+set -x
 failure_log=/var/lib/veyra/vpkg-ci-incompatible-extension.log
 if vpkg install veyra-incompatible-extension >"$failure_log" 2>&1; then
     cat "$failure_log"
@@ -73,6 +74,7 @@ if [[ -e /etc/extensions/veyra-incompatible-extension.raw || -L /etc/extensions/
 fi
 assert_extension_active veyra-shell-tools
 echo "Veyra vpkg VM test: incompatible system-extension level triggered an RPM rollback"
+set +x
 
 # The initial signed repository has only v0.1.0. Switch to the separately
 # signed upgrade snapshot so the next vpkg operation must install v0.2.0.
