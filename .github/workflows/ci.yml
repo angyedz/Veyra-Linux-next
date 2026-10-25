@@ -283,7 +283,12 @@ jobs:
             echo 'Fedora46/Rawhide RPM detected in the Fedora44 image' >&2
             exit 1
           fi
-          ! rpm -q dnf5 dnf5-plugins
+          for package in dnf5 dnf5-plugins; do
+            if rpm -q "$package" >/dev/null 2>&1; then
+              echo "The host image must not install the DNF5 CLI package: $package" >&2
+              exit 1
+            fi
+          done
           check systemd-sysupdate test -x /usr/lib/systemd/systemd-sysupdate
           check vpkg test -x /usr/bin/vpkg
           check python-libdnf5 python3 -c "import libdnf5"
