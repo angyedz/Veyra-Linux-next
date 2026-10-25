@@ -158,9 +158,13 @@ if vpkg install "$scriptlet_rpm" >"$failure_log" 2>&1; then
     exit 1
 fi
 cat "$failure_log"
-# The fixture hooks return distinct nonzero statuses. If either runs, RPM
-# reports a transaction error before vpkg can reach its metadata REJECT path.
+# The fixture's pre hook is fatal; post and trigger hooks return distinct
+# errors. Their output sentinels also make any executed hook observable.
 grep -Fq "REJECT: package vpkg-scriptlet-fixture declares RPM scriptlets or triggers" "$failure_log"
+if grep -Eq 'VEYRA_CI_SCRIPTLET_(PRE|POST|TRIGGER)_RAN' "$failure_log"; then
+    echo "vpkg ran an RPM scriptlet or trigger before rejecting its package." >&2
+    exit 1
+fi
 if [[ -e "$post_marker" || -e "$trigger_marker" ]]; then
     echo "vpkg executed an RPM scriptlet or trigger while rejecting its package." >&2
     exit 1

@@ -130,11 +130,17 @@ jobs:
           %files
           /opt/vpkg-scriptlet-fixture/README
 
+          %pre
+          echo VEYRA_CI_SCRIPTLET_PRE_RAN
+          exit 70
+
           %post
+          echo VEYRA_CI_SCRIPTLET_POST_RAN
           touch /var/lib/veyra/vpkg-ci-scriptlet-post-ran
           exit 71
 
           %transfiletriggerin -- /opt/vpkg-scriptlet-fixture
+          echo VEYRA_CI_SCRIPTLET_TRIGGER_RAN
           touch /var/lib/veyra/vpkg-ci-scriptlet-trigger-ran
           exit 72
           EOF

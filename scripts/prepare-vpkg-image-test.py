@@ -93,12 +93,22 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             unit_test_root = var / "lib/veyra/vpkg-ci-tests/repo"
             run(["install", "-d", "-m", "0755", str(unit_test_root)], privileged=True)
             run(["cp", "-a", str(PROJECT_ROOT / "tests"), str(unit_test_root)], privileged=True)
-            for relative in (
+            test_sources = [
                 pathlib.Path("scripts/build-extension-rpm.py"),
                 pathlib.Path("scripts/mirror-package-site.py"),
+                pathlib.Path("scripts/test-ab-boot.py"),
                 pathlib.Path("scripts/test-sysupdate-image.py"),
                 pathlib.Path("mkosi.extra/usr/bin/vpkg"),
-            ):
+            ]
+            vforge_test = PROJECT_ROOT / "tests/test_vforge.py"
+            vforge_script = pathlib.Path("mkosi.extra/usr/bin/vforge")
+            if vforge_test.is_file():
+                if not (PROJECT_ROOT / vforge_script).is_file():
+                    raise RuntimeError(
+                        "Vforge QEMU unit tests require mkosi.extra/usr/bin/vforge."
+                    )
+                test_sources.append(vforge_script)
+            for relative in test_sources:
                 destination = unit_test_root / relative
                 run([
                     "install", "-D", "-m", "0644",
