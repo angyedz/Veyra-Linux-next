@@ -12,8 +12,12 @@ Veyra.
 around one `.raw` system-extension image and are installed in a separate DNF5
 installroot on writable `/var`. For Fedora and RPM Fusion applications,
 `vpkg` copies the base RPM database into a disposable DNF5 installroot, resolves
-and installs the requested RPM set there, then rejects any transaction that
-changes a base package. The resulting `/usr` and `/opt` payload becomes a
+and installs the requested RPM set there with RPM scriptlets and triggers
+disabled. It classifies the resolved transaction from the installroot's actual
+RPM records and payload: only additive `/usr` and `/opt` packages with no
+package-defined scriptlets or triggers are accepted as `LIVE`. A transaction
+that changes a base package is rejected; permitted staged system-package
+generations are not implemented. The resulting `/usr` and `/opt` payload becomes a
 persistent directory system extension named `vpkg-apps`; the running base RPM
 database remains unchanged. Veyra wrapper RPM transactions create symlinks under
 `/etc/extensions`; the app layer uses one generation pointer. Both refresh
@@ -45,6 +49,10 @@ outside `/usr` and `/opt`. Existing shared directories such as `/usr/bin` are
 allowed, but existing files cannot be replaced. RPMs that ship `/etc`
 configuration and local packages signed by third-party keys are not supported
 until Veyra has a configuration-extension design and explicit key enrollment.
+Packages that require scriptlets or triggers are rejected until vpkg has a
+supported, confined way to process their effects. This is a limited app-layer
+prototype, not full RPM layering; it does not yet provide staged system-package
+generations or a general RPM scriptlet policy.
 The repository RPM is a small wrapper around a version-compatible system
 extension image. Extension images are built for Fedora 44 in this prototype
 and must be rebuilt and tested when Veyra changes Fedora base versions. They
@@ -52,6 +60,11 @@ also carry the Veyra `SYSEXT_LEVEL` stored in
 `mkosi.extra/usr/share/veyra/sysext-level`; bump that level only when the
 extension ABI changes. Boot assessment rejects a new OS slot if a persistent
 extension is not active under the new image.
+
+The package-policy unit suite and functional package checks run from the
+disposable Veyra guest in the QEMU/KVM image workflow. The package build
+workflow only validates RPM/repository artifacts; it does not execute `vpkg`
+against the CI runner's RPM database.
 
 ## Channels and publication
 

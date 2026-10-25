@@ -18,9 +18,6 @@ jobs:
       - name: Install RPM repository build tools
         run: dnf5 install --assumeyes createrepo_c curl dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
 
-      - name: Check package-manager safety rules
-        run: python3 -m unittest discover --start-directory tests --pattern 'test_*.py'
-
       - name: Build the testing-channel extension RPM
         run: python3 scripts/build-extension-rpm.py --channel testing --output build/rpms
 
@@ -88,13 +85,6 @@ jobs:
           mirrored_rpm="build/mirrored-site/packages/testing/x86_64/$(basename "$source_rpm")"
           test -s "$source_rpm"
           cmp -- "$source_rpm" "$mirrored_rpm"
-
-      - name: Exercise vpkg transactions against the signed testing channel
-        shell: bash
-        env:
-          CI: "true"
-          VEYRA_PACKAGE_CI_TEST: "1"
-        run: scripts/test-vpkg-transaction.sh "$PWD/build/site"
 
       - name: Upload test repository snapshot
         uses: actions/upload-artifact@v4
