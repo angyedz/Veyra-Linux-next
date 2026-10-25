@@ -306,6 +306,7 @@ fi
 candidate_root=/var/tmp/veyra-vpkg-ci-candidate-root
 mkdir -p "$candidate_root/usr/lib/sysimage" "$candidate_root/usr/bin"
 cp -a /usr/lib/sysimage/rpm "$candidate_root/usr/lib/sysimage/rpm"
+cp -L /usr/lib/os-release "$candidate_root/usr/lib/os-release"
 touch "$candidate_root/usr/bin/htop"
 candidate_roothash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 conflict_output=/var/lib/veyra/vpkg/app-layers/generation-conflict
@@ -317,6 +318,8 @@ if vpkg prepare-for-base --base-root "$candidate_root" --roothash "$candidate_ro
     exit 1
 fi
 grep -Fq '"status": "rejected"' "$conflict_log"
+grep -Fq 'REJECT: Refusing app RPM file that would replace an existing base-system path: /usr/bin/htop' \
+    "$conflict_log"
 test "$(readlink -f /var/lib/veyra/vpkg/apps/current)" = "$old_generation"
 test "$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)" = "$old_intents"
 test "$(sha256sum "$old_binding" | cut -d ' ' -f 1)" = "$old_binding_hash"
@@ -329,8 +332,13 @@ echo "Veyra vpkg VM test: candidate conflict preserved the active generation and
 # both generations distinct while the candidate remains pending.
 candidate_version="${old_version}.ci-candidate"
 candidate_output=/var/lib/veyra/vpkg/app-layers/generation-ci-candidate
+candidate_base=/var/tmp/veyra-vpkg-ci-target-root
+mkdir -p "$candidate_base/usr/lib/sysimage"
+cp -a /usr/lib/sysimage/rpm "$candidate_base/usr/lib/sysimage/rpm"
+cp -L /usr/lib/os-release "$candidate_base/usr/lib/os-release"
 prepared=/var/lib/veyra/vpkg-ci-prepared-generation.json
-vpkg prepare-for-base --base-root / --roothash "$old_roothash" --output "$candidate_output" >"$prepared"
+vpkg prepare-for-base --base-root "$candidate_base" --roothash "$old_roothash" \
+    --output "$candidate_output" >"$prepared"
 candidate_generation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' "$prepared")"
 test "$candidate_generation" = "$candidate_output"
 candidate_requests="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["requests"],sort_keys=True))' "$candidate_generation/manifest.json")"
