@@ -183,7 +183,9 @@ class VforgeCommandTests(unittest.TestCase):
             result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             with patch.object(vforge.shutil, "which", side_effect=lambda executable: f"/usr/bin/{executable}"), patch.object(
                 vforge.subprocess, "run", return_value=result
-            ) as run, patch.object(vforge.os.path, "ismount", side_effect=lambda _: run.call_count >= 2):
+            ) as run, patch.object(vforge.os.path, "ismount", side_effect=lambda _: run.call_count >= 2), patch.object(
+                vforge.os, "chown"
+            ) as chown, patch.object(vforge.os, "chmod") as chmod:
                 vforge.create_size_capped_store(image, mount, 8 * 1024**3)
 
             self.assertEqual(image.stat().st_size, 8 * 1024**3)
@@ -191,6 +193,8 @@ class VforgeCommandTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
             self.assertEqual(run.call_args_list[0].args[0][:6], ["/usr/bin/mkfs.ext4", "-F", "-t", "ext4", "-m", "0"])
             self.assertEqual(run.call_args_list[1].args[0], ["/usr/bin/fuse2fs", "-o", "fakeroot", str(image), str(mount)])
+            chown.assert_called_once_with(mount, os.geteuid(), os.getegid())
+            chmod.assert_called_once_with(mount, 0o700)
 
     def test_size_capped_store_mounts_existing_ext4_without_reformatting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

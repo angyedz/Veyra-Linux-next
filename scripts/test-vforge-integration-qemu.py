@@ -165,9 +165,32 @@ def main() -> int:
         token = uuid.uuid4().hex
         system_token = uuid.uuid4().hex
         created_name: str | None = None
+        created_graphroot: pathlib.Path | None = None
         try:
-            run_with_tty(["vforge", "create", name, "--network", "bridge"], "yes\n")
+            size_bytes = 8 * 1024**3
+            run_with_tty(["vforge", "create", name, "--network", "bridge", "--size", "8GiB"], "yes\n")
             created_name = name
+            metadata = json.loads((vforge_store() / "state/environments.json").read_text())
+            environment = metadata["environments"][name]
+            if environment.get("size_bytes") != size_bytes:
+                raise RuntimeError("Vforge did not persist the requested environment size cap")
+            data_root = pathlib.Path(environment["data_root"])
+            graphroot = pathlib.Path(environment["podman_root"])
+            created_graphroot = graphroot
+            size_image = pathlib.Path(environment["size_image"])
+            if data_root != vforge_store() / "environments" / name / "store":
+                raise RuntimeError("Vforge size-capped state is not inside its environment store")
+            if graphroot != data_root / "containers" or size_image != data_root.parent / ".vforge-size.img":
+                raise RuntimeError("Vforge size cap does not cover its Podman graphroot")
+            if not size_image.is_file() or size_image.stat().st_size != size_bytes:
+                raise RuntimeError("Vforge backing file is not a sparse file of the requested size")
+            statfs = run(["stat", "-f", "--format=%S %b", str(data_root)], capture=True).stdout.split()
+            block_size, filesystem_blocks = map(int, statfs)
+            filesystem_bytes = block_size * filesystem_blocks
+            if filesystem_bytes > size_bytes or filesystem_bytes < size_bytes * 0.99:
+                raise RuntimeError(f"size-capped filesystem reports {filesystem_bytes} bytes, expected about {size_bytes}")
+            if size_image.stat().st_blocks * 512 >= size_bytes // 2:
+                raise RuntimeError("Vforge size-cap backing image appears preallocated")
 
             # Integrated mode must expose the current Veyra /usr lower layer,
             # not silently substitute the Fedora container's /usr.
@@ -185,9 +208,8 @@ def main() -> int:
                 raise RuntimeError(f"Vforge test container must be Fedora 44, found {container_release!r}")
             run(["vforge", "exec", name, "--", "dnf", "-y", "install", "tree"])
             run(["vforge", "exec", name, "--", "rpm", "-q", "tree"])
-            metadata = json.loads((vforge_store() / "state/environments.json").read_text())
-            layer_id = metadata["environments"][name]["layer_id"]
-            rpmdb_upper = vforge_store() / "environments" / name / "layers" / layer_id / "rpmdb-upper"
+            layer_id = environment["layer_id"]
+            rpmdb_upper = data_root / "layers" / layer_id / "rpmdb-upper"
             if not any(rpmdb_upper.rglob("*")):
                 raise RuntimeError("dnf did not persist the Veyra RPM database changes in the private upper")
             if directory_digest(rpmdb_path) != rpmdb_before:
@@ -199,7 +221,7 @@ def main() -> int:
                  f"printf '%s\\n' '{system_token}' > '{system_path}'"])
             if pathlib.Path(system_path).exists():
                 raise RuntimeError("integrated environment changed the host's Veyra /usr tree")
-            upper_file = vforge_store() / "environments" / name / "layers" / layer_id / "usr-upper" / "share" / system_marker
+            upper_file = data_root / "layers" / layer_id / "usr-upper" / "share" / system_marker
             if upper_file.read_text().strip() != system_token:
                 raise RuntimeError("integrated environment did not persist its /usr write in the private upper")
 
@@ -232,8 +254,8 @@ def main() -> int:
             created_name = None
             if upper_file.exists():
                 raise RuntimeError("vforge delete left its Veyra upper layer behind")
-            if container_exists(f"vforge-{name}"):
-                raise RuntimeError("vforge delete left its Podman container behind")
+            if size_image.exists() or data_root.parent.exists():
+                raise RuntimeError("vforge delete left its size-capped environment store behind")
 
             # Check the separately stored project environment state and prove
             # the project bind mount cannot read its own generated .vforge data.
@@ -274,7 +296,7 @@ def main() -> int:
             print("Vforge rootless create/enter/exec/stop/start/delete passed in QEMU.", flush=True)
             return 0
         finally:
-            if created_name and container_exists(f"vforge-{created_name}"):
+            if created_name and container_exists(f"vforge-{created_name}", created_graphroot):
                 print(f"Cleaning up test environment {created_name}.", file=sys.stderr, flush=True)
                 delete_environment(created_name)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:

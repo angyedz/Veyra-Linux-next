@@ -305,6 +305,20 @@ def create_size_capped_store(image: Path, mountpoint: Path, size_bytes: int) -> 
         return
 
     created = False
+
+    def discard_incomplete_image() -> None:
+        if not created:
+            return
+        if os.path.ismount(mountpoint):
+            unmount = shutil.which("fusermount3") or shutil.which("fusermount")
+            if unmount is None:
+                return
+            result = subprocess.run([unmount, "-u", str(mountpoint)], check=False, capture_output=True, text=True)
+            if result.returncode != 0:
+                return
+        if not os.path.ismount(mountpoint):
+            image.unlink(missing_ok=True)
+
     try:
         try:
             fd = os.open(image, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -345,13 +359,13 @@ def create_size_capped_store(image: Path, mountpoint: Path, size_bytes: int) -> 
         if mounted.returncode != 0 or not os.path.ismount(mountpoint):
             detail = (mounted.stderr or "").strip()
             raise VforgeError("could not mount Vforge size-cap filesystem with fuse2fs" + (f": {detail}" if detail else ""))
+        os.chown(mountpoint, os.geteuid(), os.getegid())
+        os.chmod(mountpoint, 0o700)
     except OSError as error:
-        if created:
-            image.unlink(missing_ok=True)
+        discard_incomplete_image()
         raise VforgeError(f"could not prepare Vforge size-cap filesystem: {error}") from error
     except VforgeError:
-        if created and not os.path.ismount(mountpoint):
-            image.unlink(missing_ok=True)
+        discard_incomplete_image()
         raise
 
 
