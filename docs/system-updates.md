@@ -48,9 +48,12 @@ checks the new root hash, `graphical.target`, `boot-complete.target`, successful
 boot blessing, and GPT read-only flags on the updated root and verity
 partitions. It then adds a test-only UKI that enters `emergency.target`, boots
 it three times, verifies each try counter, and checks that the next boot
-returns to the blessed slot. The failure UKI is injected directly into this
-temporary test image; this does not publish a release or assert that an
-application rollback is already available to users.
+returns to the blessed slot. Each failed boot writes and syncs a unique marker
+to the persistent journal; the fallback boot must read that marker from
+`journalctl -b -1` before it reaches the boot-complete target. The failure UKI
+and test-only systemd units are injected directly into this temporary image;
+this does not publish a release or assert that an application rollback is
+already available to users.
 
 System-extension images carry the Veyra `SYSEXT_LEVEL` in addition to the
 Fedora release. Before blessing a new slot, the boot health target waits for

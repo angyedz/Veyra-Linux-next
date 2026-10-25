@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import pathlib
 import re
 import shutil
@@ -12,10 +14,17 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=True, text=True, **kwargs)
+
+
+def run_privileged(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    if os.geteuid() != 0:
+        command = ["sudo", *command]
+    return run(command, **kwargs)
 
 
 def mdir(image: pathlib.Path, esp_offset: int, mdir_bin: str) -> str:
@@ -24,6 +33,97 @@ def mdir(image: pathlib.Path, esp_offset: int, mdir_bin: str) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     ).stdout
+
+
+def etc_partition(image: pathlib.Path) -> tuple[int, int]:
+    table = json.loads(
+        run(["sfdisk", "--json", str(image)], stdout=subprocess.PIPE).stdout
+    )["partitiontable"]
+    sector_size = int(table.get("sectorsize", 512))
+    partitions = [
+        partition
+        for partition in table["partitions"]
+        if partition.get("name") == "VEYRA_ETC"
+    ]
+    if len(partitions) != 1:
+        raise RuntimeError("the staged image must contain exactly one persistent /etc partition")
+    partition = partitions[0]
+    return int(partition["start"]) * sector_size, int(partition["size"]) * sector_size
+
+
+def inject_journal_test_units(image: pathlib.Path, marker: str) -> tuple[str, str]:
+    marker_message = f"veyra-ota-failed-trial-{marker}"
+    synced_message = f"VEYRA_OTA_MARKER_SYNCED_{marker}"
+    check_message = f"VEYRA_OTA_JOURNAL_PERSIST_CI_PASS_{marker}"
+    offset, size = etc_partition(image)
+    with tempfile.TemporaryDirectory(prefix="veyra-ota-journal-test-") as temporary:
+        work = pathlib.Path(temporary)
+        mountpoint = work / "etc"
+        mountpoint.mkdir()
+        run_privileged(
+            [
+                "mount", "-t", "ext4", "-o",
+                f"loop,rw,nodev,nosuid,offset={offset},sizelimit={size}",
+                str(image), str(mountpoint),
+            ]
+        )
+        try:
+            units = {
+                "systemd/system/veyra-ota-journal-marker.service": (
+                    "[Unit]\n"
+                    "Description=Write the failed-trial marker for the Veyra QEMU OTA test\n"
+                    "DefaultDependencies=no\n"
+                    f"ConditionKernelCommandLine=veyra.ota-journal-marker={marker}\n"
+                    "Requires=systemd-journald.service\n"
+                    "After=systemd-journald.service\n"
+                    "Before=emergency.target\n\n"
+                    "[Service]\n"
+                    "Type=oneshot\n"
+                    f"Environment=VEYRA_OTA_JOURNAL_MARKER={marker_message}\n"
+                    "ExecStart=/usr/bin/bash -ec '/usr/bin/systemd-cat -t veyra-ota-journal-ci /usr/bin/echo \"$VEYRA_OTA_JOURNAL_MARKER\"; /usr/bin/journalctl --flush; /usr/bin/journalctl --sync; /usr/bin/echo VEYRA_OTA_MARKER_SYNCED_"
+                    f"{marker}'\n"
+                    "StandardOutput=journal+console\n"
+                    "StandardError=journal+console\n"
+                ),
+                "systemd/system/veyra-ota-journal-check.service": (
+                    "[Unit]\n"
+                    "Description=Verify the failed-trial marker in the previous Veyra boot journal\n"
+                    "DefaultDependencies=no\n"
+                    f"ConditionKernelCommandLine=veyra.ota-journal-check={marker}\n"
+                    "Requires=systemd-journald.service\n"
+                    "After=systemd-journald.service\n"
+                    "Before=boot-complete.target\n\n"
+                    "[Service]\n"
+                    "Type=oneshot\n"
+                    f"Environment=VEYRA_OTA_JOURNAL_MARKER={marker_message}\n"
+                    "ExecStart=/usr/bin/bash -o pipefail -ec '/usr/bin/journalctl -b -1 -t veyra-ota-journal-ci --no-pager -o cat | /usr/bin/grep -Fx -- \"$VEYRA_OTA_JOURNAL_MARKER\"'\n"
+                    f"ExecStartPost=/usr/bin/echo {check_message}\n"
+                    "StandardOutput=journal+console\n"
+                    "StandardError=journal+console\n"
+                ),
+                "systemd/system/emergency.target.d/veyra-ota-journal-ci.conf": (
+                    "[Unit]\n"
+                    "Requires=veyra-ota-journal-marker.service\n"
+                    "After=veyra-ota-journal-marker.service\n"
+                ),
+                "systemd/system/boot-complete.target.d/veyra-ota-journal-ci.conf": (
+                    "[Unit]\n"
+                    "Requires=veyra-ota-journal-check.service\n"
+                    "After=veyra-ota-journal-check.service\n"
+                ),
+            }
+            for relative, content in units.items():
+                source = work / pathlib.Path(relative).name
+                source.write_text(content, encoding="ascii")
+                run_privileged(
+                    [
+                        "install", "-D", "-m", "0644", str(source),
+                        str(mountpoint / relative),
+                    ]
+                )
+        finally:
+            run_privileged(["umount", str(mountpoint)])
+    return synced_message, check_message
 
 
 def stop_vm(process: subprocess.Popen[bytes]) -> None:
@@ -135,8 +235,6 @@ def main() -> int:
             raise RuntimeError(f"missing staged test image: {image}")
         code, pristine_vars = find_ovmf_pair(args.ovmf_code, args.ovmf_vars)
         partitions = run(["sfdisk", "--json", str(image)], stdout=subprocess.PIPE).stdout
-        import json
-
         layout = json.loads(partitions)["partitiontable"]
         sector_size = int(layout.get("sectorsize", 512))
         esp_type = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -210,6 +308,22 @@ def main() -> int:
                 raise RuntimeError("could not load the UKI fixture helper")
             helper = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(helper)
+            journal_marker = uuid.uuid4().hex
+            synced_message, check_message = inject_journal_test_units(test_image, journal_marker)
+            checked_uki = work / f"veyra-next_{args.version}-journal-check.efi"
+            # Only the previously blessed UKI verifies the failed boot's journal.
+            helper.patch_uki(
+                source_uki,
+                checked_uki,
+                args.version,
+                args.roothash,
+                "graphical.target",
+                extra_cmdline=(f"veyra.ota-journal-check={journal_marker}",),
+            )
+            run([
+                args.mcopy, "-o", "-i", f"{test_image}@@{esp_offset}",
+                str(checked_uki), f"::/EFI/Linux/{stable_entry}",
+            ])
             helper.patch_uki(
                 source_uki,
                 failed_uki,
@@ -217,6 +331,7 @@ def main() -> int:
                 args.roothash,
                 "emergency.target",
                 version_id="44.1",
+                extra_cmdline=(f"veyra.ota-journal-marker={journal_marker}",),
             )
             run([
                 args.mcopy, "-o", "-i", f"{test_image}@@{esp_offset}",
@@ -232,7 +347,11 @@ def main() -> int:
                     vars_path=vars_path,
                     qemu=args.qemu,
                     qemu_data_dir=args.qemu_data_dir,
-                    expected=("Reached target emergency.target", "You are in emergency mode."),
+                    expected=(
+                        "Reached target emergency.target",
+                        "You are in emergency mode.",
+                        synced_message,
+                    ),
                     timeout=args.boot_timeout,
                 )
                 listing = mdir(test_image, esp_offset, args.mdir)
@@ -254,12 +373,14 @@ def main() -> int:
                 expected=(
                     f"roothash={args.roothash}",
                     "Reached target graphical.target",
+                    check_message,
                 ),
                 timeout=args.boot_timeout,
             )
             if "Reached target emergency.target" in rollback:
                 raise RuntimeError("systemd-boot selected the exhausted candidate instead of the good slot")
             print(f"After three failed boots, systemd-boot returned to Veyra {args.version}.", flush=True)
+            print("The fallback boot read the failed-trial marker from the previous-boot journal.", flush=True)
 
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:

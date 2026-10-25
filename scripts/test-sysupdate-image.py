@@ -90,6 +90,7 @@ def patch_uki(
     unit: str,
     *,
     version_id: str | None = None,
+    extra_cmdline: tuple[str, ...] = (),
 ) -> None:
     """Create a test UKI with a root hash and boot target in its PE sections."""
     if not re.fullmatch(r"[0-9a-f]{64}", roothash):
@@ -101,10 +102,15 @@ def patch_uki(
     if not {b".cmdline", b".osrel"}.issubset(sections):
         raise RuntimeError("test UKI must contain .cmdline and .osrel sections")
 
-    cmdline = (
-        f"roothash={roothash} systemd.firstboot=no "
-        f"systemd.unit={unit} console=ttyS0,115200n8"
-    ).encode("ascii") + b"\0"
+    if any(not re.fullmatch(r"[A-Za-z0-9_.=-]+", argument) for argument in extra_cmdline):
+        raise RuntimeError("extra UKI command-line arguments must be simple key=value tokens")
+    cmdline = " ".join((
+        f"roothash={roothash}",
+        "systemd.firstboot=no",
+        f"systemd.unit={unit}",
+        "console=ttyS0,115200n8",
+        *extra_cmdline,
+    )).encode("ascii") + b"\0"
     with destination.open("r+b") as stream:
         header, raw_offset, raw_size = sections[b".cmdline"]
         if len(cmdline) > raw_size:
