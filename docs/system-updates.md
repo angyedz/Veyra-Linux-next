@@ -25,6 +25,13 @@ installed Veyra extensions activated. A trial UKI is marked good only when
 those targets succeed; repeated failed boots fall back to the previously
 working UKI.
 
+System journals use the persistent `/var/log/journal` directory, so logs from
+a failed trial boot remain available after systemd-boot returns to the previous
+UKI. Journald is capped at 1 GiB and keeps at least 1 GiB free on the `/var`
+partition. After rollback, inspect recent boots with `journalctl --list-boots`
+and `journalctl -b -1`. This depends on the persistent `/var` partition being
+readable; standalone Recovery access is still unimplemented.
+
 ## Kernel scope
 
 The current image ships the Fedora kernel. `vpkg` does not install kernels,
