@@ -86,6 +86,7 @@
       "/usr/lib/firmware/",
       "/usr/lib/initcpio/",
       "/usr/lib/kernel/",
+      "/usr/lib/systemd/boot/",
       "/usr/lib/modules/",
       "/usr/lib/systemd/system-generators/",
       "/usr/lib/systemd/user-generators/",

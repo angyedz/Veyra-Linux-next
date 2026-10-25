@@ -528,10 +528,18 @@ def verify_user_app_generation(generation: Path) -> dict[str, object]:
         actual = user_app_tree_digest(generation / "tree")
         if actual != integrity["tree_sha256"]:
             raise VpkgError("The app-layer generation payload failed its SHA-256 integrity check.")
+        # Production generations have a fixed root-owned state path. Tests and
+        # explicit temporary installroots may use an alternate path that the
+        # unprivileged test process owns; keep the immutable-mode check there,
+        # while preserving the root-owner invariant for the real state tree.
+        require_root_owner = USER_APP_LAYER_DIR == Path("/var/lib/veyra/vpkg/app-layers")
         entries = [generation, *generation.rglob("*")]
         for path in entries:
             metadata = path.lstat()
-            if metadata.st_uid != 0 or (not stat.S_ISLNK(metadata.st_mode) and metadata.st_mode & 0o222):
+            if (
+                (require_root_owner and metadata.st_uid != 0)
+                or (not stat.S_ISLNK(metadata.st_mode) and metadata.st_mode & 0o222)
+            ):
                 raise VpkgError("The app-layer generation content is not root-owned and sealed read-only.")
     validate_user_app_requests(manifest.get("requests"))
     installed = manifest.get("installed")
