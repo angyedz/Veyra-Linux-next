@@ -516,6 +516,49 @@ def main() -> int:
             print(f"After three failed boots, systemd-boot returned to Veyra {args.version}.", flush=True)
             print("The fallback boot read the failed-trial marker from the previous-boot journal.", flush=True)
 
+            # Boot the separately-built Recovery UKI from the same disposable
+            # disk. Force it only through the ESP's loader.conf; no host boot
+            # configuration or installed system is touched.
+            recovery_entry = "veyra-recovery.efi"
+            if recovery_entry.lower() not in mdir(test_image, esp_offset, args.mdir).lower():
+                raise RuntimeError("the disposable ESP does not contain the Recovery UKI")
+            loader_config = work / "loader.conf"
+            loader_config.write_text(
+                "default veyra-recovery.efi\ntimeout 0\neditor no\n", encoding="ascii"
+            )
+            esp_image = f"{test_image}@@{esp_offset}"
+            loader_listing = subprocess.run(
+                [args.mdir, "-i", esp_image, "::/loader"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            if loader_listing.returncode != 0:
+                run(["mmd", "-i", esp_image, "::/loader"])
+            run([
+                args.mcopy, "-o", "-i", esp_image,
+                str(loader_config), "::/loader/loader.conf",
+            ])
+            recovery_log = work / "recovery.log"
+            recovery = boot_until(
+                image=test_image,
+                log_path=recovery_log,
+                code=code,
+                vars_path=vars_path,
+                qemu=args.qemu,
+                qemu_data_dir=args.qemu_data_dir,
+                expected=("Veyra Recovery", "Select an action:"),
+                timeout=args.boot_timeout,
+                accel=args.accel,
+                cpu=args.cpu,
+                memory_mib=args.memory_mib,
+                persistent_log_dir=args.log_directory,
+                ota_port=args.ota_port,
+            )
+            if "Recovery could not complete" in recovery:
+                raise RuntimeError("Recovery booted but its first action failed")
+            print("Independent Fedora 44 Recovery UKI booted to its menu in QEMU.", flush=True)
+
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", None)
