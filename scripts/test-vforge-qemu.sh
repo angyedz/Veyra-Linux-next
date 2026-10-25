@@ -17,6 +17,7 @@ fi
 
 cd "$(dirname "$0")/.."
 repo_root="$PWD"
+export PATH="$repo_root/mkosi.extra/usr/bin:$PATH"
 mount_options="$(findmnt -n -o OPTIONS --target "$repo_root")"
 case ",$mount_options," in
   *,ro,*) ;;
