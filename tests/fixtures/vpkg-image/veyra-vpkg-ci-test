@@ -19,7 +19,11 @@ fi
 
 echo "Veyra vpkg VM test: initialize isolated RPM database"
 mkdir -p "$root"
-cmp "$repo/RPM-GPG-KEY-VEYRA" /usr/share/veyra/RPM-GPG-KEY-VEYRA
+repo_key_hash="$(sha256sum "$repo/RPM-GPG-KEY-VEYRA")"
+repo_key_hash="${repo_key_hash%% *}"
+image_key_hash="$(sha256sum /usr/share/veyra/RPM-GPG-KEY-VEYRA)"
+image_key_hash="${image_key_hash%% *}"
+test "$repo_key_hash" = "$image_key_hash"
 rpm --root "$root" --initdb
 rpm --root "$root" --import /usr/share/veyra/RPM-GPG-KEY-VEYRA
 
