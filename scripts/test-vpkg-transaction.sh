@@ -158,15 +158,15 @@ dnf_ci=(
   --refresh
 )
 "${dnf_ci[@]}" clean metadata
-available_versions="$("${dnf_ci[@]}" repoquery --available --queryformat '%{version}' veyra-shell-tools)"
-printf 'Available testing versions: %s\n' "${available_versions//$'\n'/, }"
-if ! grep -Fxq '0.2.0' <<<"$available_versions"; then
+available_versions="$("${dnf_ci[@]}" repoquery --available veyra-shell-tools)"
+printf 'Available testing packages:\n%s\n' "$available_versions"
+if ! grep -Fq '0.2.0' <<<"$available_versions"; then
   echo "The signed testing repository does not expose veyra-shell-tools 0.2.0." >&2
   exit 1
 fi
-upgrade_versions="$("${dnf_ci[@]}" repoquery --upgrades --queryformat '%{version}' veyra-shell-tools)"
-printf 'DNF5 upgrade candidates: %s\n' "${upgrade_versions//$'\n'/, }"
-if ! grep -Fxq '0.2.0' <<<"$upgrade_versions"; then
+upgrade_versions="$("${dnf_ci[@]}" repoquery --upgrades veyra-shell-tools)"
+printf 'DNF5 upgrade candidates:\n%s\n' "$upgrade_versions"
+if ! grep -Fq '0.2.0' <<<"$upgrade_versions"; then
   echo "DNF5 does not consider veyra-shell-tools 0.2.0 an upgrade candidate." >&2
   exit 1
 fi
