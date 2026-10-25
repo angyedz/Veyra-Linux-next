@@ -8,6 +8,7 @@ import pathlib
 import pty
 import select
 import shutil
+import errno
 import json
 import hashlib
 import subprocess
@@ -69,6 +70,35 @@ def directory_digest(root: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def exhaust_store_until_enospc(root: pathlib.Path) -> pathlib.Path:
+    filler = root / ".vforge-enospc-probe"
+    descriptor = os.open(filler, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    chunk = b"\0" * (4 * 1024 * 1024)
+    exhausted = False
+    try:
+        while True:
+            try:
+                written = os.write(descriptor, chunk)
+                if written <= 0:
+                    raise RuntimeError("storage-cap probe made no forward progress")
+            except OSError as error:
+                if error.errno != errno.ENOSPC:
+                    raise
+                exhausted = True
+                break
+        os.fsync(descriptor)
+    except OSError as error:
+        if error.errno == errno.ENOSPC:
+            exhausted = True
+        else:
+            raise
+    finally:
+        os.close(descriptor)
+    if not exhausted:
+        raise RuntimeError("writing into the capped Vforge store did not reach ENOSPC")
+    return filler
+
+
 def run(command: list[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -121,8 +151,7 @@ def container_exists(name: str, graphroot: pathlib.Path | None = None) -> bool:
 
 
 def vforge_store() -> pathlib.Path:
-    data_home = pathlib.Path(os.environ.get("XDG_DATA_HOME", pathlib.Path.home() / ".local/share"))
-    return (data_home / "vforge").resolve(strict=False)
+    return pathlib.Path(run(["vforge", "config", "show"], capture=True).stdout.strip())
 
 
 def podman_roots(graphroot: pathlib.Path | None = None) -> list[str]:
@@ -164,11 +193,21 @@ def main() -> int:
         system_marker = f"vforge-upper-{suffix}"
         token = uuid.uuid4().hex
         system_token = uuid.uuid4().hex
+        selected_store = pathlib.Path(xdg.name) / "selected-vforge-storage"
+        run(["vforge", "config", "storage-root", str(selected_store)])
+        denied_name = f"qemu-vforge-denied-{os.getuid()}-{suffix}"
+        permission_denied = False
+        try:
+            run_with_tty(["vforge", "create", denied_name, "--network", "bridge"], "no\n")
+        except RuntimeError:
+            permission_denied = True
+        if not permission_denied or container_exists(f"vforge-{denied_name}", selected_store / "containers"):
+            raise RuntimeError("declining host network permission did not prevent environment creation")
         created_name: str | None = None
         created_graphroot: pathlib.Path | None = None
         try:
-            size_bytes = 8 * 1024**3
-            run_with_tty(["vforge", "create", name, "--network", "bridge", "--size", "8GiB"], "yes\n")
+            size_bytes = 2 * 1024**3
+            run_with_tty(["vforge", "create", name, "--network", "bridge", "--size", "2GiB"], "yes\n")
             created_name = name
             metadata = json.loads((vforge_store() / "state/environments.json").read_text())
             environment = metadata["environments"][name]
@@ -178,8 +217,8 @@ def main() -> int:
             graphroot = pathlib.Path(environment["podman_root"])
             created_graphroot = graphroot
             size_image = pathlib.Path(environment["size_image"])
-            if data_root != vforge_store() / "environments" / name / "store":
-                raise RuntimeError("Vforge size-capped state is not inside its environment store")
+            if data_root != selected_store / "environments" / name / "store":
+                raise RuntimeError("Vforge did not use the configured common storage root")
             if graphroot != data_root / "containers" or size_image != data_root.parent / ".vforge-size.img":
                 raise RuntimeError("Vforge size cap does not cover its Podman graphroot")
             if not size_image.is_file() or size_image.stat().st_size != size_bytes:
@@ -249,6 +288,26 @@ def main() -> int:
             run(["vforge", "start", name])
             run(["vforge", "exec", name, "--", "/bin/sh", "-ec", verify])
             print("Vforge state persisted across stop/start and exec.", flush=True)
+
+            # Exhaust the actual sparse ext4 filesystem, then prove an
+            # integrated system write receives ENOSPC. The probe is removed
+            # before delete so cleanup itself is not testing full-disk behavior.
+            filler = exhaust_store_until_enospc(data_root)
+            try:
+                probe = f"/usr/share/vforge-enospc-{suffix}"
+                failed_write = run(
+                    ["vforge", "exec", name, "--", "/bin/sh", "-ec",
+                     f"dd if=/dev/zero of='{probe}' bs=1M count=64 status=none"],
+                    capture=True, check=False,
+                )
+                if failed_write.returncode == 0 or "no space left on device" not in (
+                    (failed_write.stdout or "") + (failed_write.stderr or "")
+                ).lower():
+                    raise RuntimeError("an integrated write did not fail with ENOSPC at the configured cap")
+            finally:
+                filler.unlink(missing_ok=True)
+            run(["vforge", "exec", name, "--", "/bin/rm", "-f", probe], check=False)
+            print("Sparse ext4 size cap reached ENOSPC and recovered after freeing space.", flush=True)
 
             delete_environment(name)
             created_name = None
