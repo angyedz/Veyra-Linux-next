@@ -54,6 +54,15 @@ def install_file(source: pathlib.Path, destination: pathlib.Path, mode: str = "0
     run(["install", "-D", "-m", mode, str(source), str(destination)], privileged=True)
 
 
+def disable_upstream_repository_files(repo_directory: pathlib.Path) -> None:
+    for repo_file in sorted(repo_directory.glob("*.repo")):
+        if repo_file.name.startswith("veyra-"):
+            continue
+        content = repo_file.read_text(encoding="utf-8", errors="replace")
+        if any(f"[{repository_id}]" in content for repository_id in UPSTREAM_REPOSITORIES):
+            run(["unlink", str(repo_file)], privileged=True)
+
+
 def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
     if not image.is_file():
         raise RuntimeError(f"Missing Veyra disk image: {image}")
@@ -142,12 +151,7 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             )
             install_file(test_repo, etc / "yum.repos.d/veyra-testing.repo")
 
-            for repo_file in (etc / "yum.repos.d").glob("*.repo"):
-                if repo_file.name.startswith("veyra-"):
-                    continue
-                content = repo_file.read_text(encoding="utf-8", errors="replace")
-                if any(f"[{repository_id}]" in content for repository_id in UPSTREAM_REPOSITORIES):
-                    repo_file.unlink()
+            disable_upstream_repository_files(etc / "yum.repos.d")
             upstream_repo = work / "veyra-vpkg-ci-upstream.repo"
             baseurl = "file:///var/lib/veyra/vpkg-ci-repo/local-upstream/x86_64/"
             sections = []
