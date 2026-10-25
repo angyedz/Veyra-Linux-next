@@ -35,6 +35,95 @@ def running_in_qemu_vm() -> bool:
 
 @unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
 class VpkgPolicyTests(unittest.TestCase):
+    def test_generation_integrity_detects_payload_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            generation = Path(temporary) / "generation-test"
+            tree = generation / "tree"
+            payload = tree / "usr/bin/example"
+            payload.parent.mkdir(parents=True)
+            payload.write_text("original", encoding="utf-8")
+            manifest = {
+                "schema": 1,
+                "generation_id": generation.name,
+                "requests": [{"kind": "repo", "name": "example"}],
+                "installed": {"example": "example-0:1-1.x86_64"},
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(tree)},
+            }
+            (generation / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            vpkg.verify_user_app_generation(generation)
+            payload.write_text("modified", encoding="utf-8")
+            with self.assertRaisesRegex(vpkg.VpkgError, "SHA-256 integrity check"):
+                vpkg.verify_user_app_generation(generation)
+
+    def test_empty_generation_records_its_parent_for_remove_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            previous = layer_dir / "generation-previous"
+            previous.mkdir(parents=True)
+            (previous / "tree").mkdir()
+            (previous / "manifest.json").write_text(
+                json.dumps({"schema": 1, "requests": [], "installed": {}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "active_user_app_generation", return_value=previous),
+            ):
+                generation = vpkg.create_empty_user_app_generation("a" * 64, "remove")
+            manifest = vpkg.verify_user_app_generation(generation)
+            self.assertEqual(manifest["parent_generation"], str(previous))
+            self.assertEqual(manifest["transaction"], "remove")
+            self.assertEqual(manifest["requests"], [])
+            self.assertEqual(manifest["installed"], {})
+
+    def test_rollback_selects_parent_generation_without_crossing_base_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            state_dir = root / "apps"
+            previous = layer_dir / "generation-previous"
+            current = layer_dir / "generation-current"
+            for generation in (previous, current):
+                tree = generation / "tree"
+                tree.mkdir(parents=True)
+            previous_manifest = {
+                "schema": 1,
+                "generation_id": previous.name,
+                "parent_generation": None,
+                "requests": [],
+                "installed": {},
+                "base_roothash": "a" * 64,
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(previous / "tree")},
+            }
+            (previous / "manifest.json").write_text(json.dumps(previous_manifest), encoding="utf-8")
+            current_manifest = {
+                "schema": 1,
+                "generation_id": current.name,
+                "parent_generation": str(previous),
+                "requests": [{"kind": "repo", "name": "example"}],
+                "installed": {"example": "example-0:1-1.x86_64"},
+                "base_roothash": "a" * 64,
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(current / "tree")},
+            }
+            (current / "manifest.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+            state_dir.mkdir()
+            current_link = state_dir / "current"
+            current_link.symlink_to(current, target_is_directory=True)
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "USER_APP_STATE", state_dir),
+                patch.object(vpkg, "USER_APP_CURRENT", current_link),
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                patch.object(vpkg, "require_no_pending_update"),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.0.0"),
+                patch.object(vpkg, "commit_user_app_generation") as commit,
+            ):
+                vpkg.rollback_user_apps()
+            commit.assert_called_once_with(previous, [], "a" * 64, "1.0.0")
+
     def test_prepare_for_empty_intents_returns_ready_without_creating_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -257,18 +346,51 @@ class VpkgPolicyTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(vpkg.VpkgError):
                 vpkg.validate_user_package_paths([path])
 
-    def test_upstream_dnf_root_is_separate_and_uses_only_fedora_sources(self) -> None:
-        installroot = Path("/var/lib/veyra/vpkg/staging-root")
-        prefix = vpkg.user_package_dnf_prefix(installroot)
-        self.assertIn("--installroot=" + str(installroot), prefix)
-        self.assertIn("--use-host-config", prefix)
-        self.assertIn(
-            "--repo=" + ",".join((*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS)),
-            prefix,
+    def test_upstream_libdnf_session_uses_fedora_sources_without_veyra(self) -> None:
+        self.assertEqual(
+            vpkg.selected_repo_ids("both", include_veyra=False),
+            (*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS),
         )
-        self.assertTrue(any("localpkg_gpgcheck=True" in item for item in prefix))
-        self.assertIn("--setopt=tsflags=noscripts,notriggers", prefix)
-        self.assertFalse(any("veyra-main" in item or "veyra-testing" in item for item in prefix))
+
+    def test_fedora_release_is_derived_from_candidate_os_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "etc").mkdir()
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "etc/os-release").write_text(
+                'NAME="Fedora Linux"\nID=fedora\nVERSION_ID="44"\n',
+                encoding="utf-8",
+            )
+            (root / "usr/lib/os-release").symlink_to("../../etc/os-release")
+
+            self.assertEqual(vpkg.fedora_release_from_root(root), "44")
+            with patch.object(vpkg, "Session") as session:
+                vpkg.package_session(
+                    Path("/tmp/installroot"),
+                    base_root=root,
+                    app_transaction=True,
+                    include_veyra=False,
+                )
+            self.assertEqual(session.call_args.kwargs["releasever"], "44")
+
+    def test_fedora_46_candidate_is_rejected_before_generation_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "usr/lib/os-release").write_text(
+                'ID=fedora\nVERSION_ID="46"\n', encoding="utf-8"
+            )
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            output = layer_dir / "generation-candidate"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "load_pending_update", return_value=None),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgReject, "Fedora 44"):
+                    vpkg.prepare_for_base(root, "a" * 64, output)
+            self.assertFalse(output.exists())
 
     def test_user_app_rpm_transaction_keeps_base_inventory_unchanged(self) -> None:
         base = {"bash": {"bash-0:5.2-1.x86_64"}}
@@ -435,12 +557,13 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "seed_user_app_installroot", side_effect=seed),
                 patch.object(vpkg, "rpm_records", return_value=added),
                 patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")),
-                patch.object(vpkg, "user_package_dnf_prefix", return_value=["dnf5", "--installroot=/tmp/root"]),
+                patch.object(vpkg, "package_session") as package_session,
                 patch.object(vpkg, "extension_release_text", return_value="ID=fedora\nVERSION_ID=44\nSYSEXT_LEVEL=test\n"),
                 patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
                 patch.object(vpkg, "validate_installed_app_payloads"),
                 patch.object(vpkg, "run") as run,
             ):
+                package_session.return_value.resolve.return_value = None
                 generation = vpkg.build_user_app_generation(
                     [{"kind": "repo", "name": "tree"}], {}
                 )
@@ -451,7 +574,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 json.loads((generation / "manifest.json").read_text(encoding="utf-8"))["installed"],
                 {"tree": "tree-0:2.1.1-1.x86_64"},
             )
-            self.assertEqual(run.call_count, 1)
+            package_session.assert_called_once()
 
     def test_sync_app_extension_link_follows_the_persistent_generation_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -579,7 +702,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 with self.assertRaises(vpkg.VpkgError):
                     vpkg.selected_channel()
 
-    def test_dnf_uses_fedora_rpmfusion_and_selected_veyra_channels(self) -> None:
+    def test_libdnf_uses_fedora_rpmfusion_and_selected_veyra_channels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             channel_file = Path(temporary) / "channel"
             channel_file.write_text("testing\n", encoding="utf-8")
@@ -589,11 +712,9 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "CHANNEL_FILE", channel_file),
                 patch.object(vpkg, "VPKG_PUBLIC_KEY", key_file),
             ):
-                selected = next(
-                    item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
-                )
+                selected = vpkg.selected_repo_ids()
                 self.assertEqual(
-                    selected.removeprefix("--repo=").split(","),
+                    list(selected),
                     [
                         "fedora",
                         "updates",
@@ -604,30 +725,26 @@ class VpkgPolicyTests(unittest.TestCase):
                         "veyra-testing",
                     ],
                 )
-                both = next(
-                    item for item in vpkg.dnf_prefix("both") if item.startswith("--repo=")
-                )
-                self.assertTrue(both.endswith("veyra-main,veyra-testing"))
+                both = vpkg.selected_repo_ids("both")
+                self.assertEqual(both[-2:], ("veyra-main", "veyra-testing"))
 
     def test_fedora_queries_work_without_a_veyra_signing_key(self) -> None:
         with patch.object(vpkg, "VPKG_PUBLIC_KEY", Path("/missing/veyra-key")):
-            selected = next(
-                item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
-            )
+            selected = vpkg.selected_repo_ids()
         self.assertEqual(
-            selected.removeprefix("--repo=").split(","),
+            list(selected),
             [*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS],
         )
 
-    def test_veyra_extension_transactions_do_not_require_rpm_fusion_repos(self) -> None:
-        selected = next(
-            item
-            for item in vpkg.dnf_prefix("testing", include_rpmfusion=False)
-            if item.startswith("--repo=")
+    def test_veyra_extension_transactions_use_only_the_selected_channel(self) -> None:
+        selected = vpkg.selected_repo_ids(
+            "testing",
+            include_rpmfusion=False,
+            include_upstream=False,
         )
         self.assertEqual(
-            selected.removeprefix("--repo=").split(","),
-            [*vpkg.FEDORA_REPOS, "veyra-testing"],
+            selected,
+            ("veyra-testing",),
         )
 
     def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
@@ -650,19 +767,13 @@ class VpkgPolicyTests(unittest.TestCase):
                     patch.object(vpkg, "require_root"),
                     patch.object(vpkg, "selected_channel", return_value=channel),
                     patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
-                    patch.object(vpkg, "latest_history_id", return_value=7),
-                    patch.object(vpkg, "dnf") as dnf,
-                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "run_veyra_transaction") as transaction,
                     patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
                 ):
                     vpkg.install(["veyra-shell-tools"])
 
                 inspect.assert_called_once_with("install", ["veyra-shell-tools"], channel=channel)
-                dnf.assert_called_once_with(
-                    ["install", f"--from-repo={vpkg.CHANNELS[channel]}", "veyra-shell-tools"],
-                    channel=channel,
-                    include_rpmfusion=False,
-                )
+                transaction.assert_called_once_with("install", ["veyra-shell-tools"])
 
     def test_upgrade_transaction_uses_same_channel_as_preflight_download(self) -> None:
         for channel in ("main", "testing"):
@@ -671,32 +782,25 @@ class VpkgPolicyTests(unittest.TestCase):
                     patch.object(vpkg, "require_root"),
                     patch.object(vpkg, "selected_channel", return_value=channel),
                     patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
-                    patch.object(vpkg, "latest_history_id", return_value=7),
-                    patch.object(vpkg, "dnf") as dnf,
-                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "run_veyra_transaction") as transaction,
                     patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
                 ):
                     vpkg.upgrade()
 
                 inspect.assert_called_once_with("upgrade", channel=channel)
-                dnf.assert_called_once_with(
-                    ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
-                    channel=channel,
-                    include_rpmfusion=False,
-                )
+                transaction.assert_called_once_with("upgrade")
 
-    def test_upgrade_preflight_invalidates_and_refreshes_repository_metadata(self) -> None:
+    def test_upgrade_preflight_resolves_from_api_with_refresh_requested(self) -> None:
         with (
             patch.object(vpkg, "selected_channel", return_value="testing"),
-            patch.object(vpkg, "run") as run,
+            patch.object(vpkg, "package_session") as package_session,
             patch.object(vpkg, "inspect_extension_rpms", return_value=[]),
         ):
+            package_session.return_value.resolve.return_value.changes = []
             self.assertFalse(vpkg.download_for_inspection("upgrade"))
 
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0][-2:], ["clean", "metadata"])
-        self.assertIn("--refresh", commands[1])
-        self.assertLess(commands[1].index("--refresh"), commands[1].index("upgrade"))
+        self.assertTrue(package_session.call_args.kwargs["refresh"])
+        package_session.return_value.resolve.assert_called_once()
 
     def test_extension_rpm_policy_allows_only_var_extension_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
