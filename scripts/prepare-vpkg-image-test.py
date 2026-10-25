@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject a disposable signed vpkg repository and test unit into an image copy."""
+"""Inject a signed vpkg fixture and persistence markers into an image copy."""
 
 from __future__ import annotations
 
@@ -12,8 +12,6 @@ import sys
 import tempfile
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "tests/fixtures/vpkg-image"
 HOME_PARTITION_TYPE = "933ac7e1-2eb4-4f13-b844-0e14e2aef915"
 
 
@@ -114,22 +112,12 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             channel.write_text("testing\n", encoding="ascii")
             install_file(channel, etc / "veyra/vpkg/channel")
 
-            service_dir = etc / "systemd/system"
-            install_file(FIXTURES / "veyra-vpkg-ci.service", service_dir / "veyra-vpkg-ci.service")
-            install_file(FIXTURES / "veyra-vpkg-ci-test", var / "lib/veyra/vpkg-ci-test", "0755")
-
             marker = work / "persistent-state-marker"
             marker.write_text("persistent state created before the A/B update\n", encoding="ascii")
             install_file(marker, etc / "veyra/vpkg-ci-persisted")
             install_file(marker, var / "lib/veyra/vpkg-ci-persisted")
             install_file(marker, mounts["VEYRA_HOME"] / ".veyra-vpkg-ci-persisted")
 
-            wants = service_dir / "boot-complete.target.wants"
-            run(["install", "-d", "-m", "0755", str(wants)], privileged=True)
-            run([
-                "ln", "-s", "../veyra-vpkg-ci.service",
-                str(wants / "veyra-vpkg-ci.service"),
-            ], privileged=True)
         finally:
             for mountpoint in reversed(mounted):
                 run(["umount", str(mountpoint)], privileged=True)

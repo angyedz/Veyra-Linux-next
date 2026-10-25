@@ -6,10 +6,7 @@ Before=boot-complete.target
 
 [Service]
 Type=oneshot
-ExecStart=/var/lib/veyra/vpkg-ci-test
+ExecStart=/usr/libexec/veyra-vpkg-ci-test
 TimeoutStartSec=600
 StandardOutput=journal+console
 StandardError=journal+console
-
-[Install]
-WantedBy=boot-complete.target
