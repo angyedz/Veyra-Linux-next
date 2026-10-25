@@ -51,7 +51,7 @@ jobs:
             --define "_topdir $PWD/build/v2" \
             --define "_sourcedir $PWD/build/v2/SOURCES" \
             --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
-          cp build/v2/RPMS/x86_64/*.rpm build/rpms/
+          cp build/v2/RPMS/*.rpm build/rpms/
           mkdir -p build/broken/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
           printf 'This is deliberately not a filesystem image.\n' > build/broken/SOURCES/veyra-broken-extension.raw
           cat > build/broken/SPECS/veyra-broken-extension.spec <<'EOF'
@@ -86,11 +86,11 @@ jobs:
           test -n "$fingerprint"
           gpg --batch --armor --export "$fingerprint" > build/site/RPM-GPG-KEY-VEYRA
           rpm --import build/site/RPM-GPG-KEY-VEYRA
-          rpmsign --define "_gpg_name $fingerprint" --addsign build/rpms/*.rpm build/broken/RPMS/x86_64/*.rpm
+          rpmsign --define "_gpg_name $fingerprint" --addsign build/rpms/*.rpm build/broken/RPMS/*.rpm
           scripts/build-package-repo.sh testing build/rpms build/site
           scripts/build-package-repo.sh main build/empty-rpms build/site
           testing_repo=build/site/packages/testing/x86_64
-          cp build/broken/RPMS/x86_64/*.rpm "$testing_repo/"
+          cp build/broken/RPMS/*.rpm "$testing_repo/"
           createrepo_c --database --update "$testing_repo"
           for channel in main testing; do
             metadata="build/site/packages/$channel/x86_64/repodata/repomd.xml"
