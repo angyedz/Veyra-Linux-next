@@ -146,6 +146,38 @@ def main() -> int:
         ):
             if expected not in repo_content:
                 return fail(f"Veyra {channel} repository must include {expected!r}")
+    rpmfusion = ROOT / "mkosi.extra/etc/yum.repos.d/rpmfusion.repo"
+    if not rpmfusion.is_file():
+        return fail("RPM Fusion free/nonfree repositories must be available to vpkg")
+    for repository in (
+        "rpmfusion-free",
+        "rpmfusion-free-updates",
+        "rpmfusion-nonfree",
+        "rpmfusion-nonfree-updates",
+    ):
+        values = section_values(rpmfusion, repository)
+        if not values:
+            return fail(f"missing RPM Fusion repository section: {repository}")
+        for expected in ("enabled=1", "gpgcheck=1", "repo_gpgcheck=0"):
+            if expected not in values:
+                return fail(f"RPM Fusion {repository} must include {expected!r}")
+        license_channel = "nonfree" if "nonfree" in repository else "free"
+        expected_key = f"RPM-GPG-KEY-rpmfusion-{license_channel}-fedora-2020"
+        if not any(expected_key in value for value in values):
+            return fail(f"RPM Fusion {repository} must use its pinned public key")
+        key_file = ROOT / "mkosi.extra/usr/share/pki/rpm-gpg" / expected_key
+        if not key_file.is_file() or "BEGIN PGP PUBLIC KEY BLOCK" not in key_file.read_text(encoding="ascii"):
+            return fail(f"missing embedded RPM Fusion signing key: {expected_key}")
+    for expected in (
+        "fedora",
+        "updates",
+        "rpmfusion-free",
+        "rpmfusion-free-updates",
+        "rpmfusion-nonfree",
+        "rpmfusion-nonfree-updates",
+    ):
+        if expected not in vpkg_content:
+            return fail(f"vpkg must select the upstream package repository {expected!r}")
     sync_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-sync.service"
     sysext_dropin = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf"
     if not sync_service.is_file() or not sysext_dropin.is_file():

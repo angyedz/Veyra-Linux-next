@@ -15,11 +15,23 @@ the RPM database and DNF5 transaction state away from Fedora's immutable
 with no RPM scripts and with a payload consisting solely of a `.raw`
 system-extension image under the separate installroot's
 `/var/lib/extensions/`. It validates the complete downloaded transaction before
-applying it, limits DNF5 to the selected Veyra channel, creates symlinks under
+applying it, selects the Veyra channel for Veyra packages, creates symlinks under
 `/etc/extensions`, refreshes `systemd-sysext`, and asks DNF5 history to undo the
 RPM transaction if the extension cannot be activated. This lets additive
 `/usr` and `/opt` content be activated without changing the base RPM database or
 rebooting.
+
+The image also configures Fedora's official `fedora` and `updates` repositories
+and RPM Fusion's free and nonfree repositories for package discovery and
+dependency resolution. RPM Fusion is an independent third-party source; its
+nonfree repository makes proprietary packages available. Fedora and RPM Fusion
+package names and local RPM files are not yet accepted by `vpkg install` in
+this prototype. Fedora's base package set is still composed into the A/B image.
+The two RPM Fusion public keys are embedded in the image and their full
+fingerprints are checked into this source:
+
+* Free: `E9A491A3DE247814E7E067EAE06F8ECDD651FF2E`
+* Nonfree: `79BDB88F9BBF73910FD4095B6A2AF96194843C65`
 
 Base OS, kernel, bootloader, and other packages that change the system image
 are not installable through `vpkg`; those belong in a signed A/B system update.
@@ -37,6 +49,8 @@ The configured repository locations are:
 
 * `https://angyedz.github.io/Veyra-next/packages/main/$basearch/`
 * `https://angyedz.github.io/Veyra-next/packages/testing/$basearch/`
+
+These are Veyra add-on channels only. They do not mirror Fedora or RPM Fusion.
 
 Both repos require RPM signatures and signed `repomd.xml` metadata. The
 publisher must sign each RPM and repository metadata with the same trusted

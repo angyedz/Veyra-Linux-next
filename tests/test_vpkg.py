@@ -36,13 +36,45 @@ class VpkgPolicyTests(unittest.TestCase):
                 with self.assertRaises(vpkg.VpkgError):
                     vpkg.selected_channel()
 
-    def test_dnf_is_limited_to_the_selected_veyra_channel(self) -> None:
+    def test_dnf_uses_fedora_rpmfusion_and_selected_veyra_channels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             channel_file = Path(temporary) / "channel"
             channel_file.write_text("testing\n", encoding="utf-8")
-            with patch.object(vpkg, "CHANNEL_FILE", channel_file):
-                self.assertIn("--repo=veyra-testing", vpkg.dnf_prefix())
-                self.assertIn("--repo=veyra-main,veyra-testing", vpkg.dnf_prefix("both"))
+            key_file = Path(temporary) / "RPM-GPG-KEY-VEYRA"
+            key_file.touch()
+            with (
+                patch.object(vpkg, "CHANNEL_FILE", channel_file),
+                patch.object(vpkg, "VPKG_PUBLIC_KEY", key_file),
+            ):
+                selected = next(
+                    item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
+                )
+                self.assertEqual(
+                    selected.removeprefix("--repo=").split(","),
+                    [
+                        "fedora",
+                        "updates",
+                        "rpmfusion-free",
+                        "rpmfusion-free-updates",
+                        "rpmfusion-nonfree",
+                        "rpmfusion-nonfree-updates",
+                        "veyra-testing",
+                    ],
+                )
+                both = next(
+                    item for item in vpkg.dnf_prefix("both") if item.startswith("--repo=")
+                )
+                self.assertTrue(both.endswith("veyra-main,veyra-testing"))
+
+    def test_fedora_queries_work_without_a_veyra_signing_key(self) -> None:
+        with patch.object(vpkg, "VPKG_PUBLIC_KEY", Path("/missing/veyra-key")):
+            selected = next(
+                item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
+            )
+        self.assertEqual(
+            selected.removeprefix("--repo=").split(","),
+            [*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS],
+        )
 
     def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

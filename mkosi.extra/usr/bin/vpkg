@@ -16,7 +16,15 @@ from pathlib import Path
 
 
 CHANNELS = {"main": "veyra-main", "testing": "veyra-testing"}
+FEDORA_REPOS = ("fedora", "updates")
+RPMFUSION_REPOS = (
+    "rpmfusion-free",
+    "rpmfusion-free-updates",
+    "rpmfusion-nonfree",
+    "rpmfusion-nonfree-updates",
+)
 CHANNEL_FILE = Path("/etc/veyra/vpkg/channel")
+VPKG_PUBLIC_KEY = Path("/usr/share/veyra/RPM-GPG-KEY-VEYRA")
 LOCK_FILE = Path("/run/lock/veyra-vpkg.lock")
 PACKAGE_EXTENSION_DIR = Path("/var/lib/extensions")
 SYSTEM_EXTENSION_LINK_DIR = Path("/etc/extensions")
@@ -92,9 +100,14 @@ def dnf_prefix(channel: str | None = None) -> list[str]:
         "--setopt=install_weak_deps=False",
     ]
     if channel == "both":
-        options.append("--repo=veyra-main,veyra-testing")
+        veyra_repos = tuple(CHANNELS.values())
+    elif channel is None and not VPKG_PUBLIC_KEY.is_file():
+        # A source-built image has no production Veyra trust key. Keep Fedora
+        # and RPM Fusion discovery usable without bootstrapping that trust.
+        veyra_repos = ()
     else:
-        options.append(f"--repo={repo_id(channel)}")
+        veyra_repos = (repo_id(channel),)
+    options.append("--repo=" + ",".join((*FEDORA_REPOS, *RPMFUSION_REPOS, *veyra_repos)))
     return options
 
 

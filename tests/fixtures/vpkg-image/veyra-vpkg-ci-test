@@ -6,6 +6,14 @@ repo=/var/lib/veyra/vpkg-ci-repo
 marker="persistent state created before the A/B update"
 complete=/var/lib/veyra/vpkg-ci-complete
 
+report_failure() {
+    local status=$?
+    echo "Veyra vpkg CI failed at line ${BASH_LINENO[0]}: ${BASH_COMMAND} (status ${status})" >&2
+    systemd-sysext status >&2 || true
+    exit "$status"
+}
+trap report_failure ERR
+
 assert_extension_active() {
     local name="$1" status
     if ! status="$(systemd-sysext status)"; then
@@ -72,7 +80,9 @@ if [[ -e /etc/extensions/veyra-incompatible-extension.raw || -L /etc/extensions/
     echo "vpkg left the incompatible extension symlink after rollback." >&2
     exit 1
 fi
+echo "Veyra vpkg CI checkpoint: incompatible extension package and link are absent"
 assert_extension_active veyra-shell-tools
+echo "Veyra vpkg CI checkpoint: valid extension remains active after failed install"
 echo "Veyra vpkg VM test: incompatible system-extension level triggered an RPM rollback"
 set +x
 
