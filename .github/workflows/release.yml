@@ -30,6 +30,32 @@ jobs:
             python3 qemu-system-x86 squashfs-tools systemd-container \
             systemd-ukify xz-utils zstd
 
+      - name: Embed the pinned Veyra RPM repository key
+        env:
+          VEYRA_RPM_SIGNING_KEY: ${{ secrets.VEYRA_RPM_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VEYRA_RPM_SIGNING_KEY" ]]; then
+            echo "Add the dedicated RPM signing private key as the VEYRA_RPM_SIGNING_KEY repository secret." >&2
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/veyra-rpm-gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          printf '%s' "$VEYRA_RPM_SIGNING_KEY" | gpg --batch --import
+          mapfile -t fingerprints < <(gpg --batch --with-colons --list-secret-keys | awk -F: '
+            $1 == "sec" { primary = 1; next }
+            $1 == "ssb" { primary = 0; next }
+            $1 == "fpr" && primary { print $10; primary = 0 }
+          ')
+          if ((${#fingerprints[@]} != 1)); then
+            echo "The RPM signing secret must contain exactly one private key." >&2
+            exit 1
+          fi
+          install -d -m 0755 mkosi.extra/usr/share/veyra
+          gpg --batch --armor --export "${fingerprints[0]}" \
+            > mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
+          test -s mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
+
       - name: Import the dedicated Veyra update signing key
         id: signing-key
         env:
@@ -72,6 +98,9 @@ jobs:
           test -s mkosi.output/veyra-next_*.root.raw.zst
           test -s mkosi.output/veyra-next_*.root-verity.raw.zst
           test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
+          test -s mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
+          sudo --preserve-env=PATH scripts/mkosi.sh shell -- \
+            test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Sign the update manifest

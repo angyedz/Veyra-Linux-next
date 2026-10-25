@@ -135,6 +135,8 @@ jobs:
         run: python3 scripts/smoke.py
       - name: Add the CI-only vpkg boot test to this disposable image
         run: |
+          sudo install -D -m 0644 build/vpkg-site/RPM-GPG-KEY-VEYRA \
+            mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
           sudo install -D -m 0644 tests/fixtures/vpkg-image/veyra-vpkg-ci.service \
             mkosi.extra/usr/lib/systemd/system/veyra-vpkg-ci.service
           sudo install -D -m 0644 tests/fixtures/vpkg-image/boot-complete-vpkg-ci.conf \
@@ -159,6 +161,7 @@ jobs:
           check plasma-wayland test -x /usr/bin/startplasma-wayland
           node --version
           check branding test -s /usr/share/veyra/branding/veyra-logo.svg
+          check pinned-rpm-repository-key test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
           check plasma-setup-enabled sh -eu -c "find /etc/systemd/system -type l -name plasma-setup.service -print -quit | grep -q ."
           check systemd-sysext-enabled sh -eu -c "find /etc/systemd/system -type l -name systemd-sysext.service -print -quit | grep -q ."
           check vpkg-sync-service test -s /usr/lib/systemd/system/veyra-vpkg-sync.service

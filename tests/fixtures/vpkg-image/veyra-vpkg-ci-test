@@ -19,8 +19,9 @@ fi
 
 echo "Veyra vpkg VM test: initialize isolated RPM database"
 mkdir -p "$root"
+cmp "$repo/RPM-GPG-KEY-VEYRA" /usr/share/veyra/RPM-GPG-KEY-VEYRA
 rpm --root "$root" --initdb
-rpm --root "$root" --import "$repo/RPM-GPG-KEY-VEYRA"
+rpm --root "$root" --import /usr/share/veyra/RPM-GPG-KEY-VEYRA
 
 vpkg channel main
 if vpkg list --available | grep -Fq veyra-shell-tools; then

@@ -57,15 +57,21 @@ that public key, signs the root/verity/UKI checksums, and publishes those update
 assets as a GitHub release. It does not publish the full disk image or an
 installer.
 
-Before using the workflow, provision a dedicated Veyra system-update signing
-key in the `Veyra-next` repository:
+Before using the workflow, provision two dedicated signing keys in the
+`Veyra-next` repository:
 
-* Store the armored private key in the `VEYRA_UPDATE_SIGNING_KEY` Actions
-  secret.
+* Store the armored system-update key in `VEYRA_UPDATE_SIGNING_KEY`.
+* Store the armored RPM repository key in `VEYRA_RPM_SIGNING_KEY`. The release
+  image embeds its public half at `/usr/share/veyra/RPM-GPG-KEY-VEYRA`, and the
+  repository configuration uses that local file as its only key source. This
+  prevents the package site from bootstrapping its own trust by serving a new
+  key alongside packages.
 * If the key is protected by a passphrase, store that passphrase separately as
-  `VEYRA_UPDATE_SIGNING_PASSPHRASE`.
-* Keep an offline backup and revocation material. Do not reuse the RPM package
-  signing key for system updates.
+  `VEYRA_UPDATE_SIGNING_PASSPHRASE` (the update-signing workflow currently
+  supports it; the RPM signing key must be usable non-interactively by
+  `rpmsign`).
+* Keep offline backups and revocation material. Do not reuse one key for both
+  system updates and RPM packages.
 
 After the secrets are set and this code is merged into `main`, run **Veyra
 signed system update** manually from the Actions tab. The workflow refuses to

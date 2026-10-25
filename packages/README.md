@@ -43,6 +43,21 @@ do not reuse the separate system-update signing key. CI uses a throwaway key
 only to verify the build and repository-signature path; it is never a client
 trust key.
 
+The installed image embeds the public half of this key at
+`/usr/share/veyra/RPM-GPG-KEY-VEYRA`; its repository files point to that local
+copy. The signed update image is therefore the trust bootstrap for Veyra RPMs.
+Clients do not fetch a new trust key from the same website that serves the RPMs.
+The system release workflow requires `VEYRA_RPM_SIGNING_KEY` and exports only
+its public key into the image. Repository key rotation must be delivered in a
+signed system update before publishing packages signed only by the replacement
+key.
+
+An ordinary source checkout has no production public key because no key is
+committed to Git. Locally built images therefore keep both Veyra repositories
+disabled and cannot use `vpkg` until a trusted key is supplied. The CI image
+uses a short-lived test key; the signed system-release workflow embeds the
+public half corresponding to `VEYRA_RPM_SIGNING_KEY`.
+
 The manual **Publish Veyra RPM repository** workflow publishes a rebuilt
 `testing` snapshot or promotes the exact already-signed testing RPMs into
 `main`. Promotion requires the package name to appear in both channel manifests.

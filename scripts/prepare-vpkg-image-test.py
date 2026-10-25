@@ -86,7 +86,7 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
                 "enabled=0\n"
                 "gpgcheck=1\n"
                 "repo_gpgcheck=1\n"
-                "gpgkey=file:///var/lib/veyra/vpkg-ci-repo/RPM-GPG-KEY-VEYRA\n"
+                "gpgkey=file:///usr/share/veyra/RPM-GPG-KEY-VEYRA\n"
                 "metadata_expire=0\n",
                 encoding="utf-8",
             )
@@ -99,7 +99,7 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
                 "enabled=0\n"
                 "gpgcheck=1\n"
                 "repo_gpgcheck=1\n"
-                "gpgkey=file:///var/lib/veyra/vpkg-ci-repo/RPM-GPG-KEY-VEYRA\n"
+                "gpgkey=file:///usr/share/veyra/RPM-GPG-KEY-VEYRA\n"
                 "metadata_expire=0\n",
                 encoding="utf-8",
             )

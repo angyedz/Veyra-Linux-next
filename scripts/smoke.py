@@ -140,7 +140,7 @@ def main() -> int:
             "enabled=0",
             "gpgcheck=1",
             "repo_gpgcheck=1",
-            "RPM-GPG-KEY-VEYRA",
+            "gpgkey=file:///usr/share/veyra/RPM-GPG-KEY-VEYRA",
         ):
             if expected not in repo_content:
                 return fail(f"Veyra {channel} repository must include {expected!r}")
