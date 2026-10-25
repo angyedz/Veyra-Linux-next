@@ -38,6 +38,25 @@ command -v jq >/dev/null
 systemd-sysext status | grep -Fq veyra-shell-tools
 echo "Veyra vpkg VM test: signed install activated through systemd-sysext"
 
+failure_log=/var/lib/veyra/vpkg-ci-incompatible-extension.log
+if vpkg install veyra-incompatible-extension >"$failure_log" 2>&1; then
+    cat "$failure_log"
+    echo "vpkg unexpectedly accepted an extension with an incompatible SYSEXT_LEVEL." >&2
+    exit 1
+fi
+cat "$failure_log"
+grep -Fq "The RPM transaction was rolled back." "$failure_log"
+if rpm --root "$root" -q veyra-incompatible-extension >/dev/null 2>&1; then
+    echo "vpkg left the incompatible extension RPM installed after rollback." >&2
+    exit 1
+fi
+if [[ -e /etc/extensions/veyra-incompatible-extension.raw || -L /etc/extensions/veyra-incompatible-extension.raw ]]; then
+    echo "vpkg left the incompatible extension symlink after rollback." >&2
+    exit 1
+fi
+systemd-sysext status | grep -Fq veyra-shell-tools
+echo "Veyra vpkg VM test: incompatible system-extension level triggered an RPM rollback"
+
 # The initial signed repository has only v0.1.0. Switch to the separately
 # signed upgrade snapshot so the next vpkg operation must install v0.2.0.
 sed -i 's#packages/testing-initial/#packages/testing/#' /etc/yum.repos.d/veyra-testing.repo

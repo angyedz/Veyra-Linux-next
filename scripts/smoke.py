@@ -126,6 +126,8 @@ def main() -> int:
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
         "Refusing non-Veyra RPM",
         "System files must be delivered by an A/B OS update",
+        "check_extensions_active",
+        "status", "--json=short",
     ):
         if expected not in vpkg_content:
             return fail(f"vpkg safety contract must include {expected!r}")
@@ -165,6 +167,12 @@ def main() -> int:
     postinstall_content = postinstall.read_text(encoding="utf-8")
     if "flatpak remote-add --system --if-not-exists flathub" not in postinstall_content:
         return fail("post-install script must configure Flathub for all users")
+    sysext_level_file = ROOT / "mkosi.extra/usr/share/veyra/sysext-level"
+    sysext_level = sysext_level_file.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", sysext_level):
+        return fail("Veyra system-extension compatibility level must be a safe identifier")
+    if "/usr/share/veyra/sysext-level" not in postinstall_content or "SYSEXT_LEVEL=" not in postinstall_content:
+        return fail("the base OS release must expose the Veyra system-extension compatibility level")
     remote_definition = ROOT / "mkosi.extra/usr/share/veyra/flathub.flatpakrepo"
     if not remote_definition.is_file():
         return fail("the offline Flathub remote definition must be included in the image")
@@ -252,9 +260,20 @@ def main() -> int:
             return fail(f"veyra-update must expose {expected!r}")
     boot_complete = ROOT / "mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra.conf"
     boot_complete_content = boot_complete.read_text(encoding="utf-8")
-    for expected in ("Requires=graphical.target", "systemd-boot-check-no-failures.service", "After=graphical.target"):
+    for expected in (
+        "Requires=graphical.target",
+        "systemd-boot-check-no-failures.service",
+        "veyra-vpkg-check.service",
+        "After=graphical.target",
+    ):
         if expected not in boot_complete_content:
             return fail(f"boot assessment must wait for {expected!r}")
+    extension_check = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-check.service"
+    if not extension_check.is_file() or "systemd-sysext.service" not in extension_check.read_text(encoding="utf-8"):
+        return fail("boot assessment must verify Veyra extensions after systemd-sysext activation")
+    boot_failure_check = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-boot-check-no-failures.service.d/veyra-vpkg.conf"
+    if not boot_failure_check.is_file() or "After=veyra-vpkg-check.service" not in boot_failure_check.read_text(encoding="utf-8"):
+        return fail("boot blessing must wait for the Veyra extension health check")
 
     logo = ROOT / "branding/veyra-logo.svg"
     installed_logo = ROOT / "mkosi.extra/usr/share/veyra/branding/veyra-logo.svg"

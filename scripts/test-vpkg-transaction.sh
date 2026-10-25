@@ -62,7 +62,17 @@ mkdir -p "$shim"
 cat > "$shim/systemd-sysext" <<'EOF'
 #!/usr/bin/bash
 set -euo pipefail
-if [[ "${1:-}" != "refresh" || $# != 1 ]]; then
+if [[ "${1:-}" == "status" && "${2:-}" == "--json=short" && $# == 2 ]]; then
+  printf '[{"hierarchy":"/usr","extensions":['
+  separator=""
+  while IFS= read -r name; do
+    [[ "$name" == veyra-* ]] || continue
+    printf '%s"%s"' "$separator" "$name"
+    separator=,
+  done < <(rpm --root /var/lib/veyra/vpkg/root -qa --qf '%{NAME}\n')
+  printf '],"since":null}]\n'
+  exit 0
+elif [[ "${1:-}" != "refresh" || $# != 1 ]]; then
   echo "unexpected systemd-sysext test invocation" >&2
   exit 2
 fi

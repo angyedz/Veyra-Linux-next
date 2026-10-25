@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import posixpath
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SOURCES = ROOT / "packages" / "extensions"
 MKOSI_CONFIG = ROOT / "mkosi.conf"
+SYSEXT_LEVEL_FILE = ROOT / "mkosi.extra/usr/share/veyra/sysext-level"
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
@@ -76,6 +78,19 @@ def parse_release() -> str:
     raise RuntimeError("Could not read Fedora release from mkosi.conf.")
 
 
+def parse_sysext_level() -> str:
+    level = SYSEXT_LEVEL_FILE.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", level):
+        raise RuntimeError(f"Invalid Veyra system-extension compatibility level: {level!r}.")
+    return level
+
+
+def extension_release_metadata(release: str, sysext_level: str) -> str:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", sysext_level):
+        raise RuntimeError(f"Invalid Veyra system-extension compatibility level: {sysext_level!r}.")
+    return f"ID=fedora\nVERSION_ID={release}\nSYSEXT_LEVEL={sysext_level}\n"
+
+
 def package_list(channel: str) -> list[str]:
     manifest = ROOT / "packages" / channel / "packages.list"
     names = [
@@ -131,7 +146,9 @@ def copy_extension_files(
         raise RuntimeError("The extension package set produced no files under /usr or /opt.")
 
 
-def build_extension_rpm(name: str, release: str, output: Path, work: Path) -> Path:
+def build_extension_rpm(
+    name: str, release: str, sysext_level: str, output: Path, work: Path
+) -> Path:
     package_manifest = PACKAGE_SOURCES / f"{name}.packages"
     spec = PACKAGE_SOURCES / f"{name}.spec"
     if not package_manifest.is_file() or not spec.is_file():
@@ -189,7 +206,9 @@ def build_extension_rpm(name: str, release: str, output: Path, work: Path) -> Pa
 
     release_metadata = extension_root / f"usr/lib/extension-release.d/extension-release.{name}"
     release_metadata.parent.mkdir(parents=True, exist_ok=True)
-    release_metadata.write_text(f"ID=fedora\nVERSION_ID={release}\n", encoding="utf-8")
+    release_metadata.write_text(
+        extension_release_metadata(release, sysext_level), encoding="utf-8"
+    )
 
     raw_image = topdir / f"SOURCES/{name}.raw"
     run(["mksquashfs", str(extension_root), str(raw_image), "-noappend", "-all-root", "-no-progress"])
@@ -219,6 +238,7 @@ def main() -> int:
     arguments = parser.parse_args()
 
     release = parse_release()
+    sysext_level = parse_sysext_level()
     packages = package_list(arguments.channel)
 
     required_commands = ("dnf5", "rpm", "rpmbuild", "mksquashfs")
@@ -231,7 +251,7 @@ def main() -> int:
         for name in packages:
             if not name.startswith("veyra-"):
                 raise RuntimeError(f"Refusing non-Veyra package source: {name}")
-            build_extension_rpm(name, release, arguments.output, work)
+            build_extension_rpm(name, release, sysext_level, arguments.output, work)
     if not packages:
         print(f"The {arguments.channel} channel manifest is empty; no RPMs were built.")
     return 0

@@ -77,6 +77,38 @@ jobs:
             --define "_topdir $PWD/build/broken" \
             --define "_sourcedir $PWD/build/broken/SOURCES" \
             --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          mkdir -p build/incompatible/{BUILD,RPMS,SOURCES,SPECS,SRPMS} \
+            build/incompatible/root/usr/lib/extension-release.d
+          cat > build/incompatible/root/usr/lib/extension-release.d/extension-release.veyra-incompatible-extension <<'EOF'
+          ID=fedora
+          VERSION_ID=44
+          SYSEXT_LEVEL=999
+          EOF
+          mksquashfs build/incompatible/root build/incompatible/SOURCES/veyra-incompatible-extension.raw \
+            -noappend -all-root -no-progress
+          cat > build/incompatible/SPECS/veyra-incompatible-extension.spec <<'EOF'
+          Name:           veyra-incompatible-extension
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Veyra system-extension compatibility CI fixture
+          License:       MIT
+          BuildArch:      x86_64
+          Source0:        veyra-incompatible-extension.raw
+
+          %description
+          Used only to verify that vpkg rolls back an extension with an incompatible SYSEXT_LEVEL.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/var/lib/extensions/veyra-incompatible-extension.raw
+          %files
+          /var/lib/extensions/veyra-incompatible-extension.raw
+          EOF
+          rpmbuild -bb build/incompatible/SPECS/veyra-incompatible-extension.spec \
+            --define "_topdir $PWD/build/incompatible" \
+            --define "_sourcedir $PWD/build/incompatible/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
       - name: Sign the disposable VM test repository
         shell: bash
         run: |
@@ -86,16 +118,17 @@ jobs:
           test -n "$fingerprint"
           gpg --batch --armor --export "$fingerprint" > build/site/RPM-GPG-KEY-VEYRA
           rpm --import build/site/RPM-GPG-KEY-VEYRA
-          rpmsign --define "_gpg_name $fingerprint" --addsign build/rpms/*.rpm build/broken/RPMS/*.rpm
+          rpmsign --define "_gpg_name $fingerprint" --addsign \
+            build/rpms/*.rpm build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm
           scripts/build-package-repo.sh testing build/rpms build/site
           scripts/build-package-repo.sh main build/empty-rpms build/site
           testing_repo=build/site/packages/testing/x86_64
-          cp build/broken/RPMS/*.rpm "$testing_repo/"
+          cp build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm "$testing_repo/"
           createrepo_c --database --update "$testing_repo"
           testing_initial=build/site/packages/testing-initial/x86_64
           mkdir -p "$testing_initial"
           cp build/rpms/veyra-shell-tools-0.1.0-*.rpm "$testing_initial/"
-          cp build/broken/RPMS/*.rpm "$testing_initial/"
+          cp build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm "$testing_initial/"
           createrepo_c --database "$testing_initial"
           for channel in main testing testing-initial; do
             metadata="build/site/packages/$channel/x86_64/repodata/repomd.xml"
@@ -162,6 +195,7 @@ jobs:
           node --version
           check branding test -s /usr/share/veyra/branding/veyra-logo.svg
           check pinned-rpm-repository-key test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
+          check veyra-sysext-level sh -eu -c 'grep -Fxq SYSEXT_LEVEL=1 /etc/os-release && grep -Fxq SYSEXT_LEVEL=1 /usr/lib/os-release'
           check plasma-setup-enabled sh -eu -c "find /etc/systemd/system -type l -name plasma-setup.service -print -quit | grep -q ."
           check systemd-sysext-enabled sh -eu -c "find /etc/systemd/system -type l -name systemd-sysext.service -print -quit | grep -q ."
           check vpkg-sync-service test -s /usr/lib/systemd/system/veyra-vpkg-sync.service

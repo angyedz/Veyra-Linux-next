@@ -112,6 +112,59 @@ def latest_history_id() -> int | None:
     return max(int(transaction["id"]) for transaction in transactions)
 
 
+def installed_package_names() -> list[str]:
+    if not VPKG_ROOT.exists():
+        return []
+    output = run(
+        ["rpm", "--root", str(VPKG_ROOT), "-qa", "--qf", "%{NAME}\\n"],
+        capture=True,
+    ).stdout
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def check_extensions_active() -> None:
+    names = [
+        name for name in installed_package_names()
+        if name != "gpg-pubkey" and not name.startswith("gpg-pubkey-")
+    ]
+    invalid = [name for name in names if not PACKAGE_RE.fullmatch(name)]
+    if invalid:
+        raise VpkgError(
+            "The Veyra package installroot contains unexpected RPMs: "
+            + ", ".join(invalid)
+        )
+    if not names:
+        return
+    status = run(["systemd-sysext", "status", "--json=short"], capture=True).stdout
+    try:
+        hierarchies = json.loads(status)
+    except json.JSONDecodeError as error:
+        raise VpkgError("systemd-sysext returned unreadable activation status.") from error
+    active: set[str] = set()
+    if not isinstance(hierarchies, list):
+        raise VpkgError("systemd-sysext returned an unexpected activation status format.")
+    for hierarchy in hierarchies:
+        if not isinstance(hierarchy, dict):
+            raise VpkgError("systemd-sysext returned an unexpected hierarchy status entry.")
+        extensions = hierarchy.get("extensions", [])
+        if not isinstance(extensions, list):
+            raise VpkgError("systemd-sysext returned an unexpected extension status list.")
+        for extension in extensions:
+            if isinstance(extension, str):
+                active.add(extension)
+            elif isinstance(extension, dict) and isinstance(extension.get("name"), str):
+                active.add(extension["name"])
+            else:
+                raise VpkgError("systemd-sysext returned an unexpected extension status entry.")
+    inactive = [name for name in names if name not in active]
+    if inactive:
+        raise VpkgError(
+            "systemd-sysext did not activate installed package(s): "
+            + ", ".join(inactive)
+            + ". Their compatibility level or extension image may be invalid."
+        )
+
+
 def inspect_extension_rpms(
     directory: Path,
     *,
@@ -215,13 +268,7 @@ def download_for_inspection(
 
 def sync_extension_links() -> None:
     SYSTEM_EXTENSION_LINK_DIR.mkdir(parents=True, exist_ok=True)
-    installed_names: list[str] = []
-    if VPKG_ROOT.exists():
-        output = run(
-            ["rpm", "--root", str(VPKG_ROOT), "-qa", "--qf", "%{NAME}\\n"],
-            capture=True,
-        ).stdout
-        installed_names = [line.strip() for line in output.splitlines() if line.strip()]
+    installed_names = installed_package_names()
 
     desired: dict[Path, Path] = {}
     for name in installed_names:
@@ -278,6 +325,7 @@ def refresh_extensions_or_undo(previous_id: int | None) -> None:
     try:
         sync_extension_links()
         run(["systemd-sysext", "refresh"])
+        check_extensions_active()
         return
     except VpkgError as refresh_error:
         print("Veyra extension activation failed; reverting the RPM transaction.", file=sys.stderr)
@@ -294,6 +342,7 @@ def refresh_extensions_or_undo(previous_id: int | None) -> None:
             ])
             sync_extension_links()
             run(["systemd-sysext", "refresh"])
+            check_extensions_active()
         except VpkgError as undo_error:
             raise VpkgError(
                 f"Extension activation failed ({refresh_error}); automatic rollback also failed "
@@ -414,6 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("upgrade", help="upgrade installed Veyra extension packages")
     commands.add_parser("sync", help=argparse.SUPPRESS)
+    commands.add_parser("check-extensions", help=argparse.SUPPRESS)
     return parser
 
 
@@ -450,6 +500,9 @@ def main(argv: list[str] | None = None) -> int:
             upgrade()
         elif arguments.command == "sync":
             sync()
+        elif arguments.command == "check-extensions":
+            require_root()
+            with_lock(check_extensions_active)
     except VpkgError as error:
         print(f"vpkg: {error}", file=sys.stderr)
         return 1

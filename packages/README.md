@@ -25,7 +25,11 @@ Base OS, kernel, bootloader, and other packages that change the system image
 are not installable through `vpkg`; those belong in a signed A/B system update.
 The repository RPM is a small wrapper around a version-compatible system
 extension image. Extension images are built for Fedora 44 in this prototype
-and must be rebuilt and tested when Veyra changes Fedora base versions.
+and must be rebuilt and tested when Veyra changes Fedora base versions. They
+also carry the Veyra `SYSEXT_LEVEL` stored in
+`mkosi.extra/usr/share/veyra/sysext-level`; bump that level only when the
+extension ABI changes. Boot assessment rejects a new OS slot if a persistent
+extension is not active under the new image.
 
 ## Channels and publication
 

@@ -20,8 +20,9 @@ sudo veyra-update reboot
 ```
 
 Staging and rebooting are separate actions. After reboot, systemd's boot
-assessment checks the required boot targets. A trial UKI is marked good only
-when those targets succeed; repeated failed boots fall back to the previously
+assessment checks the required boot targets, including validation that all
+installed Veyra extensions activated. A trial UKI is marked good only when
+those targets succeed; repeated failed boots fall back to the previously
 working UKI.
 
 CI exercises that path with a disposable disk image. It signs a temporary
@@ -34,6 +35,12 @@ it three times, verifies each try counter, and checks that the next boot
 returns to the blessed slot. The failure UKI is injected directly into this
 temporary test image; this does not publish a release or assert that an
 application rollback is already available to users.
+
+System-extension images carry the Veyra `SYSEXT_LEVEL` in addition to the
+Fedora release. Before blessing a new slot, the boot health target waits for
+`systemd-sysext` and checks that every RPM recorded in the persistent `vpkg`
+installroot appears in the active extension set. If a new OS slot cannot
+activate a persisted extension, it is not accepted as a good boot.
 
 The image workflow also writes disposable markers to the separate `/etc`,
 `/var` and `/home` partitions before staging the update, then checks those

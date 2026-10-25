@@ -222,6 +222,72 @@ class VpkgPolicyTests(unittest.TestCase):
             self.assertFalse(link.exists())
             self.assertFalse(link.is_symlink())
 
+    def test_extension_health_check_requires_every_installed_extension_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            root.mkdir()
+            with (
+                patch.object(vpkg, "VPKG_ROOT", root),
+                patch.object(
+                    vpkg,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, "veyra-shell-tools\n", ""),
+                        subprocess.CompletedProcess(
+                            [], 0,
+                            '[{"hierarchy":"/usr","extensions":["veyra-shell-tools"],"since":null}]',
+                            "",
+                        ),
+                    ],
+                ) as run,
+            ):
+                vpkg.check_extensions_active()
+
+            self.assertEqual(run.call_count, 2)
+
+    def test_extension_health_check_rejects_inactive_installed_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            root.mkdir()
+            with (
+                patch.object(vpkg, "VPKG_ROOT", root),
+                patch.object(
+                    vpkg,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, "veyra-shell-tools\n", ""),
+                        subprocess.CompletedProcess(
+                            [], 0,
+                            '[{"hierarchy":"/usr","extensions":[],"since":null}]',
+                            "",
+                        ),
+                    ],
+                ),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "did not activate"):
+                    vpkg.check_extensions_active()
+
+    def test_extension_health_check_preserves_raw_suffix_in_package_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            root.mkdir()
+            with (
+                patch.object(vpkg, "VPKG_ROOT", root),
+                patch.object(
+                    vpkg,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, "veyra-example.raw\n", ""),
+                        subprocess.CompletedProcess(
+                            [], 0,
+                            '[{"hierarchy":"/usr","extensions":["veyra-example.raw"],"since":null}]',
+                            "",
+                        ),
+                    ],
+                ),
+            ):
+                vpkg.check_extensions_active()
+
 
 if __name__ == "__main__":
     unittest.main()
