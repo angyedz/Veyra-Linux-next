@@ -11,6 +11,26 @@ target_release="$(awk '
   echo "mkosi.conf must declare a numeric Fedora target release." >&2
   exit 1
 }
+target_distribution="$(awk '
+  /^\[Distribution\]$/ { section=1; next }
+  /^\[/ { section=0 }
+  section && /^Distribution=/ { sub(/^Distribution=/, ""); print; exit }
+' "$root/mkosi.conf")"
+[[ "$target_distribution" == fedora ]] || {
+  echo "mkosi.conf target Distribution must be fedora (found: $target_distribution)." >&2
+  exit 1
+}
+tools_tree_target="$(awk '
+  /^\[Build\]$/ { section=1; next }
+  /^\[/ { section=0 }
+  section && /^(ToolsTree|ToolsTreeDistribution|ToolsTreeRelease)=/ { print }
+' "$root/mkosi.conf")"
+grep -Fxq 'ToolsTree=yes' <<<"$tools_tree_target" &&
+grep -Fxq 'ToolsTreeDistribution=fedora' <<<"$tools_tree_target" &&
+grep -Fxq "ToolsTreeRelease=$target_release" <<<"$tools_tree_target" || {
+  echo "The mkosi tools tree must be enabled and pinned to Fedora $target_release." >&2
+  exit 1
+}
 if [[ ! -e /.dockerenv && ! -e /run/.containerenv ]]; then
   echo "Image composition must run inside an isolated Fedora container." >&2
   exit 1

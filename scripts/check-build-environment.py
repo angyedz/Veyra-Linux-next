@@ -39,6 +39,35 @@ def target_release(config: pathlib.Path) -> str:
     raise BuildEnvironmentError("mkosi.conf must declare a numeric Fedora target Release")
 
 
+def target_distribution(config: pathlib.Path) -> str:
+    section = ""
+    for line in config.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif section == "Distribution" and line.startswith("Distribution="):
+            return line.partition("=")[2].strip()
+    raise BuildEnvironmentError("mkosi.conf must declare a target Distribution")
+
+
+def tools_tree_target(config: pathlib.Path) -> tuple[str, str, bool]:
+    section = ""
+    values: dict[str, str] = {}
+    for line in config.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif section == "Build" and "=" in line:
+            key, _, value = line.partition("=")
+            if key in {"ToolsTree", "ToolsTreeDistribution", "ToolsTreeRelease"}:
+                values[key] = value.strip()
+    return (
+        values.get("ToolsTreeDistribution", ""),
+        values.get("ToolsTreeRelease", ""),
+        values.get("ToolsTree", "").lower() in {"1", "yes", "true"},
+    )
+
+
 def enabled_repo_ids(repo_directory: pathlib.Path) -> dict[str, tuple[str, dict[str, str]]]:
     repos: dict[str, tuple[str, dict[str, str]]] = {}
     for path in sorted(repo_directory.glob("*.repo")):
@@ -69,6 +98,16 @@ def validate_environment(
         raise BuildEnvironmentError("image composition must run inside an isolated Fedora container")
 
     release = target_release(mkosi_config)
+    distribution = target_distribution(mkosi_config)
+    if distribution != "fedora":
+        raise BuildEnvironmentError(f"target Distribution must be fedora; found {distribution!r}")
+    tools_distribution, tools_release, tools_enabled = tools_tree_target(mkosi_config)
+    if not tools_enabled or tools_distribution != "fedora" or tools_release != release:
+        raise BuildEnvironmentError(
+            "mkosi tools tree must be enabled and pinned to the target Fedora release; "
+            f"target={release!r}, tools_distribution={tools_distribution!r}, "
+            f"tools_release={tools_release!r}, enabled={tools_enabled}"
+        )
     osrelease = key_values(osrelease_path)
     if osrelease.get("ID") != "fedora" or osrelease.get("VERSION_ID") != release:
         raise BuildEnvironmentError(

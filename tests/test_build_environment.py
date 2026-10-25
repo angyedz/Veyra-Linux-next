@@ -18,7 +18,7 @@ SPEC.loader.exec_module(gate)
 
 class BuildEnvironmentGateTests(unittest.TestCase):
     def validate(self, *, repos: dict[str, str], listing: str, osrelease: str = "ID=fedora\nVERSION_ID=44\n",
-                 mounts: str = "", in_container: bool = True) -> None:
+                 mounts: str = "", in_container: bool = True, mkosi_config: str | None = None) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             release_file = root / "os-release"
@@ -27,10 +27,12 @@ class BuildEnvironmentGateTests(unittest.TestCase):
             repo_dir.mkdir()
             for filename, content in repos.items():
                 (repo_dir / filename).write_text(content, encoding="utf-8")
+            config = root / "mkosi.conf"
+            config.write_text(mkosi_config or gate.ROOT.joinpath("mkosi.conf").read_text(encoding="utf-8"), encoding="utf-8")
             gate.validate_environment(
                 osrelease_path=release_file,
                 repo_directory=repo_dir,
-                mkosi_config=gate.ROOT / "mkosi.conf",
+                mkosi_config=config,
                 enabled_repo_listing=listing,
                 mountinfo=mounts,
                 in_container=in_container,
@@ -71,6 +73,20 @@ class BuildEnvironmentGateTests(unittest.TestCase):
     def test_rejects_mismatched_container_release(self) -> None:
         with self.assertRaisesRegex(gate.BuildEnvironmentError, "VERSION_ID"):
             self.validate(repos={}, listing="repo id repo name\n", osrelease="ID=fedora\nVERSION_ID=46\n")
+
+    def test_rejects_unpinned_tools_tree_release(self) -> None:
+        config = gate.ROOT.joinpath("mkosi.conf").read_text(encoding="utf-8").replace(
+            "ToolsTreeRelease=44", "ToolsTreeRelease=rawhide"
+        )
+        with self.assertRaisesRegex(gate.BuildEnvironmentError, "tools tree.*pinned"):
+            self.validate(repos=self.fedora_repos(), listing=self.fedora_listing(), mkosi_config=config)
+
+    def test_rejects_non_fedora_target_distribution(self) -> None:
+        config = gate.ROOT.joinpath("mkosi.conf").read_text(encoding="utf-8").replace(
+            "Distribution=fedora", "Distribution=rawhide"
+        )
+        with self.assertRaisesRegex(gate.BuildEnvironmentError, "target Distribution"):
+            self.validate(repos=self.fedora_repos(), listing=self.fedora_listing(), mkosi_config=config)
 
     def test_rejects_enabled_host_copr(self) -> None:
         repos = self.fedora_repos()

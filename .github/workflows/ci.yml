@@ -18,7 +18,7 @@ jobs:
       - name: Verify the pinned Fedora 44 build container before using DNF
         run: bash scripts/check-build-environment.sh
       - name: Install package build and signing tools
-        run: dnf5 install --assumeyes createrepo_c cpio dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
+        run: dnf5 install --assumeyes createrepo_c cpio distribution-gpg-keys dnf5-plugins git gnupg2 python3 rpm-build rpm-sign squashfs-tools
       - name: Build two versions of the Veyra extension RPM
         shell: bash
         run: |
