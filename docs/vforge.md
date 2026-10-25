@@ -103,14 +103,20 @@ configuration outside the options it sets; deployments that add global Podman
 mounts or hooks need a separate security review before relying on this MVP for
 untrusted projects.
 
-The command wrapper tests are guarded for QEMU/KVM guests. Run them as a
-non-root guest user from a read-only source checkout mounted into a disposable
-Veyra VM:
+The command wrapper tests skip outside QEMU/KVM, and the real Podman lifecycle
+scenario refuses to run outside a VM. Run both as a non-root guest user from a
+read-only source checkout mounted into a disposable Veyra VM:
 
 ```sh
 scripts/test-vforge-qemu.sh
 ```
 
-These unit tests mock Podman and check the wrapper's command and safety
-defaults; they do not yet qualify a real container's runtime isolation or
-network behavior.
+The integration scenario uses the real rootless Podman runtime to create an
+environment, run a command through `vforge enter`, verify state through `exec`
+after a stop/start cycle, and remove the environment. The guest needs outbound
+network access on its first run to pull the Fedora 44 container image. The
+Vforge container itself is created with network disabled. The scenario never
+mounts the source checkout, Home, devices or sockets into that environment.
+The unit tests mock Podman and check the wrapper's argument and safety
+defaults; they do not qualify runtime isolation beyond the lifecycle exercised
+by the QEMU scenario.

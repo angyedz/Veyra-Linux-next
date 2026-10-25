@@ -12,6 +12,21 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "mkosi.extra/usr/bin/vforge"
+
+
+def running_in_qemu() -> bool:
+    try:
+        result = subprocess.run(
+            ["systemd-detect-virt", "--vm"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return result.stdout.strip() in {"qemu", "kvm"}
+
+
 SPEC = importlib.util.spec_from_loader(
     "veyra_vforge", SourceFileLoader("veyra_vforge", str(SCRIPT))
 )
@@ -20,6 +35,7 @@ vforge = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vforge)
 
 
+@unittest.skipUnless(running_in_qemu(), "Veyra tests run only inside QEMU/KVM guests")
 class VforgeCommandTests(unittest.TestCase):
     def test_environment_names_reject_path_and_shell_syntax(self) -> None:
         for name in ("../host", "backend;id", "Uppercase", "a" * 56):

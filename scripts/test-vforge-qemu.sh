@@ -16,4 +16,15 @@ if (( EUID == 0 )); then
 fi
 
 cd "$(dirname "$0")/.."
-python3 -m unittest discover -s tests -p 'test_vforge.py'
+repo_root="$PWD"
+mount_options="$(findmnt -n -o OPTIONS --target "$repo_root")"
+case ",$mount_options," in
+  *,ro,*) ;;
+  *)
+    echo "Mount the source checkout read-only inside the QEMU guest." >&2
+    exit 2
+    ;;
+esac
+
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_vforge.py'
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-vforge-integration-qemu.py
