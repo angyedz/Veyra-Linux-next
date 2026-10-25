@@ -11,11 +11,13 @@ import os
 import posixpath
 import re
 import shutil
+import shlex
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -128,6 +130,96 @@ class VpkgReject(VpkgError):
     pass
 
 
+def resolve_path_in_root(root: Path, relative_path: str) -> Path:
+    """Resolve a path using symlink semantics rooted inside a deployment tree."""
+    try:
+        root = root.resolve(strict=True)
+    except OSError as error:
+        raise VpkgError(f"The selected base root is unavailable: {root}") from error
+    if not root.is_dir():
+        raise VpkgError(f"The selected base root is not a directory: {root}")
+
+    pending = list(Path(relative_path).parts)
+    if not pending or pending[0] == "/":
+        pending = list(Path(relative_path).relative_to("/").parts)
+    resolved: list[str] = []
+    symlinks_followed = 0
+    while pending:
+        part = pending.pop(0)
+        if part in ("", ".", "/"):
+            continue
+        if part == "..":
+            if not resolved:
+                raise VpkgError(f"Base path escapes the selected deployment: {relative_path}")
+            resolved.pop()
+            continue
+        candidate = root.joinpath(*resolved, part)
+        try:
+            info = candidate.lstat()
+        except OSError as error:
+            raise VpkgError(f"The selected base is missing {relative_path}: {error}") from error
+        if stat.S_ISLNK(info.st_mode):
+            symlinks_followed += 1
+            if symlinks_followed > 40:
+                raise VpkgError(f"Too many symlinks while reading base path: {relative_path}")
+            target = os.readlink(candidate)
+            if target.startswith("/"):
+                resolved.clear()
+                target_parts = list(Path(target).parts[1:])
+            else:
+                target_parts = list(Path(target).parts)
+            pending = target_parts + pending
+            continue
+        if pending and not stat.S_ISDIR(info.st_mode):
+            raise VpkgError(f"A non-directory component blocks base path {relative_path}.")
+        resolved.append(part)
+
+    result = root.joinpath(*resolved)
+    if not result.is_file():
+        raise VpkgError(f"The selected base path is not a regular file: {relative_path}")
+    return result
+
+
+def base_os_release(root: Path | None = None) -> tuple[str, str]:
+    selected_root = root or Path("/")
+    release_file = resolve_path_in_root(selected_root, "/usr/lib/os-release")
+    try:
+        lines = release_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise VpkgError(f"Cannot read base os-release: {release_file}") from error
+    fields: dict[str, str] = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        if key not in {"ID", "VERSION_ID"}:
+            continue
+        if key in fields:
+            raise VpkgError(f"Base os-release contains duplicate {key} fields.")
+        try:
+            values = shlex.split(raw_value, comments=True, posix=True)
+        except ValueError as error:
+            raise VpkgError(f"Base os-release has malformed {key} syntax.") from error
+        if len(values) != 1 or not re.fullmatch(r"[A-Za-z0-9._-]+", values[0]):
+            raise VpkgError(f"Base os-release has an invalid {key} value.")
+        fields[key] = values[0]
+    if set(fields) != {"ID", "VERSION_ID"}:
+        raise VpkgError("Base os-release must define exactly one ID and VERSION_ID.")
+    return fields["ID"], fields["VERSION_ID"]
+
+
+def fedora_release_from_root(root: Path | None = None) -> str:
+    distro_id, version = base_os_release(root)
+    if distro_id != "fedora":
+        raise VpkgReject(f"REJECT: vpkg only supports Fedora {FEDORA_RELEASE} bases (found ID={distro_id}).")
+    if version != FEDORA_RELEASE:
+        raise VpkgReject(
+            f"REJECT: vpkg is configured for Fedora {FEDORA_RELEASE}, but the selected base reports Fedora {version}."
+        )
+    return version
+
+
 def run(
     command: list[str],
     *,
@@ -224,12 +316,14 @@ def dnf_prefix(
     channel: str | None = None,
     *,
     include_rpmfusion: bool = True,
+    base_root: Path | None = None,
 ) -> list[str]:
+    releasever = fedora_release_from_root(base_root)
     options = [
         "dnf5",
         "--installroot=" + str(VPKG_ROOT),
         "--use-host-config",
-        "--releasever=" + FEDORA_RELEASE,
+        "--releasever=" + releasever,
         "--setopt=system_state_dir=/var/lib/veyra/vpkg/state",
         "--setopt=transaction_history_dir=/var/lib/veyra/vpkg/history",
         "--setopt=persistdir=/var/lib/veyra/vpkg/persist",
@@ -263,13 +357,14 @@ def dnf(
     )
 
 
-def user_package_dnf_prefix(installroot: Path) -> list[str]:
+def user_package_dnf_prefix(installroot: Path, base_root: Path | None = None) -> list[str]:
+    releasever = fedora_release_from_root(base_root)
     repositories = ",".join((*FEDORA_REPOS, *RPMFUSION_REPOS))
     return [
         "dnf5",
         "--installroot=" + str(installroot),
         "--use-host-config",
-        "--releasever=" + FEDORA_RELEASE,
+        "--releasever=" + releasever,
         "--repo=" + repositories,
         "--setopt=system_cachedir=/var/cache/veyra/vpkg/apps",
         "--setopt=install_weak_deps=False",
@@ -339,6 +434,155 @@ def sha256_file(path: Path) -> str:
     except OSError as error:
         raise VpkgError(f"Could not read local RPM: {path}") from error
     return digest.hexdigest()
+
+
+def user_app_tree_digest(tree: Path) -> str:
+    """Hash the complete sysext payload, including file types and metadata."""
+    if not tree.is_dir() or tree.is_symlink():
+        raise VpkgError(f"The app-layer payload tree is missing or unsafe: {tree}")
+    digest = hashlib.sha256()
+    entries: list[Path] = []
+    for current, directories, files in os.walk(tree, followlinks=False):
+        current_path = Path(current)
+        entries.extend(current_path / name for name in directories + files)
+    for entry in sorted(entries, key=lambda path: path.relative_to(tree).as_posix()):
+        relative = entry.relative_to(tree).as_posix()
+        metadata = entry.lstat()
+        mode = stat.S_IMODE(metadata.st_mode)
+        if stat.S_ISLNK(metadata.st_mode):
+            kind = "symlink"
+            value = os.readlink(entry)
+        elif stat.S_ISDIR(metadata.st_mode):
+            kind = "directory"
+            value = ""
+        elif stat.S_ISREG(metadata.st_mode):
+            kind = "file"
+            value = f"{metadata.st_size}:{sha256_file(entry)}"
+        else:
+            raise VpkgError(f"The app-layer payload contains an unsupported file type: {relative}")
+        digest.update(
+            f"{kind}\0{mode:o}\0{metadata.st_uid}\0{metadata.st_gid}\0{relative}\0{value}\0".encode("utf-8")
+        )
+    return digest.hexdigest()
+
+
+def verify_user_app_generation(generation: Path) -> dict[str, object]:
+    manifest = read_json_object(generation / "manifest.json", "app-layer generation manifest")
+    if manifest.get("schema") != 1:
+        raise VpkgError("The app-layer generation has an unsupported manifest schema.")
+    generation_id = manifest.get("generation_id")
+    if generation_id is not None and generation_id != generation.name:
+        raise VpkgError("The app-layer generation ID does not match its directory name.")
+    integrity = manifest.get("integrity")
+    if integrity is not None:
+        if (
+            not isinstance(integrity, dict)
+            or not isinstance(integrity.get("tree_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", integrity["tree_sha256"])
+        ):
+            raise VpkgError("The app-layer generation has malformed integrity metadata.")
+        actual = user_app_tree_digest(generation / "tree")
+        if actual != integrity["tree_sha256"]:
+            raise VpkgError("The app-layer generation payload failed its SHA-256 integrity check.")
+    validate_user_app_requests(manifest.get("requests"))
+    installed = manifest.get("installed")
+    if not isinstance(installed, dict) or any(
+        not isinstance(name, str) or not isinstance(nevra, str)
+        for name, nevra in installed.items()
+    ):
+        raise VpkgError("The app-layer generation has malformed installed package metadata.")
+    return manifest
+
+
+def user_app_generation_has_system_units(generation: Path | None) -> bool:
+    if generation is None:
+        return False
+    unit_root = generation / "tree/usr/lib/systemd/system"
+    if not unit_root.is_dir():
+        return False
+    unit_suffixes = {
+        ".automount", ".device", ".mount", ".path", ".scope", ".service",
+        ".slice", ".socket", ".swap", ".target", ".timer",
+    }
+    for current, directories, files in os.walk(unit_root, followlinks=False):
+        current_path = Path(current)
+        directories[:] = [name for name in directories if not (current_path / name).is_symlink()]
+        if any(Path(name).suffix in unit_suffixes for name in files):
+            return True
+    return False
+
+
+def fsync_user_app_tree(tree: Path) -> None:
+    """Make a prepared package tree durable before publishing its manifest."""
+    directories: list[Path] = []
+    files: list[Path] = []
+    for current, directory_names, file_names in os.walk(tree, followlinks=False):
+        current_path = Path(current)
+        directories.append(current_path)
+        for name in directory_names:
+            entry = current_path / name
+            if entry.is_symlink():
+                continue
+            directories.append(entry)
+        for name in file_names:
+            entry = current_path / name
+            if not entry.is_symlink():
+                files.append(entry)
+    try:
+        for path in files:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        for path in reversed(directories):
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    except OSError as error:
+        raise VpkgError(f"Could not durably flush the app-layer payload: {error}") from error
+
+
+def estimate_generation_copy_bytes(tree: Path | None, extra_files: list[Path] | None = None) -> int:
+    """Estimate ext4 blocks needed to persist a fully independent generation."""
+    estimate = 0
+    if tree is not None:
+        for current, directories, files in os.walk(tree, followlinks=False):
+            current_path = Path(current)
+            for name in directories:
+                path = current_path / name
+                if not path.is_symlink():
+                    estimate += 4096
+            for name in files:
+                path = current_path / name
+                metadata = path.lstat()
+                if stat.S_ISREG(metadata.st_mode):
+                    logical_blocks = ((metadata.st_size + 4095) // 4096) * 4096
+                    allocated_bytes = metadata.st_blocks * 512
+                    estimate += max(logical_blocks, allocated_bytes)
+                elif stat.S_ISLNK(metadata.st_mode):
+                    estimate += 4096
+                else:
+                    raise VpkgError(f"Cannot size unsupported app-layer payload: {path}")
+    for path in extra_files or []:
+        metadata = path.stat()
+        logical_blocks = ((metadata.st_size + 4095) // 4096) * 4096
+        estimate += max(logical_blocks, metadata.st_blocks * 512)
+    return estimate
+
+
+def require_generation_copy_space(required_bytes: int, directory: Path) -> None:
+    available_bytes = shutil.disk_usage(directory).free
+    if available_bytes < required_bytes:
+        raise VpkgError(
+            "Not enough free space on the existing Veyra state filesystem to save this package generation "
+            f"(estimated {required_bytes} bytes needed, {available_bytes} bytes available)."
+        )
 
 
 def query_rpm_name(path: Path) -> str:
@@ -617,6 +861,7 @@ def load_deployment_binding(
         manifest = read_json_object(generation / "manifest.json", "bound app-layer manifest")
         if manifest.get("schema") != 1 or validate_user_app_requests(manifest.get("requests")) != requests:
             raise VpkgError("The deployment binding and app-layer manifest disagree.")
+        verify_user_app_generation(generation)
         base_roothash = manifest.get("base_roothash")
         if base_roothash is not None and base_roothash != roothash:
             raise VpkgError("The bound app generation was resolved for a different base deployment.")
@@ -645,7 +890,7 @@ def write_deployment_binding(
             raise VpkgError("Refusing to bind an app generation outside vpkg state.") from error
         if generation.parent != layer_dir:
             raise VpkgError("Refusing to bind an app generation outside the direct app-layers directory.")
-        manifest = read_json_object(generation / "manifest.json", "candidate app-layer manifest")
+        manifest = verify_user_app_generation(generation)
         if manifest.get("schema") != 1 or validate_user_app_requests(manifest.get("requests")) != validated:
             raise VpkgError("The candidate generation does not match the requested intents.")
         if manifest.get("base_roothash") != roothash:
@@ -885,15 +1130,17 @@ def check_user_app_base_conflicts() -> None:
         )
 
 
-def extension_release_text() -> str:
-    level_path = Path("/usr/share/veyra/sysext-level")
+def extension_release_text(base_root: Path | None = None) -> str:
+    root = base_root or Path("/")
+    releasever = fedora_release_from_root(root)
+    level_path = resolve_path_in_root(root, "/usr/share/veyra/sysext-level")
     try:
         level = level_path.read_text(encoding="ascii").strip()
     except OSError as error:
         raise VpkgError(f"The Veyra extension compatibility level is unavailable: {level_path}") from error
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", level):
         raise VpkgError(f"Invalid Veyra extension compatibility level: {level!r}")
-    return f"ID=fedora\nVERSION_ID={FEDORA_RELEASE}\nSYSEXT_LEVEL={level}\n"
+    return f"ID=fedora\nVERSION_ID={releasever}\nSYSEXT_LEVEL={level}\n"
 
 
 def rpm_package_has_execution_hooks(installroot: Path, name: str) -> bool:
@@ -1056,7 +1303,10 @@ def build_user_app_generation(
     base_root: Path | None = None,
     base_roothash: str | None = None,
     output_dir: Path | None = None,
+    transaction: str = "app-transaction",
 ) -> Path:
+    if base_root is not None:
+        fedora_release_from_root(base_root)
     if not requests:
         raise VpkgError("No app packages were selected for the transaction.")
     USER_APP_LAYER_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -1116,7 +1366,7 @@ def build_user_app_generation(
         environment["container"] = "veyra-vpkg"
         run(
             [
-                *user_package_dnf_prefix(installroot),
+                *user_package_dnf_prefix(installroot, base_root),
                 "--refresh",
                 "install",
                 "--assumeyes",
@@ -1153,6 +1403,14 @@ def build_user_app_generation(
 
         tree = generation / "tree"
         tree.mkdir(mode=0o755, parents=True)
+        required_bytes = 0
+        for hierarchy in ("usr", "opt"):
+            source = installroot / hierarchy
+            if source.is_dir():
+                required_bytes += 4096 + estimate_generation_copy_bytes(source)
+        required_bytes += estimate_generation_copy_bytes(None, list(copied_local.values()))
+        required_bytes += (len(copied_local) + 4) * 4096
+        require_generation_copy_space(required_bytes, generation.parent)
         for hierarchy in ("usr", "opt"):
             source = installroot / hierarchy
             if source.is_dir():
@@ -1166,7 +1424,7 @@ def build_user_app_generation(
         ).is_symlink():
             raise VpkgError("The base OS already owns the reserved app-layer metadata path.")
         release.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        release.write_text(extension_release_text(), encoding="ascii")
+        release.write_text(extension_release_text(base_root), encoding="ascii")
 
         local_rpms = generation / "local-rpms"
         local_rpms.mkdir(mode=0o700)
@@ -1174,21 +1432,55 @@ def build_user_app_generation(
             shutil.copyfile(source, local_rpms / f"{digest}.rpm")
             (local_rpms / f"{digest}.rpm").chmod(0o600)
 
+        fsync_user_app_tree(tree)
         manifest = {
             "schema": 1,
+            "generation_id": generation.name,
+            "parent_generation": str(current) if current is not None else None,
+            "transaction": transaction,
+            "created_unix_ns": time.time_ns(),
             "requests": requests,
             "installed": added,
             "base_roothash": base_roothash,
+            "integrity": {"tree_sha256": user_app_tree_digest(tree)},
         }
-        (generation / "manifest.json").write_text(
-            json.dumps(manifest, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        atomic_write_json(generation / "manifest.json", manifest)
         shutil.rmtree(work)
+        verify_user_app_generation(generation)
         return generation
     except Exception:
         shutil.rmtree(generation, ignore_errors=True)
         raise
+
+
+def create_empty_user_app_generation(base_roothash: str, transaction: str) -> Path:
+    """Keep an explicit empty generation so removing all apps remains reversible."""
+    if not ROOTHASH_RE.fullmatch(base_roothash):
+        raise VpkgError("The target deployment roothash must be 64 lowercase hexadecimal characters.")
+    USER_APP_LAYER_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
+    layer_root = USER_APP_LAYER_DIR.resolve(strict=True)
+    parent = active_user_app_generation()
+    generation = layer_root / ("generation-" + uuid.uuid4().hex)
+    generation.mkdir(mode=0o755)
+    tree = generation / "tree"
+    tree.mkdir(mode=0o755)
+    fsync_user_app_tree(tree)
+    atomic_write_json(
+        generation / "manifest.json",
+        {
+            "schema": 1,
+            "generation_id": generation.name,
+            "parent_generation": str(parent) if parent is not None else None,
+            "transaction": transaction,
+            "created_unix_ns": time.time_ns(),
+            "requests": [],
+            "installed": {},
+            "base_roothash": base_roothash,
+            "integrity": {"tree_sha256": user_app_tree_digest(tree)},
+        },
+    )
+    verify_user_app_generation(generation)
+    return generation
 
 
 def atomic_symlink(target: Path, link: Path, temporary_name: str) -> None:
@@ -1234,6 +1526,20 @@ def sync_user_app_extension_link() -> None:
             USER_APP_SYSEXT_LINK.unlink()
         return
 
+    manifest = verify_user_app_generation(generation)
+    installed = manifest.get("installed")
+    if not isinstance(installed, dict) or not installed:
+        if USER_APP_SYSEXT_LINK.exists() or USER_APP_SYSEXT_LINK.is_symlink():
+            if not USER_APP_SYSEXT_LINK.is_symlink():
+                raise VpkgError(f"Refusing to remove a non-symlink extension: {USER_APP_SYSEXT_LINK}")
+            target = USER_APP_SYSEXT_LINK.resolve(strict=False)
+            try:
+                target.relative_to(USER_APP_LAYER_DIR.resolve(strict=False))
+            except ValueError as error:
+                raise VpkgError("Refusing to remove an extension link not owned by vpkg.") from error
+            USER_APP_SYSEXT_LINK.unlink()
+        return
+
     tree = generation / "tree"
     if not tree.is_dir():
         raise VpkgError(f"The active Veyra app-layer tree is missing: {tree}")
@@ -1252,17 +1558,25 @@ def sync_user_app_extension_link() -> None:
 
 def activate_user_app_generation(generation: Path | None) -> None:
     previous = active_user_app_generation()
+    reload_units = (
+        user_app_generation_has_system_units(previous)
+        or user_app_generation_has_system_units(generation)
+    )
     try:
         set_user_app_current(generation)
         sync_user_app_extension_link()
         run(["systemd-sysext", "refresh"])
         check_extensions_active()
+        if reload_units:
+            run(["systemctl", "daemon-reload"])
     except (VpkgError, OSError) as activation_error:
         try:
             set_user_app_current(previous)
             sync_user_app_extension_link()
             run(["systemd-sysext", "refresh"])
             check_extensions_active()
+            if reload_units:
+                run(["systemctl", "daemon-reload"])
         except (VpkgError, OSError) as rollback_error:
             raise VpkgError(
                 f"App-layer activation failed ({activation_error}); restoring the previous layer "
@@ -1283,21 +1597,38 @@ def commit_user_app_generation(
 ) -> None:
     previous = active_user_app_generation()
     previous_requests = load_user_app_intents()
+    binding_path = deployment_binding_path(roothash, version)
+    previous_binding = (
+        read_json_object(binding_path, "previous deployment binding")
+        if binding_path.exists() or binding_path.is_symlink()
+        else None
+    )
     activate_user_app_generation(generation)
     try:
         write_user_app_intents(requests)
         write_deployment_binding(roothash, version, generation, requests, replace_existing=True)
-    except VpkgError as error:
+    except (VpkgError, OSError) as error:
         try:
             write_user_app_intents(previous_requests)
-        except VpkgError as intents_error:
+        except (VpkgError, OSError) as intents_error:
             raise VpkgError(
                 f"Could not persist the app generation ({error}); restoring the previous package intents "
                 f"also failed ({intents_error})."
             ) from intents_error
         try:
+            if previous_binding is None:
+                if binding_path.parent.is_dir():
+                    durable_unlink(binding_path)
+            else:
+                atomic_write_json(binding_path, previous_binding)
+        except (VpkgError, OSError) as binding_error:
+            raise VpkgError(
+                f"Could not persist the app generation ({error}); restoring the previous deployment binding "
+                f"also failed ({binding_error})."
+            ) from binding_error
+        try:
             activate_user_app_generation(previous)
-        except VpkgError as rollback_error:
+        except (VpkgError, OSError) as rollback_error:
             raise VpkgError(
                 f"Could not persist the app generation ({error}); restoring the previous generation "
                 f"also failed ({rollback_error})."
@@ -1331,7 +1662,7 @@ def set_user_app_pin(package: str, evr: str | None) -> None:
             request["pin"] = evr
         roothash = running_deployment_roothash()
         version = running_uki_version()
-        generation = build_user_app_generation(updated, {}, base_roothash=roothash)
+        generation = build_user_app_generation(updated, {}, base_roothash=roothash, transaction="pin")
         commit_user_app_generation(generation, updated, roothash, version)
         print(f"Updated {package} version pin.")
 
@@ -1350,7 +1681,9 @@ def install_user_apps(specifications: list[str]) -> None:
             return
         roothash = running_deployment_roothash()
         version = running_uki_version()
-        generation = build_user_app_generation(requests, local_sources, base_roothash=roothash)
+        generation = build_user_app_generation(
+            requests, local_sources, base_roothash=roothash, transaction="install"
+        )
         commit_user_app_generation(generation, requests, roothash, version)
         print("LIVE transaction: activated as an additive vpkg-apps layer.")
         names = ", ".join(
@@ -1385,7 +1718,13 @@ def remove_user_apps(specifications: list[str]) -> None:
             raise VpkgError("None of the requested packages was explicitly installed in the app layer.")
         roothash = running_deployment_roothash()
         version = running_uki_version()
-        generation = build_user_app_generation(remaining, {}, base_roothash=roothash) if remaining else None
+        generation = (
+            build_user_app_generation(
+                remaining, {}, base_roothash=roothash, transaction="remove"
+            )
+            if remaining
+            else create_empty_user_app_generation(roothash, "remove")
+        )
         commit_user_app_generation(generation, remaining, roothash, version)
         print("Removed app packages: " + ", ".join(request["name"] for request in removed))
 
@@ -1399,10 +1738,56 @@ def upgrade_user_apps() -> bool:
         return False
     roothash = running_deployment_roothash()
     version = running_uki_version()
-    generation = build_user_app_generation(current, {}, base_roothash=roothash)
+    generation = build_user_app_generation(
+        current, {}, base_roothash=roothash, transaction="upgrade"
+    )
     commit_user_app_generation(generation, current, roothash, version)
     print("Updated the Fedora/RPM Fusion app layer.")
     return True
+
+
+def rollback_user_apps() -> None:
+    require_root()
+
+    def transaction() -> None:
+        require_no_pending_update()
+        current = active_user_app_generation()
+        if current is None:
+            raise VpkgError("There is no active app-layer generation to roll back.")
+        current_manifest = verify_user_app_generation(current)
+        if "parent_generation" not in current_manifest:
+            raise VpkgError("The active app generation predates rollback metadata and cannot be rolled back safely.")
+        roothash = running_deployment_roothash()
+        if current_manifest.get("base_roothash") != roothash:
+            raise VpkgError("The active app generation belongs to a different base deployment.")
+        parent_value = current_manifest.get("parent_generation")
+        if parent_value is None:
+            parent = None
+            requests: list[dict[str, str]] = []
+        elif isinstance(parent_value, str):
+            parent = Path(parent_value)
+            if not parent.is_absolute() or parent.is_symlink():
+                raise VpkgError("The previous app generation path is malformed or unsafe.")
+            try:
+                parent = parent.resolve(strict=True)
+                parent.relative_to(USER_APP_LAYER_DIR.resolve(strict=True))
+            except (OSError, ValueError) as error:
+                raise VpkgError("The previous app generation is missing or outside vpkg state.") from error
+            if parent.parent != USER_APP_LAYER_DIR.resolve(strict=True):
+                raise VpkgError("The previous app generation is outside the direct app-layers directory.")
+            parent_manifest = verify_user_app_generation(parent)
+            if parent_manifest.get("base_roothash") != roothash:
+                raise VpkgError("The previous app generation belongs to a different base deployment.")
+            validate_user_app_tree(parent / "tree")
+            requests = validate_user_app_requests(parent_manifest.get("requests"))
+        else:
+            raise VpkgError("The active app generation has invalid rollback metadata.")
+
+        version = running_uki_version()
+        commit_user_app_generation(parent, requests, roothash, version)
+        print("Rolled back to the previous app-layer generation.")
+
+    with_lock(transaction)
 
 
 def latest_history_id() -> int | None:
@@ -1440,7 +1825,13 @@ def check_extensions_active() -> None:
             "The Veyra package installroot contains unexpected RPMs: "
             + ", ".join(invalid)
         )
-    if active_user_app_generation() is not None:
+    generation = active_user_app_generation()
+    if generation is not None:
+        manifest = verify_user_app_generation(generation)
+        installed = manifest.get("installed")
+    else:
+        installed = None
+    if isinstance(installed, dict) and installed:
         check_user_app_base_conflicts()
         names.append(USER_APP_EXTENSION_NAME)
     if not names:
@@ -1816,6 +2207,7 @@ def prepare_for_base(base_root: Path, roothash: str, output: Path) -> dict[str, 
         raise VpkgError("The target deployment roothash must be 64 lowercase hexadecimal characters.")
     if not base_root.is_dir() or base_root.is_symlink():
         raise VpkgError("The target base root must be an existing real directory.")
+    fedora_release_from_root(base_root)
     USER_APP_LAYER_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
     layer_dir = USER_APP_LAYER_DIR.resolve(strict=True)
     if not output.is_absolute():
@@ -1842,8 +2234,9 @@ def prepare_for_base(base_root: Path, roothash: str, output: Path) -> dict[str, 
         base_root=base_root,
         base_roothash=roothash,
         output_dir=output,
+        transaction="ota-prepare",
     )
-    manifest = read_json_object(generation / "manifest.json", "prepared candidate manifest")
+    manifest = verify_user_app_generation(generation)
     return {
         "schema": 1,
         "status": "ready",
@@ -1867,7 +2260,7 @@ def bind_generation(roothash: str, version: str, generation_text: str) -> None:
         if generation is not None:
             if not generation.is_absolute():
                 raise VpkgError("The candidate generation path must be absolute.")
-            manifest = read_json_object(generation / "manifest.json", "candidate app-layer manifest")
+            manifest = verify_user_app_generation(generation)
             if validate_user_app_requests(manifest.get("requests")) != requests:
                 raise VpkgError("Candidate package intents are stale; prepare the target base again.")
             if manifest.get("base_roothash") != roothash:
@@ -1949,6 +2342,7 @@ def build_parser() -> argparse.ArgumentParser:
     remove_parser.add_argument("packages", nargs="+")
 
     commands.add_parser("upgrade", help="upgrade installed Veyra extensions and app-layer packages")
+    commands.add_parser("rollback", help="restore the previous app-layer generation")
     pin = commands.add_parser("pin", help="pin a repository app to an exact RPM EVR")
     pin.add_argument("package")
     pin.add_argument("evr")
@@ -2003,6 +2397,8 @@ def main(argv: list[str] | None = None) -> int:
             remove(arguments.packages)
         elif arguments.command == "upgrade":
             upgrade()
+        elif arguments.command == "rollback":
+            rollback_user_apps()
         elif arguments.command == "pin":
             set_user_app_pin(arguments.package, arguments.evr)
         elif arguments.command == "unpin":

@@ -145,6 +145,23 @@ if command -v htop >/dev/null 2>&1; then
 fi
 echo "Veyra vpkg VM test: signed local RPM installed and removed transactionally"
 
+unit_rpm="$(find "$repo/local-upstream/x86_64" -maxdepth 1 \
+    -name 'vpkg-unit-fixture-*.rpm' -print -quit)"
+test -s "$unit_rpm"
+vpkg install "$unit_rpm"
+unit_name=veyra-vpkg-unit-fixture.service
+test "$(systemctl show --property=LoadState --value "$unit_name")" = loaded
+test "$(systemctl show --property=ActiveState --value "$unit_name")" = inactive
+unit_enabled="$(systemctl is-enabled "$unit_name" 2>/dev/null || true)"
+test "$unit_enabled" = disabled
+vpkg remove vpkg-unit-fixture
+if systemctl cat "$unit_name" >/dev/null 2>&1; then
+    echo "systemd still sees the unit after its app generation was removed." >&2
+    exit 1
+fi
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg VM test: additive systemd unit became visible without being started or enabled"
+
 scriptlet_rpm="$(find "$repo/local-upstream/x86_64" -maxdepth 1 \
     -name 'vpkg-scriptlet-fixture-*.rpm' -print -quit)"
 test -s "$scriptlet_rpm"
@@ -255,6 +272,11 @@ test -n "$old_version"
 
 vpkg install htop
 htop_pin="$(rpm --root "$root" -q --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}' htop)"
+vpkg pin htop "$htop_pin"
+vpkg rollback
+python3 -c 'import json,sys; requests=json.load(open(sys.argv[1]))["requests"]; assert len(requests)==1 and "pin" not in requests[0]' \
+    /var/lib/veyra/vpkg/intents.json
+vpkg list | grep -Fq 'htop:'
 vpkg pin htop "$htop_pin"
 old_generation="$(readlink -f /var/lib/veyra/vpkg/apps/current)"
 old_intents="$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)"

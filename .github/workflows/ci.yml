@@ -148,6 +148,41 @@ jobs:
             --define "_topdir $PWD/build/scriptlet" \
             --define "_sourcedir $PWD/build/scriptlet/SOURCES" \
             --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          mkdir -p build/unit/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat > build/unit/SOURCES/veyra-vpkg-unit-fixture.service <<'EOF'
+          [Unit]
+          Description=Veyra vpkg systemd unit integration fixture
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          cat > build/unit/SPECS/vpkg-unit-fixture.spec <<'EOF'
+          Name:           vpkg-unit-fixture
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Disposable vpkg systemd unit fixture
+          License:        MIT
+          BuildArch:      x86_64
+          Source0:        veyra-vpkg-unit-fixture.service
+
+          %description
+          Used only to verify that vpkg exposes and reloads a systemd unit.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/usr/lib/systemd/system/veyra-vpkg-unit-fixture.service
+          %files
+          /usr/lib/systemd/system/veyra-vpkg-unit-fixture.service
+          EOF
+          rpmbuild -bb build/unit/SPECS/vpkg-unit-fixture.spec \
+            --define "_topdir $PWD/build/unit" \
+            --define "_sourcedir $PWD/build/unit/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
       - name: Sign the disposable VM test repository
         shell: bash
         run: |
@@ -159,7 +194,7 @@ jobs:
           rpm --import build/site/RPM-GPG-KEY-VEYRA
           rpmsign --define "_gpg_name $fingerprint" --addsign \
             build/rpms/*.rpm build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm \
-            build/scriptlet/RPMS/*.rpm
+            build/scriptlet/RPMS/*.rpm build/unit/RPMS/*.rpm
           scripts/build-package-repo.sh testing build/rpms build/site
           scripts/build-package-repo.sh main build/empty-rpms build/site
           testing_repo=build/site/packages/testing/x86_64
@@ -178,11 +213,12 @@ jobs:
           upstream=build/site/local-upstream/x86_64
           mkdir -p "$upstream"
           dnf5 --repo=fedora download --resolve --alldeps --destdir="$upstream" htop
-          cp build/scriptlet/RPMS/*.rpm "$upstream/"
+          cp build/scriptlet/RPMS/*.rpm build/unit/RPMS/*.rpm "$upstream/"
           createrepo_c --database "$upstream"
           test -s "$upstream/repodata/repomd.xml"
           test -n "$(find "$upstream" -maxdepth 1 -name 'htop-*.rpm' -print -quit)"
           test -s "$upstream/vpkg-scriptlet-fixture-0.1.0-1.fc44.x86_64.rpm"
+          test -s "$upstream/vpkg-unit-fixture-0.1.0-1.fc44.x86_64.rpm"
           test "$(find build/site/packages/testing/x86_64 -maxdepth 1 -name 'veyra-shell-tools-*.rpm' | wc -l)" -eq 2
           test -s build/site/packages/testing/x86_64/veyra-broken-extension-0.1.0-1.fc44.x86_64.rpm
       - uses: actions/upload-artifact@v4

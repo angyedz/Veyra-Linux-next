@@ -35,6 +35,95 @@ def running_in_qemu_vm() -> bool:
 
 @unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
 class VpkgPolicyTests(unittest.TestCase):
+    def test_generation_integrity_detects_payload_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            generation = Path(temporary) / "generation-test"
+            tree = generation / "tree"
+            payload = tree / "usr/bin/example"
+            payload.parent.mkdir(parents=True)
+            payload.write_text("original", encoding="utf-8")
+            manifest = {
+                "schema": 1,
+                "generation_id": generation.name,
+                "requests": [{"kind": "repo", "name": "example"}],
+                "installed": {"example": "example-0:1-1.x86_64"},
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(tree)},
+            }
+            (generation / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            vpkg.verify_user_app_generation(generation)
+            payload.write_text("modified", encoding="utf-8")
+            with self.assertRaisesRegex(vpkg.VpkgError, "SHA-256 integrity check"):
+                vpkg.verify_user_app_generation(generation)
+
+    def test_empty_generation_records_its_parent_for_remove_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            previous = layer_dir / "generation-previous"
+            previous.mkdir(parents=True)
+            (previous / "tree").mkdir()
+            (previous / "manifest.json").write_text(
+                json.dumps({"schema": 1, "requests": [], "installed": {}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "active_user_app_generation", return_value=previous),
+            ):
+                generation = vpkg.create_empty_user_app_generation("a" * 64, "remove")
+            manifest = vpkg.verify_user_app_generation(generation)
+            self.assertEqual(manifest["parent_generation"], str(previous))
+            self.assertEqual(manifest["transaction"], "remove")
+            self.assertEqual(manifest["requests"], [])
+            self.assertEqual(manifest["installed"], {})
+
+    def test_rollback_selects_parent_generation_without_crossing_base_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            state_dir = root / "apps"
+            previous = layer_dir / "generation-previous"
+            current = layer_dir / "generation-current"
+            for generation in (previous, current):
+                tree = generation / "tree"
+                tree.mkdir(parents=True)
+            previous_manifest = {
+                "schema": 1,
+                "generation_id": previous.name,
+                "parent_generation": None,
+                "requests": [],
+                "installed": {},
+                "base_roothash": "a" * 64,
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(previous / "tree")},
+            }
+            (previous / "manifest.json").write_text(json.dumps(previous_manifest), encoding="utf-8")
+            current_manifest = {
+                "schema": 1,
+                "generation_id": current.name,
+                "parent_generation": str(previous),
+                "requests": [{"kind": "repo", "name": "example"}],
+                "installed": {"example": "example-0:1-1.x86_64"},
+                "base_roothash": "a" * 64,
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(current / "tree")},
+            }
+            (current / "manifest.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+            state_dir.mkdir()
+            current_link = state_dir / "current"
+            current_link.symlink_to(current, target_is_directory=True)
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "USER_APP_STATE", state_dir),
+                patch.object(vpkg, "USER_APP_CURRENT", current_link),
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                patch.object(vpkg, "require_no_pending_update"),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.0.0"),
+                patch.object(vpkg, "commit_user_app_generation") as commit,
+            ):
+                vpkg.rollback_user_apps()
+            commit.assert_called_once_with(previous, [], "a" * 64, "1.0.0")
+
     def test_prepare_for_empty_intents_returns_ready_without_creating_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -269,6 +358,40 @@ class VpkgPolicyTests(unittest.TestCase):
         self.assertTrue(any("localpkg_gpgcheck=True" in item for item in prefix))
         self.assertIn("--setopt=tsflags=noscripts,notriggers", prefix)
         self.assertFalse(any("veyra-main" in item or "veyra-testing" in item for item in prefix))
+
+    def test_fedora_release_is_derived_from_candidate_os_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "etc").mkdir()
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "etc/os-release").write_text(
+                'NAME="Fedora Linux"\nID=fedora\nVERSION_ID="44"\n',
+                encoding="utf-8",
+            )
+            (root / "usr/lib/os-release").symlink_to("../../etc/os-release")
+
+            self.assertEqual(vpkg.fedora_release_from_root(root), "44")
+            prefix = vpkg.user_package_dnf_prefix(Path("/tmp/installroot"), root)
+            self.assertIn("--releasever=44", prefix)
+
+    def test_fedora_46_candidate_is_rejected_before_generation_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "usr/lib/os-release").write_text(
+                'ID=fedora\nVERSION_ID="46"\n', encoding="utf-8"
+            )
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            output = layer_dir / "generation-candidate"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "load_pending_update", return_value=None),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgReject, "Fedora 44"):
+                    vpkg.prepare_for_base(root, "a" * 64, output)
+            self.assertFalse(output.exists())
 
     def test_user_app_rpm_transaction_keeps_base_inventory_unchanged(self) -> None:
         base = {"bash": {"bash-0:5.2-1.x86_64"}}
