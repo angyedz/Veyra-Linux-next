@@ -49,10 +49,12 @@ snapshot data inside one sparse ext4 image mounted through `fuse2fs`; ext4
 capacity (including filesystem metadata) is the cap, and the backing file
 allocates host blocks only as they are written. It does not reserve the full
 amount in advance. Small Vforge registry/config metadata outside the image is
-not counted. On a full image, package installation or snapshot creation can
-fail with `ENOSPC`. The cap cannot be resized in place; delete and recreate the
-environment to choose another size. An interrupted initial format can leave an
-incomplete image requiring manual removal. The implementation requires
+not counted; explicitly approved host bind mounts, host Home mounts and
+ephemeral tmpfs are also outside the cap because their data remains outside the
+environment store. On a full image, package installation or snapshot creation
+can fail with `ENOSPC`. The cap cannot be resized in place; delete and recreate
+the environment to choose another size. An interrupted initial format can
+leave an incomplete image requiring manual removal. The implementation requires
 `e2fsprogs`, `/dev/fuse`, and a working rootless FUSE setup; this path still
 needs validation in the Fedora 44 Veyra guest before runtime verification.
 Changing the selected root does not move existing data; pass the old root
