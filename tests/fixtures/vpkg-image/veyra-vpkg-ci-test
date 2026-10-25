@@ -228,5 +228,108 @@ if rpm -q veyra-shell-tools >/dev/null 2>&1; then
 fi
 
 echo "Veyra vpkg VM test: remove detached the extension and preserved the base RPM database"
+
+# Exercise the OTA handoff against a real package generation. Keep this part in
+# the guest fixture so candidate RPM solving, the base RPM database, and the
+# pending-update lock are all tested in the same disposable Veyra VM.
+vpkg sync
+old_generation="$(readlink -f /var/lib/veyra/vpkg/apps/current)"
+old_roothash="$(python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("veyra_vpkg", "/usr/bin/vpkg")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.running_deployment_roothash())
+PY
+)"
+old_version="$(python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("veyra_vpkg", "/usr/bin/vpkg")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.running_uki_version())
+PY
+)"
+test "${#old_roothash}" -eq 64
+test -n "$old_version"
+
+vpkg install htop
+htop_pin="$(rpm --root "$root" -q --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}' htop)"
+vpkg pin htop "$htop_pin"
+old_generation="$(readlink -f /var/lib/veyra/vpkg/apps/current)"
+old_intents="$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)"
+old_binding="/var/lib/veyra/vpkg/deployments/$old_roothash--$old_version.json"
+old_binding_hash="$(sha256sum "$old_binding" | cut -d ' ' -f 1)"
+old_manifest_requests="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["requests"],sort_keys=True))' "$old_generation/manifest.json")"
+if rpm -q htop >/dev/null 2>&1; then
+    echo "The app-layer htop transaction modified the immutable base RPM database." >&2
+    exit 1
+fi
+rpm --root "$root" -q htop >/dev/null
+if [[ "$old_manifest_requests" != *"\"pin\": \"$htop_pin\""* ]]; then
+    echo "vpkg did not persist the explicit htop EVR pin in its app generation." >&2
+    exit 1
+fi
+
+# A candidate root that introduces an app-file collision must be rejected
+# without changing the currently selected generation or the user's request.
+candidate_root=/var/tmp/veyra-vpkg-ci-candidate-root
+mkdir -p "$candidate_root/usr/lib/sysimage" "$candidate_root/usr/bin"
+cp -a /usr/lib/sysimage/rpm "$candidate_root/usr/lib/sysimage/rpm"
+touch "$candidate_root/usr/bin/htop"
+candidate_roothash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+conflict_output=/var/lib/veyra/vpkg/app-layers/generation-conflict
+conflict_log=/var/lib/veyra/vpkg-ci-candidate-conflict.json
+if vpkg prepare-for-base --base-root "$candidate_root" --roothash "$candidate_roothash" \
+    --output "$conflict_output" >"$conflict_log"; then
+    cat "$conflict_log"
+    echo "vpkg unexpectedly resolved the pinned app against a colliding candidate base." >&2
+    exit 1
+fi
+grep -Fq '"status": "rejected"' "$conflict_log"
+test "$(readlink -f /var/lib/veyra/vpkg/apps/current)" = "$old_generation"
+test "$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)" = "$old_intents"
+test "$(sha256sum "$old_binding" | cut -d ' ' -f 1)" = "$old_binding_hash"
+test ! -e "$conflict_output"
+test ! -e /var/lib/veyra/vpkg/pending.json
+echo "Veyra vpkg VM test: candidate conflict preserved the active generation and pinned request"
+
+# Resolve the same persisted request against a candidate base and bind it to a
+# different IMAGE_VERSION with the same roothash. The identity pair must keep
+# both generations distinct while the candidate remains pending.
+candidate_version="${old_version}.ci-candidate"
+candidate_output=/var/lib/veyra/vpkg/app-layers/generation-ci-candidate
+prepared=/var/lib/veyra/vpkg-ci-prepared-generation.json
+vpkg prepare-for-base --base-root / --roothash "$old_roothash" --output "$candidate_output" >"$prepared"
+candidate_generation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' "$prepared")"
+test "$candidate_generation" = "$candidate_output"
+candidate_requests="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["requests"],sort_keys=True))' "$candidate_generation/manifest.json")"
+test "$candidate_requests" = "$old_manifest_requests"
+candidate_evr="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["installed"]["htop"])' "$candidate_generation/manifest.json")"
+test "$candidate_evr" = "htop-$htop_pin.x86_64"
+vpkg bind-generation --roothash "$old_roothash" --version "$candidate_version" --generation "$candidate_generation"
+test -s "/var/lib/veyra/vpkg/deployments/$old_roothash--$old_version.json"
+test -s "/var/lib/veyra/vpkg/deployments/$old_roothash--$candidate_version.json"
+
+for command in \
+    "install jq" \
+    "remove htop" \
+    "upgrade" \
+    "pin htop 0:1-1" \
+    "unpin htop"; do
+    read -r -a mutation <<< "$command"
+    if vpkg "${mutation[@]}" >/var/lib/veyra/vpkg-ci-pending-lock.log 2>&1; then
+        echo "vpkg unexpectedly allowed package mutation during pending OTA: $command" >&2
+        exit 1
+    fi
+    grep -Fq "Package changes are blocked while OTA $candidate_version is pending." \
+        /var/lib/veyra/vpkg-ci-pending-lock.log
+done
+vpkg sync
+test "$(readlink -f /var/lib/veyra/vpkg/apps/current)" = "$old_generation"
+test "$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)" = "$old_intents"
+test -e /var/lib/veyra/vpkg/pending.json
+echo "Veyra vpkg VM test: explicit requests and pins were re-resolved, pair-keyed, and locked through pending OTA"
+
 touch "$complete"
 echo "VEYRA_VPKG_CI_PASS"
