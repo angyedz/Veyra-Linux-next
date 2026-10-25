@@ -228,6 +228,13 @@ jobs:
             mkosi.extra/usr/libexec/veyra-vpkg-ci-test
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
+      - name: Gate root, UKI and core RPMs on Fedora 44
+        run: |
+          version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          test -s mkosi.output/veyra-next.raw
+          test -s mkosi.output/veyra-next.manifest
+          test -s "mkosi.output/veyra-next_${version}.efi"
+          python3 scripts/check-image.py mkosi.output/veyra-next.raw
       - name: Verify the packages inside the built image
         run: |
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
@@ -249,11 +256,9 @@ jobs:
           check vpkg-sync-service test -s /usr/lib/systemd/system/veyra-vpkg-sync.service
           check sysext-vpkg-ordering test -s /usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf
           '
-      - name: Check that mkosi produced a disk image
+      - name: Check that mkosi produced update assets
         run: |
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
-          test -s mkosi.output/veyra-next.raw
-          python3 scripts/check-image.py mkosi.output/veyra-next.raw
           test -s "mkosi.output/veyra-next_${version}.efi"
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root.raw.zst" -type f -size +0c | grep -q .
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .

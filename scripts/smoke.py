@@ -56,6 +56,8 @@ def main() -> int:
             return fail(f"{config.name} must contain {expected!r} in [Output]")
     if "SplitArtifacts=partitions,uki,roothash,os-release,repart-definitions" not in output:
         return fail("the build must export root, verity and UKI artifacts for updates")
+    if "ManifestFormat=json" not in output:
+        return fail("the build must export an RPM manifest for the Fedora release gate")
     for expected in (
         "Bootable=yes",
         "Bootloader=systemd-boot",
@@ -297,6 +299,8 @@ def main() -> int:
         return fail("signed OTA installation and updates must run inside the restricted QEMU guest")
     if re.search(r"systemd-sysupdate[^\n]*--image", ota_vm_test_content):
         return fail("CI must not exercise systemd-sysupdate against a host-mounted image")
+    if "--qemu-accel" not in ota_vm_test_content or "--qemu-cpu" not in ota_vm_test_content:
+        return fail("the OTA QEMU test must allow explicit KVM acceleration and host CPU selection")
     update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
     if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
         return fail("the image must install the veyra-update command")
