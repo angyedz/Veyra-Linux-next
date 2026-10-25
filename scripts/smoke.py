@@ -46,7 +46,12 @@ def main() -> int:
     ):
         if expected not in distribution:
             return fail(f"{config.name} must contain {expected!r} in [Distribution]")
-    for expected in ("Format=disk", "Output=veyra-next", "OutputDirectory=mkosi.output"):
+    for expected in (
+        "Format=disk",
+        "ElTorito=no",
+        "Output=veyra-next",
+        "OutputDirectory=mkosi.output",
+    ):
         if expected not in output:
             return fail(f"{config.name} must contain {expected!r} in [Output]")
     if "SplitArtifacts=partitions,uki,roothash,os-release,repart-definitions" not in output:

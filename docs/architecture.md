@@ -16,7 +16,7 @@ The current UKIs are unsigned and the VM uses ordinary UEFI. Secure Boot is deli
 
 ## Build and release direction
 
-1. `mkosi` builds the Fedora 44 package set and two fixed-size root slots. Slot A is EROFS with a matching dm-verity hash partition; slot B starts empty. The current roots are each 8 GiB, and each verity slot is 512 MiB.
+1. `mkosi` builds the Fedora 44 package set and two fixed-size root slots as a plain GPT disk image. It omits an El Torito ISO9660 descriptor so `systemd-sysupdate` can dissect the root and verity partitions consistently. Slot A is EROFS with a matching dm-verity hash partition; slot B starts empty. The current roots are each 8 GiB, and each verity slot is 512 MiB.
 2. The image also has writable ext4 partitions for `/etc` and `/var`, mounted from the initrd before switch-root, and a separate persistent `/home` partition. Cross-version compatibility and migration for persistent state still need a policy.
 3. `systemd-sysupdate` transfers the matching verity and root images to the unused partitions. Release filenames carry the two halves of the dm-verity root hash; `PartitionUUID=@u` preserves those UUIDs when writing the new slots. The UKI is transferred last and receives three boot attempts; its presence is the entry point for the new version. The current version is protected while an update is staged.
 4. Update definitions require GPG verification of `SHA256SUMS` (`Verify=yes`). The manual release workflow builds with the public half of a dedicated Veyra update key, signs the root/verity/UKI manifest and publishes those assets. Until its private key is provisioned and the workflow is run from `main`, there is no usable signed release today.

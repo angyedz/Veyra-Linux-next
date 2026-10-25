@@ -23,6 +23,15 @@ def main() -> int:
         print(f"missing disk image: {image}", file=sys.stderr)
         return 1
 
+    # Keep the update target a plain GPT disk image. An El Torito ISO9660
+    # descriptor at sector 16 makes systemd-dissection treat the whole disk as
+    # an ISO filesystem before it can select the root and verity partitions.
+    with image.open("rb") as disk:
+        disk.seek(16 * 2048 + 1)
+        if disk.read(5) == b"CD001":
+            print("disk image must not contain an El Torito ISO9660 descriptor", file=sys.stderr)
+            return 1
+
     try:
         layout = json.loads(subprocess.check_output(["sfdisk", "--json", str(image)], text=True))
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
