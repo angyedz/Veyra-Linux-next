@@ -258,7 +258,7 @@ jobs:
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root.raw.zst" -type f -size +0c | grep -q .
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .
 
-      - name: Stage a signed A/B update into a disposable image copy
+      - name: Run signed OTA integration inside a disposable QEMU guest
         run: |
           set -euo pipefail
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
@@ -271,25 +271,6 @@ jobs:
           test -n "$fingerprint"
           gpg --batch --export "$fingerprint" > "$RUNNER_TEMP/veyra-ci-update-key.gpg"
 
-          keyring=/etc/systemd/import-pubring.gpg
-          if sudo test -e /etc/systemd/import-pubring.pgp; then
-            keyring=/etc/systemd/import-pubring.pgp
-          fi
-          backup="$RUNNER_TEMP/veyra-import-pubring.backup"
-          had_keyring=false
-          if sudo test -e "$keyring"; then
-            sudo cp "$keyring" "$backup"
-            had_keyring=true
-          fi
-          restore_keyring() {
-            if [[ "$had_keyring" == true ]]; then
-              sudo install -D -m 0644 "$backup" "$keyring"
-            else
-              sudo rm -f "$keyring"
-            fi
-          }
-          trap restore_keyring EXIT
-          sudo install -D -m 0644 "$RUNNER_TEMP/veyra-ci-update-key.gpg" "$keyring"
           ovmf_code=""
           for candidate in \
             /usr/share/OVMF/OVMF_CODE_4M.fd \
@@ -313,4 +294,4 @@ jobs:
             --fingerprint "$fingerprint" \
             --ovmf-code "$ovmf_code" \
             --ovmf-vars "$ovmf_vars" \
-            --sudo-sysupdate
+            --boot-timeout 1200

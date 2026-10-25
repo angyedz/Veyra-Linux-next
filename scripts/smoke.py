@@ -291,13 +291,34 @@ def main() -> int:
         return fail("the built GPT layout must be checked in CI")
     if not (ROOT / "scripts/test-ab-boot.py").is_file():
         return fail("CI must boot a staged A/B update and exercise boot-count rollback")
+    ota_vm_test = ROOT / "scripts/test-sysupdate-image.py"
+    ota_vm_test_content = ota_vm_test.read_text(encoding="utf-8")
+    if "veyra-update install" not in ota_vm_test_content or "guestfwd=" not in (ROOT / "scripts/test-ab-boot.py").read_text(encoding="utf-8"):
+        return fail("signed OTA installation and updates must run inside the restricted QEMU guest")
+    if re.search(r"systemd-sysupdate[^\n]*--image", ota_vm_test_content):
+        return fail("CI must not exercise systemd-sysupdate against a host-mounted image")
     update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
     if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
         return fail("the image must install the veyra-update command")
     update_client_content = update_client.read_text(encoding="utf-8")
-    for expected in ("check-new", "--no-pager update", "--no-pager pending", "systemd-sysupdate reboot"):
+    for expected in (
+        "check-new",
+        "prepare-for-base",
+        "bind-generation",
+        "--definitions=\"$root_definitions\" update",
+        "--definitions=\"$uki_definitions\" update",
+        "veritysetup verify",
+        "cancel-pending",
+        "--version \"$version\"",
+        "flock --shared 9",
+        "flock --exclusive 9",
+        "complete_pending_if_current",
+        "pending_update",
+        "bootctl set-oneshot \"veyra-next_${version}.efi\"",
+        "systemctl reboot",
+    ):
         if expected not in update_client_content:
-            return fail(f"veyra-update must expose {expected!r}")
+            return fail(f"veyra-update OTA preflight must include {expected!r}")
     boot_complete = ROOT / "mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra.conf"
     boot_complete_content = boot_complete.read_text(encoding="utf-8")
     for expected in (
@@ -314,6 +335,18 @@ def main() -> int:
     boot_failure_check = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-boot-check-no-failures.service.d/veyra-vpkg.conf"
     if not boot_failure_check.is_file() or "After=veyra-vpkg-check.service" not in boot_failure_check.read_text(encoding="utf-8"):
         return fail("boot blessing must wait for the Veyra extension health check")
+    boot_bless_hook = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-bless-boot.service.d/veyra-vpkg-ota.conf"
+    if not boot_bless_hook.is_file() or "veyra-update bless-complete" not in boot_bless_hook.read_text(encoding="utf-8"):
+        return fail("successful UKI blessing must release the OTA package-mutation lock")
+    update_lock = ROOT / "mkosi.extra/usr/lib/tmpfiles.d/veyra-update.conf"
+    if not update_lock.is_file() or "veyra-update.lock 0644 root root" not in update_lock.read_text(encoding="utf-8"):
+        return fail("read-only pending queries must share the OTA install lock")
+    fallback_hook = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-sync.service.d/veyra-ota.conf"
+    if not fallback_hook.is_file() or "veyra-update settle" not in fallback_hook.read_text(encoding="utf-8"):
+        return fail("OTA fallback reconciliation must run after vpkg selects the booted deployment")
+    for expected in ("bootctl --print-stub-path", "rm -- \"$exhausted\"", "sync -f /boot/EFI/Linux"):
+        if expected not in update_client_content:
+            return fail(f"OTA fallback reconciliation must verify and retire {expected!r}")
 
     logo = ROOT / "branding/veyra-logo.svg"
     installed_logo = ROOT / "mkosi.extra/usr/share/veyra/branding/veyra-logo.svg"

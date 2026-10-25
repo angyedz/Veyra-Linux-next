@@ -51,10 +51,69 @@ def etc_partition(image: pathlib.Path) -> tuple[int, int]:
     return int(partition["start"]) * sector_size, int(partition["size"]) * sector_size
 
 
-def inject_journal_test_units(image: pathlib.Path, marker: str) -> tuple[str, str]:
+def var_partition(image: pathlib.Path) -> tuple[int, int]:
+    table = json.loads(
+        run(["sfdisk", "--json", str(image)], stdout=subprocess.PIPE).stdout
+    )["partitiontable"]
+    sector_size = int(table.get("sectorsize", 512))
+    partitions = [
+        partition
+        for partition in table["partitions"]
+        if partition.get("name") == "VEYRA_VAR"
+    ]
+    if len(partitions) != 1:
+        raise RuntimeError("the staged image must contain exactly one persistent /var partition")
+    partition = partitions[0]
+    return int(partition["start"]) * sector_size, int(partition["size"]) * sector_size
+
+
+def inject_pending_fallback(image: pathlib.Path, roothash: str, version: str) -> None:
+    """Create a disposable same-root/new-version trial binding for QEMU rollback."""
+    offset, size = var_partition(image)
+    with tempfile.TemporaryDirectory(prefix="veyra-ota-pending-test-") as temporary:
+        mountpoint = pathlib.Path(temporary) / "var"
+        mountpoint.mkdir()
+        run_privileged([
+            "mount", "-t", "ext4", "-o",
+            f"loop,rw,nodev,nosuid,offset={offset},sizelimit={size}",
+            str(image), str(mountpoint),
+        ])
+        try:
+            root = mountpoint / "lib/veyra/vpkg"
+            deployments = root / "deployments"
+            deployments.mkdir(parents=True, exist_ok=True)
+            pending = root / "pending.json"
+            binding = deployments / f"{roothash}--{version}.json"
+            if pending.exists() or binding.exists():
+                raise RuntimeError("the QEMU fallback fixture would overwrite existing vpkg state")
+            binding.write_text(
+                json.dumps({
+                    "schema": 1,
+                    "roothash": roothash,
+                    "version": version,
+                    "generation": None,
+                    "requests": [],
+                }) + "\n",
+                encoding="ascii",
+            )
+            pending.write_text(
+                json.dumps({
+                    "schema": 1,
+                    "target_roothash": roothash,
+                    "version": version,
+                }) + "\n",
+                encoding="ascii",
+            )
+        finally:
+            run_privileged(["umount", str(mountpoint)])
+
+
+def inject_journal_test_units(image: pathlib.Path, marker: str, failed_version: str) -> tuple[str, ...]:
     marker_message = f"veyra-ota-failed-trial-{marker}"
     synced_message = f"VEYRA_OTA_MARKER_SYNCED_{marker}"
     check_message = f"VEYRA_OTA_JOURNAL_PERSIST_CI_PASS_{marker}"
+    mutation_message = f"VEYRA_OTA_MUTATION_BLOCKED_CI_PASS_{marker}"
+    fallback_message = f"VEYRA_OTA_FALLBACK_LOCK_CLEARED_CI_PASS_{marker}"
     offset, size = etc_partition(image)
     with tempfile.TemporaryDirectory(prefix="veyra-ota-journal-test-") as temporary:
         work = pathlib.Path(temporary)
@@ -101,15 +160,47 @@ def inject_journal_test_units(image: pathlib.Path, marker: str) -> tuple[str, st
                     "StandardOutput=journal+console\n"
                     "StandardError=journal+console\n"
                 ),
+                "systemd/system/veyra-ota-mutation-check.service": (
+                    "[Unit]\n"
+                    "Description=Verify vpkg mutations are blocked by a pending OTA in QEMU\n"
+                    "DefaultDependencies=no\n"
+                    f"ConditionKernelCommandLine=veyra.ota-mutation-check={marker}\n"
+                    "Requires=veyra-vpkg-sync.service\n"
+                    "After=veyra-vpkg-sync.service\n"
+                    "Before=emergency.target\n\n"
+                    "[Service]\nType=oneshot\n"
+                    "ExecStart=/usr/bin/bash -o pipefail -ec '"
+                    "/usr/bin/vpkg install htop >/var/lib/veyra/vpkg/ota-mutation.log 2>&1 && exit 1; "
+                    "/usr/bin/grep -Fq \"Package changes are blocked while OTA\" /var/lib/veyra/vpkg/ota-mutation.log; "
+                    f"/usr/bin/echo {mutation_message}'\n"
+                    "StandardOutput=journal+console\nStandardError=journal+console\n"
+                ),
+                "systemd/system/veyra-ota-fallback-check.service": (
+                    "[Unit]\n"
+                    "Description=Verify exhausted OTA UKI and package lock were retired in QEMU\n"
+                    "DefaultDependencies=no\n"
+                    f"ConditionKernelCommandLine=veyra.ota-journal-check={marker}\n"
+                    "Requires=veyra-vpkg-sync.service\n"
+                    "After=veyra-vpkg-sync.service\n"
+                    "Before=boot-complete.target\n\n"
+                    "[Service]\nType=oneshot\n"
+                    "ExecStart=/usr/bin/bash -ec '"
+                    "test ! -e /var/lib/veyra/vpkg/pending.json; "
+                    f"test ! -e /boot/EFI/Linux/veyra-next_{failed_version}+0-3.efi; "
+                    f"/usr/bin/echo {fallback_message}'\n"
+                    "StandardOutput=journal+console\nStandardError=journal+console\n"
+                ),
                 "systemd/system/emergency.target.d/veyra-ota-journal-ci.conf": (
                     "[Unit]\n"
-                    "Requires=veyra-ota-journal-marker.service\n"
-                    "After=veyra-ota-journal-marker.service\n"
+                    "Requires=veyra-ota-journal-marker.service veyra-ota-mutation-check.service\n"
+                    "After=veyra-ota-journal-marker.service veyra-ota-mutation-check.service\n"
                 ),
                 "systemd/system/boot-complete.target.d/veyra-ota-journal-ci.conf": (
                     "[Unit]\n"
                     "Requires=veyra-ota-journal-check.service\n"
                     "After=veyra-ota-journal-check.service\n"
+                    "Requires=veyra-ota-fallback-check.service\n"
+                    "After=veyra-ota-fallback-check.service\n"
                 ),
             }
             for relative, content in units.items():
@@ -123,7 +214,7 @@ def inject_journal_test_units(image: pathlib.Path, marker: str) -> tuple[str, st
                 )
         finally:
             run_privileged(["umount", str(mountpoint)])
-    return synced_message, check_message
+    return synced_message, check_message, mutation_message, fallback_message
 
 
 def stop_vm(process: subprocess.Popen[bytes]) -> None:
@@ -147,6 +238,7 @@ def boot_until(
     qemu_data_dir: pathlib.Path | None,
     expected: tuple[str, ...],
     timeout: int,
+    ota_port: int = 8765,
 ) -> str:
     log_path.unlink(missing_ok=True)
     command = [qemu]
@@ -162,7 +254,7 @@ def boot_until(
         "-device", "ich9-ahci,id=ahci",
         "-drive", f"if=none,id=systemdisk,format=raw,file={image}",
         "-device", "ide-hd,drive=systemdisk,bus=ahci.0",
-        "-nic", "none",
+        "-nic", f"user,restrict=on,guestfwd=tcp:10.0.2.100:{ota_port}-tcp:127.0.0.1:{ota_port}",
         "-display", "none",
         "-serial", f"file:{log_path}",
         "-monitor", "none",
@@ -215,11 +307,13 @@ def main() -> int:
     parser.add_argument("--image", required=True, type=pathlib.Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--roothash", required=True)
+    parser.add_argument("--ota-marker", required=True)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--qemu-data-dir", type=pathlib.Path)
     parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
     parser.add_argument("--ovmf-vars", required=True, type=pathlib.Path)
     parser.add_argument("--boot-timeout", default=300, type=int)
+    parser.add_argument("--ota-port", default=8765, type=int)
     parser.add_argument("--expect-vpkg-test", action="store_true")
     parser.add_argument("--mcopy", default="mcopy")
     parser.add_argument("--mdir", default="mdir")
@@ -254,6 +348,8 @@ def main() -> int:
                 f"roothash={args.roothash}",
                 "Reached target graphical.target",
                 "VEYRA_BOOT_BLESS_CI_PASS",
+                f"VEYRA_OTA_MANUAL_OLD_CI_PASS_{args.ota_marker}",
+                f"VEYRA_OTA_SUCCESS_CI_PASS_{args.ota_marker}",
             ]
             if args.expect_vpkg_test:
                 successful_markers.append("VEYRA_VPKG_CI_PASS")
@@ -266,6 +362,7 @@ def main() -> int:
                 qemu_data_dir=args.qemu_data_dir,
                 expected=tuple(successful_markers),
                 timeout=args.boot_timeout,
+                ota_port=args.ota_port,
             )
             if "device-mapper: verity" in successful_log or "metadata block" in successful_log:
                 raise RuntimeError("the successful trial boot reported a dm-verity integrity failure")
@@ -309,7 +406,9 @@ def main() -> int:
             helper = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(helper)
             journal_marker = uuid.uuid4().hex
-            synced_message, check_message = inject_journal_test_units(test_image, journal_marker)
+            synced_message, check_message, mutation_message, fallback_message = inject_journal_test_units(
+                test_image, journal_marker, failed_version
+            )
             checked_uki = work / f"veyra-next_{args.version}-journal-check.efi"
             # Only the previously blessed UKI verifies the failed boot's journal.
             helper.patch_uki(
@@ -331,12 +430,16 @@ def main() -> int:
                 args.roothash,
                 "emergency.target",
                 version_id="44.1",
-                extra_cmdline=(f"veyra.ota-journal-marker={journal_marker}",),
+                extra_cmdline=(
+                    f"veyra.ota-journal-marker={journal_marker}",
+                    f"veyra.ota-mutation-check={journal_marker}",
+                ),
             )
             run([
                 args.mcopy, "-o", "-i", f"{test_image}@@{esp_offset}",
                 str(failed_uki), f"::/EFI/Linux/{failed_uki.name}",
             ])
+            inject_pending_fallback(test_image, args.roothash, failed_version)
 
             for attempt, expected_tries in enumerate(("+2-1", "+1-2", "+0-3"), start=1):
                 failed_log = work / f"failed-c-{attempt}.log"
@@ -351,8 +454,10 @@ def main() -> int:
                         "Reached target emergency.target",
                         "You are in emergency mode.",
                         synced_message,
+                        mutation_message,
                     ),
                     timeout=args.boot_timeout,
+                    ota_port=args.ota_port,
                 )
                 listing = mdir(test_image, esp_offset, args.mdir)
                 expected_name = f"veyra-next_{failed_version}{expected_tries}.efi"
@@ -374,8 +479,10 @@ def main() -> int:
                     f"roothash={args.roothash}",
                     "Reached target graphical.target",
                     check_message,
+                    fallback_message,
                 ),
                 timeout=args.boot_timeout,
+                ota_port=args.ota_port,
             )
             if "Reached target emergency.target" in rollback:
                 raise RuntimeError("systemd-boot selected the exhausted candidate instead of the good slot")

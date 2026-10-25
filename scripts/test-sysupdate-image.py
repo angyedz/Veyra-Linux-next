@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a signed sysupdate A-to-B slot write against a disposable disk image."""
+"""Exercise signed OTA install, preflight, blessing, and rollback inside QEMU."""
 
 from __future__ import annotations
 
@@ -232,6 +232,202 @@ def require_partition_identity(
         raise RuntimeError(f"Staged partition {label} lost the GPT read-only attribute.")
 
 
+def inject_guest_ota_test(
+    image: pathlib.Path,
+    definitions: pathlib.Path,
+    exported_key: pathlib.Path,
+    old_version: str,
+    version: str,
+    roothash: str,
+    marker: str,
+) -> None:
+    """Configure only the disposable guest image to run the updater test on boot."""
+    partitions, sector_size = inspect_partitions(image)
+    matches = [partition for partition in partitions if partition.get("name") == "VEYRA_ETC"]
+    if len(matches) != 1:
+        raise RuntimeError("the test image must contain exactly one persistent /etc partition")
+    partition = matches[0]
+    offset = int(partition["start"]) * sector_size
+    size = int(partition["size"]) * sector_size
+
+    with tempfile.TemporaryDirectory(prefix="veyra-ota-ci-etc-") as temporary:
+        work = pathlib.Path(temporary)
+        mountpoint = work / "etc"
+        mountpoint.mkdir()
+        run([
+            "sudo", "mount", "-t", "ext4", "-o",
+            f"loop,rw,nodev,nosuid,offset={offset},sizelimit={size}",
+            str(image), str(mountpoint),
+        ])
+        try:
+            systemd_definitions = mountpoint / "sysupdate.d"
+            systemd_definitions.mkdir(parents=True, exist_ok=True)
+            for source in sorted(definitions.glob("*.conf")):
+                destination = systemd_definitions / f"{source.stem}.transfer"
+                shutil.copyfile(source, destination)
+                destination.chmod(0o644)
+            keyring = mountpoint / "systemd/import-pubring.gpg"
+            keyring.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(exported_key, keyring)
+            keyring.chmod(0o644)
+
+            test_dir = mountpoint / "veyra/ota-ci"
+            test_dir.mkdir(parents=True, exist_ok=True)
+            test_script = test_dir / "prepare"
+            test_script.write_text(
+                "#!/usr/bin/bash\n"
+                "set -euo pipefail\n"
+                "state=/var/lib/veyra/ota-ci\n"
+                "intents=/var/lib/veyra/vpkg/intents.json\n"
+                "pending=/var/lib/veyra/vpkg/pending.json\n"
+                f"version={version!r}\n"
+                f"old_version={old_version!r}\n"
+                f"roothash={roothash!r}\n"
+                f"marker={marker!r}\n"
+                "mkdir -p \"$state\" \"$(dirname \"$intents\")\"\n"
+                "printf '{\"schema\":1,\"requests\":[{\"kind\":\"repo\",\"name\":\"systemd\"}]}\\n' >\"$intents\"\n"
+                "if /usr/bin/veyra-update install \"$version\" >\"$state/conflict.log\" 2>&1; then\n"
+                "  cat \"$state/conflict.log\" >&2\n"
+                "  echo 'OTA preflight unexpectedly accepted a protected base-system package.' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "grep -Fq 'no trial UKI was installed' \"$state/conflict.log\"\n"
+                "test ! -e \"$pending\"\n"
+                f"test ! -e /boot/EFI/Linux/veyra-next_{version}+3-0.efi\n"
+                "/usr/bin/veyra-update pending >\"$state/no-pending.log\"\n"
+                "grep -Fq 'No Veyra system update is waiting for a reboot.' \"$state/no-pending.log\"\n"
+                "if /usr/bin/veyra-update reboot >\"$state/no-reboot.log\" 2>&1; then\n"
+                "  echo 'veyra-update reboot accepted a root-only partial stage.' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "grep -Fq 'There is no completed Veyra system update' \"$state/no-reboot.log\"\n"
+                "printf '{\"schema\":1,\"requests\":[]}\\n' >\"$intents\"\n"
+                "/usr/bin/veyra-update install \"$version\"\n"
+                "python3 - \"$pending\" \"$version\" \"$roothash\" <<'PY'\n"
+                "import json, pathlib, sys\n"
+                "value = json.loads(pathlib.Path(sys.argv[1]).read_text())\n"
+                "assert value == {'schema': 1, 'target_roothash': sys.argv[3], 'version': sys.argv[2]}\n"
+                "PY\n"
+                "if /usr/bin/vpkg install htop >\"$state/mutation.log\" 2>&1; then\n"
+                "  echo 'vpkg unexpectedly allowed a mutation while OTA was pending.' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "grep -Fq 'Package changes are blocked while OTA' \"$state/mutation.log\"\n"
+                "/usr/bin/veyra-update pending >\"$state/pending.log\"\n"
+                f"grep -Fq 'Veyra {version} is staged as a signed trial UKI' \"$state/pending.log\"\n"
+                "touch \"$state/staged\"\n"
+                "echo \"VEYRA_OTA_PREPARE_CI_PASS_$marker\"\n"
+                "/usr/bin/bootctl set-oneshot \"veyra-next_${old_version}.efi\"\n"
+                "/usr/bin/systemctl reboot\n",
+                encoding="ascii",
+            )
+            test_script.chmod(0o755)
+            success_script = test_dir / "success"
+            success_script.write_text(
+                "#!/usr/bin/bash\n"
+                "set -euo pipefail\n"
+                "test ! -e /var/lib/veyra/vpkg/pending.json\n"
+                "stub=\"$(bootctl --print-stub-path)\"\n"
+                "python3 - \"$stub\" "
+                f"{version!r} {roothash!r} <<'PY'\n"
+                "import pathlib, re, struct, sys\n"
+                "path = pathlib.Path(sys.argv[1])\n"
+                "with path.open('rb') as stream:\n"
+                "    stream.seek(0x3c); pe = struct.unpack('<I', stream.read(4))[0]\n"
+                "    stream.seek(pe); assert stream.read(4) == b'PE\\0\\0'\n"
+                "    stream.seek(pe + 6); count = struct.unpack('<H', stream.read(2))[0]\n"
+                "    stream.seek(pe + 20); optional = struct.unpack('<H', stream.read(2))[0]\n"
+                "    table = pe + 24 + optional; sections = {}\n"
+                "    for index in range(count):\n"
+                "        stream.seek(table + index * 40); name = stream.read(8).split(b'\\0', 1)[0]\n"
+                "        stream.seek(table + index * 40 + 16); size, offset = struct.unpack('<II', stream.read(8))\n"
+                "        sections[name] = (offset, size)\n"
+                "    osrel_offset, osrel_size = sections[b'.osrel']; cmd_offset, cmd_size = sections[b'.cmdline']\n"
+                "    stream.seek(osrel_offset); osrel = stream.read(osrel_size).split(b'\\0', 1)[0].decode()\n"
+                "    stream.seek(cmd_offset); cmdline = stream.read(cmd_size).split(b'\\0', 1)[0].decode()\n"
+                "versions = re.findall(r'(?m)^IMAGE_VERSION=(.*)$', osrel)\n"
+                "hashes = re.findall(r'(?:^|\\s)roothash=([0-9a-f]{64})(?:\\s|$)', cmdline)\n"
+                "assert len(versions) == 1 and versions[0].strip().strip('\\\"') == sys.argv[2]\n"
+                "assert hashes == [sys.argv[3]]\n"
+                "PY\n"
+                f"echo VEYRA_OTA_SUCCESS_CI_PASS_{marker}\n",
+                encoding="ascii",
+            )
+            success_script.chmod(0o755)
+            manual_old_script = test_dir / "manual-old"
+            manual_old_script.write_text(
+                "#!/usr/bin/bash\n"
+                "set -euo pipefail\n"
+                "state=/var/lib/veyra/ota-ci\n"
+                "pending=/var/lib/veyra/vpkg/pending.json\n"
+                "test -e \"$pending\"\n"
+                "test ! -e \"$state/manual-old-checked\"\n"
+                "if /usr/bin/vpkg install htop >\"$state/manual-old-mutation.log\" 2>&1; then\n"
+                "  echo 'vpkg unexpectedly allowed a mutation on a manually selected old UKI.' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "grep -Fq 'Package changes are blocked while OTA' \"$state/manual-old-mutation.log\"\n"
+                "/usr/bin/veyra-update pending >\"$state/manual-old-pending.log\"\n"
+                f"grep -Fq 'Veyra {version} is staged as a signed trial UKI' \"$state/manual-old-pending.log\"\n"
+                "touch \"$state/manual-old-checked\"\n"
+                f"echo VEYRA_OTA_MANUAL_OLD_CI_PASS_{marker}\n"
+                "/usr/bin/veyra-update reboot\n",
+                encoding="ascii",
+            )
+            manual_old_script.chmod(0o755)
+
+            systemd = mountpoint / "systemd/system"
+            systemd.mkdir(parents=True, exist_ok=True)
+            (systemd / "veyra-ota-ci-prepare.service").write_text(
+                "[Unit]\n"
+                "Description=Exercise Veyra OTA preflight inside the QEMU guest\n"
+                "After=graphical.target veyra-vpkg-ci.service\n"
+                "Before=systemd-bless-boot.service boot-complete.target\n"
+                "ConditionKernelCommandLine=!veyra.ota-ci=trial\n\n"
+                "ConditionPathExists=!/var/lib/veyra/ota-ci/staged\n\n"
+                "[Service]\nType=oneshot\n"
+                "ExecStart=/etc/veyra/ota-ci/prepare\n"
+                "TimeoutStartSec=600\n"
+                "StandardOutput=journal+console\nStandardError=journal+console\n",
+                encoding="ascii",
+            )
+            (systemd / "veyra-ota-ci-success.service").write_text(
+                "[Unit]\n"
+                "Description=Verify successful Veyra OTA completion inside the QEMU guest\n"
+                "After=systemd-bless-boot.service\n"
+                "Before=boot-complete.target\n"
+                "ConditionKernelCommandLine=veyra.ota-ci=trial\n\n"
+                "[Service]\nType=oneshot\n"
+                "ExecStart=/etc/veyra/ota-ci/success\n"
+                "StandardOutput=journal+console\nStandardError=journal+console\n",
+                encoding="ascii",
+            )
+            (systemd / "veyra-ota-ci-manual-old.service").write_text(
+                "[Unit]\n"
+                "Description=Verify an old UKI remains healthy while an OTA trial is available\n"
+                "After=systemd-bless-boot.service\n"
+                "Before=boot-complete.target\n"
+                "ConditionKernelCommandLine=!veyra.ota-ci=trial\n"
+                "ConditionPathExists=/var/lib/veyra/ota-ci/staged\n"
+                "ConditionPathExists=!/var/lib/veyra/ota-ci/manual-old-checked\n\n"
+                "[Service]\nType=oneshot\n"
+                "ExecStart=/etc/veyra/ota-ci/manual-old\n"
+                "StandardOutput=journal+console\nStandardError=journal+console\n",
+                encoding="ascii",
+            )
+            (mountpoint / "systemd/system/boot-complete.target.d").mkdir(
+                parents=True, exist_ok=True
+            )
+            (mountpoint / "systemd/system/boot-complete.target.d/veyra-ota-ci.conf").write_text(
+                "[Unit]\n"
+                "Requires=veyra-ota-ci-prepare.service veyra-ota-ci-manual-old.service veyra-ota-ci-success.service\n"
+                "After=veyra-ota-ci-prepare.service veyra-ota-ci-manual-old.service veyra-ota-ci-success.service\n",
+                encoding="ascii",
+            )
+        finally:
+            run(["sudo", "umount", str(mountpoint)])
+
+
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         pass
@@ -245,8 +441,6 @@ def main() -> int:
     parser.add_argument("--vpkg-test-repo", type=pathlib.Path)
     parser.add_argument("--fingerprint", required=True)
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--sudo-sysupdate", action="store_true")
-    parser.add_argument("--sysupdate", default="/usr/lib/systemd/systemd-sysupdate")
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--qemu-data-dir", type=pathlib.Path)
     parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
@@ -259,9 +453,6 @@ def main() -> int:
         image = args.image.resolve()
         if not image.is_file():
             raise RuntimeError(f"Missing test image: {image}")
-        sysupdate = pathlib.Path(args.sysupdate)
-        if not sysupdate.is_file():
-            raise RuntimeError(f"Missing systemd-sysupdate binary: {sysupdate}")
         if not shutil.which(args.qemu):
             raise RuntimeError(f"QEMU executable not found: {args.qemu}")
 
@@ -320,8 +511,17 @@ def main() -> int:
                 version,
                 roothash,
                 "graphical.target",
+                extra_cmdline=("veyra.ota-ci=trial",),
             )
             write_manifest(source, [root_asset, verity_asset, uki_asset], args.fingerprint)
+
+            exported_key = source / "update-key.gpg"
+            with exported_key.open("wb") as output:
+                subprocess.run(
+                    ["gpg", "--batch", "--export", args.fingerprint],
+                    check=True,
+                    stdout=output,
+                )
 
             handler = functools.partial(QuietHandler, directory=str(source))
             server = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), handler)
@@ -329,58 +529,43 @@ def main() -> int:
             thread.start()
             try:
                 definitions = write_test_definitions(
-                    source, args.transfer_dir, f"http://127.0.0.1:{args.port}/"
+                    source, args.transfer_dir, f"http://10.0.2.100:{args.port}/"
                 )
-                command = [
-                    "env", "SYSTEMD_LOG_LEVEL=debug", str(sysupdate),
-                    f"--definitions={definitions}", f"--image={staged_image}",
-                    "--verify=yes", "--no-pager", "update", version,
+                ota_marker = uuid.uuid4().hex
+                inject_guest_ota_test(
+                    staged_image,
+                    definitions,
+                    exported_key,
+                    args.current_version,
+                    version,
+                    roothash,
+                    ota_marker,
+                )
+
+                boot_command = [
+                    sys.executable,
+                    str(pathlib.Path(__file__).with_name("test-ab-boot.py")),
+                    "--image", str(staged_image),
+                    "--version", version,
+                    "--roothash", roothash,
+                    "--ota-marker", ota_marker,
+                    "--qemu", args.qemu,
+                    "--ovmf-code", str(args.ovmf_code.resolve()),
+                    "--ovmf-vars", str(args.ovmf_vars.resolve()),
+                    "--boot-timeout", str(args.boot_timeout),
+                    "--ota-port", str(args.port),
                 ]
-                if args.sudo_sysupdate:
-                    command[0:1] = ["sudo", "env"]
-                run(command)
+                if args.qemu_data_dir:
+                    boot_command.extend(["--qemu-data-dir", str(args.qemu_data_dir.resolve())])
+                if args.vpkg_test_repo:
+                    boot_command.append("--expect-vpkg-test")
+                run(boot_command)
             finally:
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)
 
-            partitions, sector_size = inspect_partitions(staged_image)
-            require_partition_identity(
-                partitions, f"veyra-next_{version}", root_uuid, read_only=True
-            )
-            require_partition_identity(
-                partitions, f"veyra-next_{version}_verity", verity_uuid, read_only=True
-            )
-            esp_type = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-            esp_matches = [p for p in partitions if str(p.get("type", "")).lower() == esp_type]
-            if len(esp_matches) != 1:
-                raise RuntimeError("Expected one EFI system partition after update staging.")
-            esp_offset = int(esp_matches[0]["start"]) * sector_size
-            listing = run([
-                "mdir", "-i", f"{staged_image}@@{esp_offset}", "::/EFI/Linux",
-            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
-            trial_name = f"veyra-next_{version}+3-0.efi"
-            if trial_name.lower() not in listing.lower():
-                raise RuntimeError(f"The trial UKI with three boot attempts is missing: {trial_name}")
-
-            boot_command = [
-                sys.executable,
-                str(pathlib.Path(__file__).with_name("test-ab-boot.py")),
-                "--image", str(staged_image),
-                "--version", version,
-                "--roothash", roothash,
-                "--qemu", args.qemu,
-                "--ovmf-code", str(args.ovmf_code.resolve()),
-                "--ovmf-vars", str(args.ovmf_vars.resolve()),
-                "--boot-timeout", str(args.boot_timeout),
-            ]
-            if args.qemu_data_dir:
-                boot_command.extend(["--qemu-data-dir", str(args.qemu_data_dir.resolve())])
-            if args.vpkg_test_repo:
-                boot_command.append("--expect-vpkg-test")
-            run(boot_command)
-
-        print(f"Signed sysupdate staged and booted Veyra {version} in the inactive A/B slot.")
+        print(f"Signed sysupdate was installed by veyra-update inside the QEMU guest as Veyra {version}.")
         print("A deliberate three-attempt boot failure returned to the previously blessed slot.")
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:

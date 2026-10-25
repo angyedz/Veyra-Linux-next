@@ -17,13 +17,44 @@ veyra-update check
 sudo veyra-update install
 veyra-update pending
 sudo veyra-update reboot
+sudo veyra-update cancel
 ```
 
-Staging and rebooting are separate actions. After reboot, systemd's boot
-assessment checks the required boot targets, including validation that all
-installed Veyra extensions activated. A trial UKI is marked good only when
-those targets succeed; repeated failed boots fall back to the previously
-working UKI.
+Staging and rebooting are separate actions. On systemd 259, `veyra-update`
+first stages the signed root and matching dm-verity partitions in the inactive
+slot, without publishing a UKI. It verifies their root hash and mounts the
+candidate EROFS root read-only so `vpkg` can resolve the saved explicit package
+intents and version pins against that base. A solver conflict leaves the
+currently bootable UKI and package generation selected; the inactive root and
+verity partitions may remain staged, but no trial UKI is installed.
+
+After a successful preflight, `vpkg` writes the resolved generation binding
+for the candidate `(root hash, IMAGE_VERSION)` identity and records a pending
+OTA transaction that blocks further package mutations. Compatibility is
+resolved against the root hash; the image version distinguishes deployments
+whose EROFS bytes happen to share a root hash. Only then does `veyra-update`
+install the trial UKI as the final sysupdate transfer. If UKI installation
+fails, the updater removes any unblessed trial UKI and cancels the pending
+binding. Use
+`sudo veyra-update cancel` to explicitly cancel a staged trial. The pending
+package lock is released after systemd blesses the matching root-hash and image
+version, or after the fallback path verifies that the target UKI has exhausted
+its boot attempts. Merely booting the old UKI while the trial remains eligible
+does not release the lock.
+
+After reboot, `vpkg` selects the package generation bound to both the running
+UKI's dm-verity root hash and `IMAGE_VERSION` before systemd-sysext activation.
+The `pending` and `reboot` commands share the updater lock and report/act only
+when a trial UKI matches the pending identity; root and verity partitions left
+by a preflight conflict do not count as a pending update. If the trial fails and
+systemd-boot returns to the prior root hash, its earlier generation remains
+selected. systemd's boot assessment checks the required boot targets, including
+validation that all installed Veyra extensions activated. A trial UKI is marked
+good only when those targets succeed; repeated failed boots fall back to the
+previously working UKI. Selecting the old UKI manually while a trial is still
+available keeps package mutations locked; the old boot remains healthy. The
+lock is released only after the matching target is blessed, the trial is
+explicitly canceled, or the exhausted target UKI is verified and removed.
 
 System journals use the persistent `/var/log/journal` directory, so logs from
 a failed trial boot remain available after systemd-boot returns to the previous
