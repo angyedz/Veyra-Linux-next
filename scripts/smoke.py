@@ -153,7 +153,7 @@ def main() -> int:
         repo_content = repo_file.read_text(encoding="utf-8")
         for expected in (
             f"[veyra-{channel}]",
-            f"/packages/{channel}/$basearch/",
+            f"/repositories/{channel}/current/x86_64/",
             "enabled=0",
             "gpgcheck=1",
             "repo_gpgcheck=1",
@@ -161,6 +161,24 @@ def main() -> int:
         ):
             if expected not in repo_content:
                 return fail(f"Veyra {channel} repository must include {expected!r}")
+        if "raw.githubusercontent.com" in repo_content or "github.io" in repo_content:
+            return fail(f"Veyra {channel} RPMs must be resolved from GitHub Release snapshots")
+    release_provider = ROOT / "mkosi.extra/usr/lib/veyra/veyra_repo.py"
+    if not release_provider.is_file():
+        return fail("the signed GitHub Releases repository provider must be installed")
+    provider_content = release_provider.read_text(encoding="utf-8")
+    for expected in (
+        "veyra-rpm-repo-x86_64.tar.gz",
+        "veyra-rpm-repo-x86_64.tar.gz.sha256",
+        "repomd.xml.asc",
+        "--verify",
+        "_safe_extract",
+        "rpm-vX.Y.Z-testing",
+    ):
+        if expected not in provider_content:
+            return fail(f"the release provider must enforce {expected!r}")
+    if "gnupg2" not in packages:
+        return fail("the runtime image must include GnuPG for pinned repomd signature verification")
     rpmfusion = ROOT / "mkosi.extra/etc/yum.repos.d/rpmfusion.repo"
     if not rpmfusion.is_file():
         return fail("RPM Fusion free/nonfree repositories must be available to vpkg")

@@ -1,6 +1,6 @@
 [veyra-main]
 name=Veyra additional packages (main)
-baseurl=https://angyedz.github.io/Veyra-next/packages/main/$basearch/
+baseurl=file:///var/cache/veyra/vpkg/repositories/main/current/x86_64/
 enabled=0
 gpgcheck=1
 repo_gpgcheck=1
