@@ -168,14 +168,28 @@ The wrapper tests and real lifecycle script are guarded to run only inside
 QEMU/KVM with a Fedora 44 Veyra guest; the integration gate rejects Rawhide and
 checks the environment's `/etc/os-release` is Fedora 44. Fedora 44 is the
 current Veyra target, and these checks should change with an approved future
-base update. The integration script also requires a non-root user and
-read-only source checkout. Run `scripts/test-vforge-qemu.sh` from the
-disposable Veyra guest after its image has been built. The QEMU test exercises rootless create,
-enter/exec, an explicitly approved bridge-network `dnf install`, stop/start
-persistence, Veyra lower visibility, RPM database and `/usr` upper isolation,
-snapshot/rollback and deletion. The guest needs outbound network access to pull
-the Fedora 44 image and package. A source-level test pass alone does not prove
-the OverlayFS lifecycle or the Veyra-generation integration.
+base update. The integration script requires a non-root user and read-only
+source checkout. To prepare and run it against a validated Fedora 44 Veyra
+image:
+
+```sh
+python3 scripts/run-vforge-qemu.py \
+  --image /path/to/mkosi.output/veyra-next.raw \
+  --work-dir work/vforge-qemu
+```
+
+The runner verifies the image sidecars and GPT layout, makes a sparse
+disposable copy, and changes only that copy. It adds a locked test-only UID
+4242 account and rootless sub-ID ranges to persistent `/etc`, creates its home
+on persistent `/home`, and installs a one-shot systemd test service. The
+service mounts the source checkout read-only through QEMU 9p and invokes
+`scripts/test-vforge-qemu.sh` as that unprivileged account. It boots only with
+KVM acceleration, writes serial output and the final pass/fail marker under
+the run directory, then powers the guest off. No Vforge command runs on the
+host. The test guest needs outbound network access to pull the Fedora 44 image
+and package. This runner is source-tested; its first Fedora 44 guest execution
+is still pending, so source-level or preparation tests do not prove the
+OverlayFS lifecycle or Veyra-generation integration.
 
 Vforge also relies on Podman defaults for user namespaces, seccomp and SELinux
 policy. It does not yet audit every global Podman hook/configuration, expose

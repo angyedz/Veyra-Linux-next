@@ -10,6 +10,16 @@ permissions:
   contents: read
 
 jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Vforge source and policy tests
+        run: python3 -m unittest discover -s tests -q
+      - name: Run repository smoke checks
+        run: python3 scripts/smoke.py
+
   vpkg-image-fixture:
     runs-on: ubuntu-24.04
     container: fedora:44
