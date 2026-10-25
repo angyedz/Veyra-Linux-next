@@ -145,6 +145,8 @@ def main() -> int:
     for expected in (
         "from vpkg_libdnf import LibdnfError, Session",
         "package_session(",
+        'commands.add_parser("stage"',
+        "stage_user_apps(arguments.packages, assume_yes=arguments.yes)",
         "systemd-sysext",
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
         "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
@@ -225,6 +227,12 @@ def main() -> int:
         return fail("Veyra package link synchronization must run before systemd-sysext")
     if "After=veyra-vpkg-sync.service" not in sysext_dropin.read_text(encoding="utf-8"):
         return fail("systemd-sysext must wait for Veyra extension links to synchronize")
+    stage_test_service = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery.service"
+    stage_test_script = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery"
+    if not stage_test_service.is_file() or not stage_test_script.is_file():
+        return fail("the QEMU fixture must cover staged-generation rollback before graphical.target")
+    if "Before=graphical.target" not in stage_test_service.read_text(encoding="utf-8"):
+        return fail("the staged rollback QEMU helper must run before the graphical target")
     for channel in ("main", "testing"):
         package_list = ROOT / f"packages/{channel}/packages.list"
         if not package_list.is_file():
