@@ -1,0 +1,141 @@
+name: Publish Veyra RPM repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Publish a testing snapshot or promote existing testing RPMs into main
+        type: choice
+        options:
+          - publish-testing
+          - promote-main
+        required: true
+      package:
+        description: Exact package name to promote when operation is promote-main
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: veyra-rpm-pages
+  cancel-in-progress: false
+
+jobs:
+  build-site:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install RPM repository tools
+        shell: bash
+        run: dnf5 install --assumeyes createrepo_c dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
+
+      - name: Import the dedicated Veyra RPM signing key
+        id: signing-key
+        shell: bash
+        env:
+          VEYRA_RPM_SIGNING_KEY: ${{ secrets.VEYRA_RPM_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VEYRA_RPM_SIGNING_KEY" ]]; then
+            echo "Add a dedicated RPM signing private key as the VEYRA_RPM_SIGNING_KEY repository secret." >&2
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/veyra-rpm-gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          printf '%s' "$VEYRA_RPM_SIGNING_KEY" | gpg --batch --import
+          mapfile -t fingerprints < <(gpg --batch --with-colons --list-secret-keys | awk -F: '
+            $1 == "sec" { primary = 1; next }
+            $1 == "ssb" { primary = 0; next }
+            $1 == "fpr" && primary { print $10; primary = 0 }
+          ')
+          if ((${#fingerprints[@]} != 1)); then
+            echo "The RPM signing secret must contain exactly one private key." >&2
+            exit 1
+          fi
+          echo "fingerprint=${fingerprints[0]}" >> "$GITHUB_OUTPUT"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+
+      - name: Mirror and verify existing published channels
+        shell: bash
+        env:
+          SIGNING_FINGERPRINT: ${{ steps.signing-key.outputs.fingerprint }}
+          OPERATION: ${{ inputs.operation }}
+          PROMOTE_PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/site build/new-rpms build/promoted-rpms build/empty-rpms
+          python3 scripts/mirror-package-site.py \
+            --base-url https://angyedz.github.io/Veyra-next \
+            --site build/site \
+            --expected-fingerprint "$SIGNING_FINGERPRINT"
+          if [[ -s build/site/RPM-GPG-KEY-VEYRA ]]; then
+            gpg --batch --import build/site/RPM-GPG-KEY-VEYRA
+          fi
+          gpg --batch --armor --export > build/site/RPM-GPG-KEY-VEYRA
+          test -s build/site/RPM-GPG-KEY-VEYRA
+          rpm --import build/site/RPM-GPG-KEY-VEYRA
+          touch build/site/.nojekyll
+
+          if [[ "$OPERATION" == "publish-testing" ]]; then
+            python3 scripts/build-extension-rpm.py --channel testing --output build/new-rpms
+            rpmsign --define "_gpg_name $SIGNING_FINGERPRINT" --addsign build/new-rpms/*.rpm
+            scripts/build-package-repo.sh testing build/new-rpms build/site
+          elif [[ "$OPERATION" == "promote-main" ]]; then
+            if [[ ! "$PROMOTE_PACKAGE" =~ ^veyra-[A-Za-z0-9][A-Za-z0-9+_.-]*$ ]]; then
+              echo "Promotion requires one exact Veyra package name." >&2
+              exit 1
+            fi
+            grep -Fxq -- "$PROMOTE_PACKAGE" packages/testing/packages.list
+            grep -Fxq -- "$PROMOTE_PACKAGE" packages/main/packages.list || {
+              echo "$PROMOTE_PACKAGE must be listed in packages/main/packages.list before promotion." >&2
+              exit 1
+            }
+            mapfile -t candidates < <(find build/site/packages/testing/x86_64 \
+              -maxdepth 1 -type f -name "${PROMOTE_PACKAGE}-*.rpm" -print | sort)
+            if ((${#candidates[@]} == 0)); then
+              echo "No published testing RPMs are available for $PROMOTE_PACKAGE." >&2
+              exit 1
+            fi
+            cp -- "${candidates[@]}" build/promoted-rpms/
+            scripts/build-package-repo.sh main build/promoted-rpms build/site
+          else
+            echo "Unknown publication operation: $OPERATION" >&2
+            exit 2
+          fi
+
+          scripts/build-package-repo.sh testing build/empty-rpms build/site
+          scripts/build-package-repo.sh main build/empty-rpms build/site
+          for channel in main testing; do
+            metadata="build/site/packages/$channel/x86_64/repodata/repomd.xml"
+            gpg --batch --yes --local-user "$SIGNING_FINGERPRINT" --armor \
+              --detach-sign --output "$metadata.asc" "$metadata"
+          done
+
+      - name: Upload signed GitHub Pages repository snapshot
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: build/site
+
+  deploy:
+    needs: build-site
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy the signed Veyra RPM repository
+        id: deployment
+        uses: actions/deploy-pages@v4

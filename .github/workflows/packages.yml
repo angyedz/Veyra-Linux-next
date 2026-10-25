@@ -1,0 +1,105 @@
+name: Veyra RPM packages
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install RPM repository build tools
+        run: dnf5 install --assumeyes createrepo_c curl dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
+
+      - name: Check package-manager safety rules
+        run: python3 -m unittest discover --start-directory tests --pattern 'test_*.py'
+
+      - name: Build the testing-channel extension RPM
+        run: python3 scripts/build-extension-rpm.py --channel testing --output build/rpms
+
+      - name: Sign a temporary CI repository and verify both channel layouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/site build/empty-rpms build/repos
+          gpg --batch --passphrase '' --quick-generate-key 'Veyra CI Test Key <veyra-ci@example.invalid>' rsa3072 sign 0
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          gpg --batch --armor --export "$fingerprint" > build/site/RPM-GPG-KEY-TEST
+          cp build/site/RPM-GPG-KEY-TEST build/site/RPM-GPG-KEY-VEYRA
+          rpm --import build/site/RPM-GPG-KEY-TEST
+          rpmsign --define "_gpg_name $fingerprint" --addsign build/rpms/*.rpm
+          scripts/build-package-repo.sh testing build/rpms build/site
+          scripts/build-package-repo.sh main build/empty-rpms build/site
+          for channel in main testing; do
+            metadata="build/site/packages/$channel/x86_64/repodata/repomd.xml"
+            gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
+              --output "$metadata.asc" "$metadata"
+            cat > "build/repos/$channel.repo" <<EOF
+          [veyra-$channel]
+          name=Veyra $channel CI verification
+          baseurl=file://$PWD/build/site/packages/$channel/x86_64/
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=file://$PWD/build/site/RPM-GPG-KEY-TEST
+          EOF
+          done
+          cat > build/dnf.conf <<EOF
+          [main]
+          reposdir=$PWD/build/repos
+          cachedir=$PWD/build/cache
+          logdir=$PWD/build/log
+          EOF
+          dnf5 --config="$PWD/build/dnf.conf" --assumeyes --repo=veyra-testing \
+            --refresh repoquery --available veyra-shell-tools | grep -q veyra-shell-tools
+          dnf5 --config="$PWD/build/dnf.conf" --assumeyes --repo=veyra-main \
+            --refresh repoquery --available
+          python3 scripts/check-extension-rpms.py build/rpms
+
+      - name: Test mirroring the signed channels, including an empty stable channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory build/site \
+            > build/http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"; wait "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8765/RPM-GPG-KEY-VEYRA >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          python3 scripts/mirror-package-site.py \
+            --base-url http://127.0.0.1:8765 \
+            --site build/mirrored-site \
+            --expected-fingerprint "$fingerprint"
+          test -z "$(find build/mirrored-site/packages/main -name '*.rpm' -print -quit)"
+          source_rpm="$(find build/site/packages/testing -name '*.rpm' -print -quit)"
+          mirrored_rpm="build/mirrored-site/packages/testing/x86_64/$(basename "$source_rpm")"
+          test -s "$source_rpm"
+          cmp -- "$source_rpm" "$mirrored_rpm"
+
+      - name: Exercise vpkg transactions against the signed testing channel
+        shell: bash
+        env:
+          CI: "true"
+          VEYRA_PACKAGE_CI_TEST: "1"
+        run: scripts/test-vpkg-transaction.sh "$PWD/build/site"
+
+      - name: Upload test repository snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-rpm-repository-ci-test
+          path: build/site/
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,183 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+root=/var/lib/veyra/vpkg/root
+repo=/var/lib/veyra/vpkg-ci-repo
+marker="persistent state created before the A/B update"
+complete=/var/lib/veyra/vpkg-ci-complete
+
+report_failure() {
+    local status=$?
+    echo "Veyra vpkg CI failed at line ${BASH_LINENO[0]}: ${BASH_COMMAND} (status ${status})" >&2
+    systemd-sysext status >&2 || true
+    exit "$status"
+}
+trap report_failure ERR
+
+assert_extension_active() {
+    local name="$1" status
+    if ! status="$(systemd-sysext status)"; then
+        echo "systemd-sysext status failed while checking $name." >&2
+        return 1
+    fi
+    if [[ "$status" != *"$name"* ]]; then
+        echo "Expected system extension $name to remain active; status was:" >&2
+        printf '%s\n' "$status" >&2
+        return 1
+    fi
+}
+
+grep -Fxq "$marker" /etc/veyra/vpkg-ci-persisted
+grep -Fxq "$marker" /var/lib/veyra/vpkg-ci-persisted
+grep -Fxq "$marker" /home/.veyra-vpkg-ci-persisted
+echo "Veyra A/B VM test: /etc, /var and /home persisted across the system update"
+
+if [[ -e "$complete" ]]; then
+    echo "Veyra vpkg VM test already completed on an earlier boot"
+    echo "VEYRA_VPKG_CI_PASS"
+    exit 0
+fi
+
+echo "Veyra vpkg VM test: initialize isolated RPM database"
+mkdir -p "$root"
+repo_key_hash="$(sha256sum "$repo/RPM-GPG-KEY-VEYRA")"
+repo_key_hash="${repo_key_hash%% *}"
+image_key_hash="$(sha256sum /usr/share/veyra/RPM-GPG-KEY-VEYRA)"
+image_key_hash="${image_key_hash%% *}"
+test "$repo_key_hash" = "$image_key_hash"
+rpm --root "$root" --initdb
+rpm --root "$root" --import /usr/share/veyra/RPM-GPG-KEY-VEYRA
+
+vpkg channel main
+if vpkg list --available | grep -Fq veyra-shell-tools; then
+    echo "The empty main channel exposed a testing-only RPM." >&2
+    exit 1
+fi
+
+vpkg channel testing
+vpkg install veyra-shell-tools
+installed="$(rpm --root "$root" -q --qf '%{VERSION}' veyra-shell-tools)"
+test "$installed" = "0.1.0"
+command -v fzf >/dev/null
+command -v jq >/dev/null
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg VM test: signed install activated through systemd-sysext"
+
+set -x
+failure_log=/var/lib/veyra/vpkg-ci-incompatible-extension.log
+if vpkg install veyra-incompatible-extension >"$failure_log" 2>&1; then
+    cat "$failure_log"
+    echo "vpkg unexpectedly accepted an extension with an incompatible SYSEXT_LEVEL." >&2
+    exit 1
+fi
+cat "$failure_log"
+grep -Fq "The RPM transaction was rolled back." "$failure_log"
+if rpm --root "$root" -q veyra-incompatible-extension >/dev/null 2>&1; then
+    echo "vpkg left the incompatible extension RPM installed after rollback." >&2
+    exit 1
+fi
+if [[ -e /etc/extensions/veyra-incompatible-extension.raw || -L /etc/extensions/veyra-incompatible-extension.raw ]]; then
+    echo "vpkg left the incompatible extension symlink after rollback." >&2
+    exit 1
+fi
+echo "Veyra vpkg CI checkpoint: incompatible extension package and link are absent"
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg CI checkpoint: valid extension remains active after failed install"
+echo "Veyra vpkg VM test: incompatible system-extension level triggered an RPM rollback"
+set +x
+
+# The initial signed repository has only v0.1.0. Switch to the separately
+# signed upgrade snapshot so the next vpkg operation must install v0.2.0.
+sed -i 's#packages/testing-initial/#packages/testing/#' /etc/yum.repos.d/veyra-testing.repo
+vpkg upgrade
+upgraded="$(rpm --root "$root" -q --qf '%{VERSION}' veyra-shell-tools)"
+test "$upgraded" = "0.2.0"
+command -v fzf >/dev/null
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg VM test: signed upgrade activated through systemd-sysext"
+
+base_htop="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+vpkg install htop
+command -v htop >/dev/null
+htop --version >/dev/null
+assert_extension_active vpkg-apps
+vpkg list | grep -Fq "htop:"
+if [[ -n "$base_htop" ]]; then
+    echo "htop unexpectedly appeared in the base RPM database before the app transaction." >&2
+    exit 1
+fi
+if rpm -q htop >/dev/null 2>&1; then
+    echo "vpkg modified the immutable base RPM database while installing htop." >&2
+    exit 1
+fi
+echo "Veyra vpkg VM test: Fedora repository package installed as a separate system extension"
+vpkg remove htop
+if command -v htop >/dev/null 2>&1; then
+    echo "systemd-sysext left htop active after removing the app-layer request." >&2
+    exit 1
+fi
+assert_extension_active veyra-shell-tools
+
+local_rpm="$(find "$repo/local-upstream/x86_64" -maxdepth 1 -name 'htop-*.rpm' -print -quit)"
+test -s "$local_rpm"
+vpkg install "$local_rpm"
+command -v htop >/dev/null
+htop --version >/dev/null
+assert_extension_active vpkg-apps
+vpkg remove htop
+if command -v htop >/dev/null 2>&1; then
+    echo "systemd-sysext left locally installed htop active after removal." >&2
+    exit 1
+fi
+echo "Veyra vpkg VM test: signed local RPM installed and removed transactionally"
+
+protected_kernel="$(rpm -q --qf '%{NEVRA}' kernel-core)"
+if vpkg install kernel-core >/var/lib/veyra/vpkg-ci-protected-package.log 2>&1; then
+    echo "vpkg unexpectedly accepted a kernel package." >&2
+    exit 1
+fi
+grep -Fq "kernels, graphics drivers, boot components" /var/lib/veyra/vpkg-ci-protected-package.log
+test "$(rpm -q --qf '%{NEVRA}' kernel-core)" = "$protected_kernel"
+echo "Veyra vpkg VM test: kernel package installation was rejected without changing the base"
+
+failure_log=/var/lib/veyra/vpkg-ci-invalid-extension.log
+if vpkg install veyra-broken-extension >"$failure_log" 2>&1; then
+    cat "$failure_log"
+    echo "vpkg unexpectedly accepted an invalid system-extension image." >&2
+    exit 1
+fi
+cat "$failure_log"
+grep -Fq "The RPM transaction was rolled back." "$failure_log"
+if rpm --root "$root" -q veyra-broken-extension >/dev/null 2>&1; then
+    echo "vpkg left the invalid extension RPM installed after rollback." >&2
+    exit 1
+fi
+if [[ -e /etc/extensions/veyra-broken-extension.raw || -L /etc/extensions/veyra-broken-extension.raw ]]; then
+    echo "vpkg left the invalid extension symlink after rollback." >&2
+    exit 1
+fi
+command -v fzf >/dev/null
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg VM test: real systemd-sysext failure triggered an RPM rollback"
+
+vpkg remove veyra-shell-tools
+if rpm --root "$root" -q veyra-shell-tools >/dev/null 2>&1; then
+    echo "vpkg left the extension RPM installed after removal." >&2
+    exit 1
+fi
+if [[ -e /etc/extensions/veyra-shell-tools.raw || -L /etc/extensions/veyra-shell-tools.raw ]]; then
+    echo "vpkg left the extension symlink after removal." >&2
+    exit 1
+fi
+if command -v fzf >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
+    echo "systemd-sysext left extension commands active after removal." >&2
+    exit 1
+fi
+if rpm -q veyra-shell-tools >/dev/null 2>&1; then
+    echo "vpkg modified the immutable base RPM database." >&2
+    exit 1
+fi
+
+echo "Veyra vpkg VM test: remove detached the extension and preserved the base RPM database"
+touch "$complete"
+echo "VEYRA_VPKG_CI_PASS"

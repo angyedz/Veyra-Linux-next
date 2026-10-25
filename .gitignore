@@ -12,3 +12,8 @@ initrd.cpio*
 *.iso
 *.img
 __pycache__/
+
+# The project-specific initrd definition is source code, not a build artifact.
+!mkosi.images/
+!mkosi.images/initrd/
+!mkosi.images/initrd/**
