@@ -432,6 +432,10 @@ class VpkgPolicyTests(unittest.TestCase):
                     vpkg.load_vpkg_policy()
                 with self.assertRaisesRegex(vpkg.VpkgError, "malformed or targets an unsupported base"):
                     vpkg.validate_user_package_name("example")
+            missing = Path(temporary) / "missing-policy.json"
+            with patch.object(vpkg, "VPKG_POLICY_FILE", missing):
+                with self.assertRaisesRegex(vpkg.VpkgError, "not a regular file"):
+                    vpkg.load_vpkg_policy()
 
     def test_user_app_transaction_classifies_safe_additions_as_live(self) -> None:
         base = {"bash": {"bash-0:5.2-1.x86_64"}}
@@ -500,6 +504,13 @@ class VpkgPolicyTests(unittest.TestCase):
         self.assertEqual(added, {})
         self.assertIn("immutable system-generation backend", reason or "")
         self.assertIn("cannot be activated by the current app-layer backend", reason or "")
+
+    def test_app_layer_executor_does_not_activate_staged_base_replacements(self) -> None:
+        base = {"python3": {"python3-0:3.13-1.x86_64"}}
+        installed = {"python3": {"python3-0:3.14-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value=installed):
+            with self.assertRaisesRegex(vpkg.VpkgError, "STAGED: transaction changes non-core base package"):
+                vpkg.package_records_after_install(Path("/stage"), base)
 
     def test_user_app_transaction_rejects_protected_core_mutation_from_policy(self) -> None:
         base = {"glibc": {"glibc-0:2.40-1.x86_64"}}
