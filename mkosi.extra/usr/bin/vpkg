@@ -90,7 +90,9 @@ def dnf_prefix(channel: str | None = None) -> list[str]:
         "--setopt=keepcache=True",
         "--setopt=install_weak_deps=False",
     ]
-    if channel is not None:
+    if channel == "both":
+        options.append("--repo=veyra-main,veyra-testing")
+    else:
         options.append(f"--repo={repo_id(channel)}")
     return options
 
@@ -100,7 +102,7 @@ def dnf(command: list[str], channel: str | None = None, *, capture: bool = False
 
 
 def latest_history_id() -> int | None:
-    result = run([*dnf_prefix(), "history", "list", "--json"], capture=True)
+    result = run([*dnf_prefix("both"), "history", "list", "--json"], capture=True)
     try:
         transactions = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -270,8 +272,7 @@ def refresh_extensions_or_undo(previous_id: int | None) -> None:
             if current_id is None or current_id == previous_id:
                 raise VpkgError("DNF5 did not record the transaction, so automatic undo is unavailable.")
             run([
-                *dnf_prefix(),
-                "--repo=veyra-main,veyra-testing",
+                *dnf_prefix("both"),
                 "--assumeyes",
                 "history",
                 "undo",
@@ -330,7 +331,10 @@ def remove(packages: list[str]) -> None:
 
     def transaction() -> None:
         previous_id = latest_history_id()
-        dnf(["remove", "--installed-from-repo=veyra-main,veyra-testing", *packages])
+        dnf(
+            ["remove", "--installed-from-repo=veyra-main,veyra-testing", *packages],
+            channel="both",
+        )
         refresh_extensions_or_undo(previous_id)
 
     with_lock(transaction)
@@ -344,7 +348,10 @@ def upgrade() -> None:
             print("Veyra packages are already up to date in this channel.")
             return
         previous_id = latest_history_id()
-        dnf(["upgrade", "--installed-from-repo=veyra-main,veyra-testing"])
+        dnf(
+            ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
+            channel=selected_channel(),
+        )
         refresh_extensions_or_undo(previous_id)
 
     with_lock(transaction)
@@ -401,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.command == "repos":
             print(f"Selected Veyra channel: {selected_channel()} ({repo_id()})")
             require_root()
-            dnf(["repo", "list", "--all"])
+            dnf(["repo", "list", "--all"], channel="both")
         elif arguments.command == "search":
             require_root()
             dnf(["search", *arguments.terms])

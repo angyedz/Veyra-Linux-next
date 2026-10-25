@@ -36,6 +36,34 @@ class VpkgPolicyTests(unittest.TestCase):
                 with self.assertRaises(vpkg.VpkgError):
                     vpkg.selected_channel()
 
+    def test_dnf_is_limited_to_the_selected_veyra_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            channel_file = Path(temporary) / "channel"
+            channel_file.write_text("testing\n", encoding="utf-8")
+            with patch.object(vpkg, "CHANNEL_FILE", channel_file):
+                self.assertIn("--repo=veyra-testing", vpkg.dnf_prefix())
+                self.assertIn("--repo=veyra-main,veyra-testing", vpkg.dnf_prefix("both"))
+
+    def test_upgrade_transaction_uses_same_channel_as_preflight_download(self) -> None:
+        for channel in ("main", "testing"):
+            with self.subTest(channel=channel):
+                with (
+                    patch.object(vpkg, "require_root"),
+                    patch.object(vpkg, "selected_channel", return_value=channel),
+                    patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
+                    patch.object(vpkg, "latest_history_id", return_value=7),
+                    patch.object(vpkg, "dnf") as dnf,
+                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                ):
+                    vpkg.upgrade()
+
+                inspect.assert_called_once_with("upgrade")
+                dnf.assert_called_once_with(
+                    ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
+                    channel=channel,
+                )
+
     def test_extension_rpm_policy_allows_only_var_extension_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             rpm_file = Path(temporary) / "veyra-shell-tools.rpm"
