@@ -258,10 +258,14 @@ jobs:
             mkosi.extra/usr/lib/systemd/system/veyra-vpkg-ci.service
           sudo install -D -m 0644 tests/fixtures/vpkg-image/boot-complete-vpkg-ci.conf \
             mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra-vpkg-ci.conf
+          sudo install -D -m 0644 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery.service \
+            mkosi.extra/usr/lib/systemd/system/veyra-vpkg-stage-recovery.service
           sudo install -D -m 0644 tests/fixtures/vpkg-image/systemd-bless-boot-vpkg-ci.conf \
             mkosi.extra/usr/lib/systemd/system/systemd-bless-boot.service.d/veyra-vpkg-ci.conf
           sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-ci-test \
             mkosi.extra/usr/libexec/veyra-vpkg-ci-test
+          sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery \
+            mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
       - name: Verify the packages inside the built image

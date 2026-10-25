@@ -1,0 +1,12 @@
+[Unit]
+Description=Exercise vpkg staged-generation rollback before the graphical target
+Requires=veyra-vpkg-check.service
+After=veyra-vpkg-check.service
+Before=graphical.target
+ConditionPathExists=/var/lib/veyra/vpkg-ci-stage-phase
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/veyra-vpkg-stage-recovery
+StandardOutput=journal+console
+StandardError=journal+console

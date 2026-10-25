@@ -38,6 +38,14 @@ grep -Fxq "$marker" /var/lib/veyra/vpkg-ci-persisted
 grep -Fxq "$marker" /home/.veyra-vpkg-ci-persisted
 echo "Veyra A/B VM test: /etc, /var and /home persisted across the system update"
 
+stage_pass=/var/lib/veyra/vpkg-ci-stage-pass
+if [[ -e "$stage_pass" ]]; then
+    touch "$complete"
+    echo "The staged-generation rollback scenario passed before graphical.target."
+    echo "VEYRA_VPKG_CI_PASS"
+    exit 0
+fi
+
 if [[ -e "$complete" ]]; then
     echo "Veyra vpkg VM test already completed on an earlier boot"
     echo "VEYRA_VPKG_CI_PASS"
@@ -353,5 +361,16 @@ test "$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)" = "$old_i
 test -e /var/lib/veyra/vpkg/pending.json
 echo "Veyra vpkg VM test: explicit requests and pins were re-resolved, pair-keyed, and locked through pending OTA"
 
-touch "$complete"
-echo "VEYRA_VPKG_CI_PASS"
+# Keep the trial/update assertions above independent, then verify the staged
+# generation protocol on a clean next boot. The early recovery service runs
+# after sysext health checks but before graphical.target, so `vpkg rollback`
+# is exercised without KDE.
+vpkg cancel-pending --roothash "$old_roothash" --version "$candidate_version"
+if command -v jq >/dev/null 2>&1; then
+    echo "The base image unexpectedly provides jq; staged test would not prove layer activation." >&2
+    exit 1
+fi
+vpkg stage install jq --yes
+touch /var/lib/veyra/vpkg-ci-stage-phase
+systemd-run --no-block --unit=veyra-vpkg-stage-reboot --on-active=30s /usr/bin/systemctl reboot
+echo "Prepared a staged jq generation; reboot scheduled for text-mode rollback validation."
