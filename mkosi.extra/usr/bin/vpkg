@@ -59,8 +59,7 @@ BLOCKED_PACKAGE_PREFIXES = (
     "mkinitrd",
     "efibootmgr",
     "nvidia",
-    "xorg-x11-drv-nvidia",
-    "xorg-x11-drv-amdgpu",
+    "xorg-x11-drv-",
     "mesa-",
     "veyra-",
 )
@@ -68,6 +67,9 @@ BLOCKED_PACKAGE_NAMES = {
     "basesystem",
     "filesystem",
     "linux-firmware",
+    "amd-gpu-firmware",
+    "nvidia-gpu-firmware",
+    "intel-gpu-firmware",
     "rpm",
     "rpm-libs",
     "dnf",
@@ -88,6 +90,12 @@ BLOCKED_PATH_PREFIXES = (
     "/usr/lib/initcpio/",
     "/usr/lib/sysimage/",
     "/usr/lib/firmware/",
+    "/usr/lib/dri/",
+    "/usr/lib64/dri/",
+    "/usr/lib/xorg/modules/drivers/",
+    "/usr/lib64/xorg/modules/drivers/",
+    "/usr/share/vulkan/icd.d/",
+    "/usr/lib64/vulkan/",
     "/usr/lib/extension-release.d/",
     "/etc/kernel/",
     "/etc/dracut.conf.d/",
@@ -198,7 +206,11 @@ def repo_id(channel: str | None = None) -> str:
     return CHANNELS[channel or selected_channel()]
 
 
-def dnf_prefix(channel: str | None = None) -> list[str]:
+def dnf_prefix(
+    channel: str | None = None,
+    *,
+    include_rpmfusion: bool = True,
+) -> list[str]:
     options = [
         "dnf5",
         "--installroot=" + str(VPKG_ROOT),
@@ -219,12 +231,22 @@ def dnf_prefix(channel: str | None = None) -> list[str]:
         veyra_repos = ()
     else:
         veyra_repos = (repo_id(channel),)
-    options.append("--repo=" + ",".join((*FEDORA_REPOS, *RPMFUSION_REPOS, *veyra_repos)))
+    upstream_repos = (*FEDORA_REPOS, *(RPMFUSION_REPOS if include_rpmfusion else ()))
+    options.append("--repo=" + ",".join((*upstream_repos, *veyra_repos)))
     return options
 
 
-def dnf(command: list[str], channel: str | None = None, *, capture: bool = False):
-    return run([*dnf_prefix(channel), *command], capture=capture)
+def dnf(
+    command: list[str],
+    channel: str | None = None,
+    *,
+    capture: bool = False,
+    include_rpmfusion: bool = True,
+):
+    return run(
+        [*dnf_prefix(channel, include_rpmfusion=include_rpmfusion), *command],
+        capture=capture,
+    )
 
 
 def user_package_dnf_prefix(installroot: Path) -> list[str]:
@@ -775,7 +797,10 @@ def upgrade_user_apps() -> bool:
 
 
 def latest_history_id() -> int | None:
-    result = run([*dnf_prefix("both"), "history", "list", "--json"], capture=True)
+    result = run(
+        [*dnf_prefix("both", include_rpmfusion=False), "history", "list", "--json"],
+        capture=True,
+    )
     try:
         transactions = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -924,7 +949,7 @@ def download_for_inspection(
     channel = channel or selected_channel()
     with tempfile.TemporaryDirectory(prefix="veyra-vpkg-") as temporary:
         directory = Path(temporary)
-        common = dnf_prefix(channel)
+        common = dnf_prefix(channel, include_rpmfusion=False)
         if action == "upgrade":
             # `vpkg upgrade` is an explicit request to check the channel now.
             # Invalidate DNF's per-installroot metadata cache so a recently
@@ -1042,7 +1067,7 @@ def refresh_extensions_or_undo(previous_id: int | None) -> None:
             if current_id is None or current_id == previous_id:
                 raise VpkgError("DNF5 did not record the transaction, so automatic undo is unavailable.")
             run([
-                *dnf_prefix("both"),
+                *dnf_prefix("both", include_rpmfusion=False),
                 "--assumeyes",
                 "history",
                 "undo",
@@ -1098,7 +1123,11 @@ def install_veyra_packages(packages: list[str]) -> None:
             print("The requested Veyra packages are already installed.")
             return
         previous_id = latest_history_id()
-        dnf(["install", "--from-repo=" + repo_id(channel), *packages], channel=channel)
+        dnf(
+            ["install", "--from-repo=" + repo_id(channel), *packages],
+            channel=channel,
+            include_rpmfusion=False,
+        )
         refresh_extensions_or_undo(previous_id)
 
     with_lock(transaction)
@@ -1122,6 +1151,7 @@ def remove_veyra_packages(packages: list[str]) -> None:
         dnf(
             ["remove", "--installed-from-repo=veyra-main,veyra-testing", *packages],
             channel="both",
+            include_rpmfusion=False,
         )
         refresh_extensions_or_undo(previous_id)
 
@@ -1148,6 +1178,7 @@ def upgrade() -> None:
             dnf(
                 ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
                 channel=channel,
+                include_rpmfusion=False,
             )
             refresh_extensions_or_undo(previous_id)
         apps_changed = upgrade_user_apps()

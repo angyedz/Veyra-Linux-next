@@ -28,6 +28,9 @@ class VpkgPolicyTests(unittest.TestCase):
             "shim-x64",
             "systemd",
             "mesa-dri-drivers",
+            "xorg-x11-drv-nouveau",
+            "xorg-x11-drv-amdgpu",
+            "amd-gpu-firmware",
         ):
             with self.subTest(name=name), self.assertRaises(vpkg.VpkgError):
                 vpkg.validate_user_package_name(name)
@@ -47,6 +50,8 @@ class VpkgPolicyTests(unittest.TestCase):
             "/usr/lib/modules/6.15.0/vmlinuz",
             "/usr/lib/systemd/systemd",
             "/usr/lib/systemd/boot/efi/systemd-bootx64.efi",
+            "/usr/lib64/dri/radeonsi_dri.so",
+            "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
             "/boot/efi/EFI/BOOT/BOOTX64.EFI",
             "/etc/ld.so.conf.d/example.conf",
             "/var/lib/example/state",
@@ -347,6 +352,17 @@ class VpkgPolicyTests(unittest.TestCase):
             [*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS],
         )
 
+    def test_veyra_extension_transactions_do_not_require_rpm_fusion_repos(self) -> None:
+        selected = next(
+            item
+            for item in vpkg.dnf_prefix("testing", include_rpmfusion=False)
+            if item.startswith("--repo=")
+        )
+        self.assertEqual(
+            selected.removeprefix("--repo=").split(","),
+            [*vpkg.FEDORA_REPOS, "veyra-testing"],
+        )
+
     def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             channel_file = Path(temporary) / "veyra/vpkg/channel"
@@ -378,6 +394,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 dnf.assert_called_once_with(
                     ["install", f"--from-repo={vpkg.CHANNELS[channel]}", "veyra-shell-tools"],
                     channel=channel,
+                    include_rpmfusion=False,
                 )
 
     def test_upgrade_transaction_uses_same_channel_as_preflight_download(self) -> None:
@@ -398,6 +415,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 dnf.assert_called_once_with(
                     ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
                     channel=channel,
+                    include_rpmfusion=False,
                 )
 
     def test_upgrade_preflight_invalidates_and_refreshes_repository_metadata(self) -> None:
