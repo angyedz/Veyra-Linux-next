@@ -59,10 +59,11 @@ Those are product goals, not claims that this image already provides them.
 
 `vforge` supports project `.vforge.toml`, named and project storage, explicit
 mount permissions, isolation profiles, snapshots/rollback, Veyra runtime
-compatibility checks and sparse ext4 size-cap storage. The size-cap path still
-needs Fedora 44 QEMU validation. The full filtered `/etc` lower, whole-root
-Veyra integration and crash-atomic CoW snapshots remain unimplemented. See
-[the vforge implementation and limits](docs/vforge.md).
+compatibility checks, sparse ext4 size caps and journaled frozen-layer
+snapshots. Size-cap, snapshot recovery and rollback behavior still need Fedora
+44 QEMU validation. The filtered `/etc` lower and whole-root Veyra integration
+remain unimplemented; snapshots are not native filesystem CoW. See [the vforge
+implementation and limits](docs/vforge.md).
 
 ## Architectural direction
 

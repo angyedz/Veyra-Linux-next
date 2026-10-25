@@ -453,6 +453,293 @@ class VforgeCommandTests(unittest.TestCase):
         self.assertEqual(commands[-1], ["container", "start", "vforge-backend"])
         self.assertEqual(save.call_args.args[1][0]["environment"], record)
 
+    def test_integrated_snapshot_journals_and_rotates_frozen_uppers_instead_of_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            layer_id = "d" * 32
+            active = vforge.layer_paths(layer_id, data_root)
+            (active["upper"] / "system-change").write_text("kept", encoding="utf-8")
+            (active["rpmdb-upper"] / "package-state").write_text("kept", encoding="utf-8")
+            metadata = {
+                "type": "named", "isolation": "integrated", "layer_id": layer_id,
+                "layer_stack": [], "data_root": str(data_root), "podman_root": str(data_root / "containers"),
+            }
+            container = {"State": {"Status": "running"}}
+            observed: list[dict[str, object]] = []
+            recover_function = vforge.recover_snapshot_transaction
+
+            def recover(name: str, recorded: dict[str, object]) -> None:
+                journal = vforge.read_private_json(data_root / ".snapshot-transaction.json", "test transaction")
+                observed.append(journal)
+                recover_function(name, recorded)
+
+            with patch.object(vforge, "require_environment", return_value=("vforge-backend", container)), \
+                 patch.object(vforge, "env_state", return_value={"backend": metadata}), \
+                 patch.object(vforge, "snapshots_state", return_value={}), \
+                 patch.object(vforge, "host_runtime_id", return_value="runtime-test"), \
+                 patch.object(vforge, "unmount_veyra_overlay"), \
+                 patch.object(vforge, "sync_storage"), \
+                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                 patch.object(vforge, "inspect", return_value={"State": {"Status": "exited"}}), \
+                 patch.object(vforge, "save_environment"), \
+                 patch.object(vforge, "save_snapshots", side_effect=lambda name, entries: None), \
+                 patch.object(vforge, "ensure_veyra_overlay"), \
+                 patch.object(vforge, "recover_snapshot_transaction", side_effect=recover):
+                vforge.make_snapshot("backend", "frozen-state")
+
+            snapshot_root = data_root / "snapshots" / "backend" / "frozen-state"
+            self.assertEqual((snapshot_root / "usr-upper/system-change").read_text(encoding="utf-8"), "kept")
+            self.assertEqual((snapshot_root / "rpmdb-upper/package-state").read_text(encoding="utf-8"), "kept")
+            self.assertEqual(observed[0]["entry"]["environment"]["layer_stack"], ["frozen-state"])
+            self.assertEqual(list(active["upper"].iterdir()), [])
+            self.assertFalse((data_root / ".snapshot-transaction.json").exists())
+
+    def test_snapshot_overlay_layers_use_newest_frozen_upper_before_veyra_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            env_snapshots = data_root / "snapshots" / "backend"
+            for snapshot in ("base-state", "later-state"):
+                (env_snapshots / snapshot / "usr-upper").mkdir(parents=True)
+            lower = vforge.snapshot_lowerdirs(Path("/usr"), data_root, "backend", ["base-state", "later-state"], "usr-upper")
+
+        self.assertEqual(lower, [
+            env_snapshots / "later-state" / "usr-upper",
+            env_snapshots / "base-state" / "usr-upper",
+            Path("/usr"),
+        ])
+
+    def test_snapshot_overlay_layers_reject_symlinked_frozen_upper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            data_root = Path(directory)
+            env_snapshots = data_root / "snapshots" / "backend"
+            env_snapshots.mkdir(parents=True)
+            (env_snapshots / "frozen").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(vforge.VforgeError, "snapshot layer is unsafe"):
+                vforge.snapshot_lowerdirs(Path("/usr"), data_root, "backend", ["frozen"], "usr-upper")
+
+    def test_snapshot_rotation_recovery_completes_an_interrupted_upper_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            active = vforge.layer_paths("a" * 32, data_root)
+            (active["upper"] / "from-system").write_text("preserve me", encoding="utf-8")
+            (active["rpmdb-upper"] / "rpm-state").write_text("rpm state", encoding="utf-8")
+            staging_name = ".pending-" + "c" * 32
+            stage = data_root / "snapshots" / "backend" / staging_name
+            (stage / "usr-upper").parent.mkdir(parents=True)
+            active["upper"].rename(stage / "usr-upper")
+            active["upper"].mkdir()
+
+            final = vforge.finish_snapshot_layer_rotation(
+                "backend", "a" * 32, data_root, "before-test", staging_name, [],
+            )
+
+            self.assertEqual(final, ["before-test"])
+            frozen = data_root / "snapshots" / "backend" / "before-test"
+            self.assertEqual((frozen / "usr-upper/from-system").read_text(encoding="utf-8"), "preserve me")
+            self.assertEqual((frozen / "rpmdb-upper/rpm-state").read_text(encoding="utf-8"), "rpm state")
+            self.assertEqual(list(active["upper"].iterdir()), [])
+            self.assertEqual(list(active["rpmdb-upper"].iterdir()), [])
+
+    def test_snapshot_rotation_recovery_is_idempotent_after_final_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            active = vforge.layer_paths("b" * 32, data_root)
+            staging_name = ".pending-" + "d" * 32
+            stage = data_root / "snapshots" / "backend" / staging_name
+            stage.mkdir(parents=True)
+            (stage / "usr-upper").mkdir()
+            (stage / "rpmdb-upper").mkdir()
+            final_root = stage.parent / "before-test"
+            stage.rename(final_root)
+
+            first = vforge.finish_snapshot_layer_rotation(
+                "backend", "b" * 32, data_root, "before-test", staging_name, [],
+            )
+            second = vforge.finish_snapshot_layer_rotation(
+                "backend", "b" * 32, data_root, "before-test", staging_name, [],
+            )
+
+            self.assertEqual(first, ["before-test"])
+            self.assertEqual(second, first)
+            self.assertTrue((final_root / "usr-upper").is_dir())
+
+    def test_snapshot_rotation_fails_closed_on_cross_mount_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            active = vforge.layer_paths("a" * 32, data_root)
+            original = active["upper"] / "preserve"
+            original.write_text("safe", encoding="utf-8")
+            with patch.object(vforge.os, "rename", side_effect=OSError(vforge.errno.EXDEV, "cross-device link")):
+                with self.assertRaisesRegex(vforge.VforgeError, "same filesystem mount"):
+                    vforge.finish_snapshot_layer_rotation(
+                        "backend", "a" * 32, data_root, "before-test",
+                        ".pending-" + "e" * 32, [],
+                    )
+            self.assertEqual(original.read_text(encoding="utf-8"), "safe")
+
+    def test_snapshot_rotation_rejects_a_symlinked_final_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            data_root = Path(directory)
+            vforge.layer_paths("f" * 32, data_root)
+            root = data_root / "snapshots" / "backend"
+            root.mkdir(parents=True)
+            (root / "existing").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(vforge.VforgeError, "may not be symlinks"):
+                vforge.finish_snapshot_layer_rotation(
+                    "backend", "f" * 32, data_root, "existing",
+                    ".pending-" + "a" * 32, [],
+                )
+
+    def test_snapshot_journal_recovery_finishes_index_and_metadata_after_upper_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            layer_id = "e" * 32
+            active = vforge.layer_paths(layer_id, data_root)
+            (active["upper"] / "changed-file").write_text("new state", encoding="utf-8")
+            (active["rpmdb-upper"] / "rpm-state").write_text("new rpm state", encoding="utf-8")
+            snapshot = "after-update"
+            staging = ".pending-" + "f" * 32
+            metadata = {
+                "type": "named", "isolation": "integrated", "layer_id": layer_id,
+                "layer_stack": [], "data_root": str(data_root), "podman_root": str(data_root / "containers"),
+            }
+            entry = {
+                "name": snapshot, "image": vforge.snapshot_image("backend", snapshot),
+                "upper": str(data_root / "snapshots" / "backend" / snapshot),
+                "environment": metadata.copy(), "created": "test-time",
+            }
+            journal = {
+                "version": vforge.STATE_VERSION, "name": "backend", "data_root": str(data_root),
+                "snapshot": snapshot, "layer_id": layer_id, "staging_name": staging,
+                "before_stack": [], "entry": entry, "was_running": False,
+            }
+            journal_path = data_root / ".snapshot-transaction.json"
+            vforge.write_json_file(journal_path, journal)
+
+            snapshots = {"backend": []}
+            saved_metadata: list[dict[str, object]] = []
+            with patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                 patch.object(vforge, "save_environment", side_effect=lambda name, value: saved_metadata.append(value.copy())), \
+                 patch.object(vforge, "snapshots_state", side_effect=lambda: snapshots), \
+                 patch.object(vforge, "save_snapshots", side_effect=lambda name, value: snapshots.__setitem__(name, value)), \
+                 patch.object(vforge, "ensure_veyra_overlay"), \
+                 patch.object(vforge, "inspect", return_value={"State": {"Status": "exited"}}):
+                vforge.recover_snapshot_transaction("backend", metadata)
+
+            self.assertEqual(saved_metadata[-1]["layer_stack"], [snapshot])
+            self.assertEqual([item["name"] for item in snapshots["backend"]], [snapshot])
+            self.assertEqual((data_root / "snapshots" / "backend" / snapshot / "usr-upper/changed-file").read_text(encoding="utf-8"), "new state")
+            self.assertFalse(journal_path.exists())
+
+    def test_snapshot_journal_is_retained_when_snapshot_image_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            layer_id = "a" * 32
+            active = vforge.layer_paths(layer_id, data_root)
+            (active["upper"] / "changed-file").write_text("new state", encoding="utf-8")
+            (active["rpmdb-upper"] / "rpm-state").write_text("new rpm state", encoding="utf-8")
+            snapshot = "after-update"
+            metadata = {
+                "isolation": "integrated", "layer_id": layer_id, "layer_stack": [],
+                "data_root": str(data_root), "podman_root": str(data_root / "containers"),
+            }
+            journal_path = data_root / ".snapshot-transaction.json"
+            vforge.write_json_file(journal_path, {
+                "version": vforge.STATE_VERSION, "name": "backend", "data_root": str(data_root),
+                "snapshot": snapshot, "layer_id": layer_id, "staging_name": ".pending-" + "b" * 32,
+                "before_stack": [], "entry": {"name": snapshot, "image": vforge.snapshot_image("backend", snapshot),
+                "upper": str(data_root / "snapshots" / "backend" / snapshot)}, "was_running": False,
+            })
+            result = subprocess.CompletedProcess([], 1, "", "")
+            with patch.object(vforge, "podman", return_value=result):
+                with self.assertRaisesRegex(vforge.VforgeError, "snapshot image.*missing"):
+                    vforge.recover_snapshot_transaction("backend", metadata)
+            self.assertTrue(journal_path.exists())
+            self.assertTrue((active["upper"] / "changed-file").exists())
+
+    def test_rollback_journal_recovery_recreates_checkpoint_after_interrupted_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            layer_id = "c" * 32
+            vforge.layer_paths(layer_id, data_root)
+            checkpoint = "rollback-checkpoint"
+            checkpoint_image = vforge.snapshot_image("backend", checkpoint)
+            checkpoint_metadata = {
+                "type": "named", "isolation": "integrated", "layer_id": layer_id,
+                "layer_stack": [checkpoint], "data_root": str(data_root),
+                "podman_root": str(data_root / "containers"), "image": checkpoint_image,
+                "network": "none", "mounts": [], "permissions": {"home": "none"},
+            }
+            frozen = data_root / "snapshots" / "backend" / checkpoint
+            (frozen / "usr-upper").mkdir(parents=True)
+            (frozen / "rpmdb-upper").mkdir()
+            journal_path = data_root / ".rollback-transaction.json"
+            vforge.write_json_file(journal_path, {
+                "version": vforge.STATE_VERSION, "kind": "rollback", "name": "backend",
+                "data_root": str(data_root), "checkpoint": checkpoint,
+                "checkpoint_image": checkpoint_image, "checkpoint_metadata": checkpoint_metadata,
+                "was_running": True, "backup_name": "vforge-backend-rollback-012345",
+            })
+            created: list[dict[str, object]] = []
+            saved: list[dict[str, object]] = []
+            with patch.object(vforge, "exists", return_value=False), \
+                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                 patch.object(vforge, "create_container", side_effect=lambda *args, **kwargs: created.append(kwargs)), \
+                 patch.object(vforge, "save_environment", side_effect=lambda name, value: saved.append(value.copy())), \
+                 patch.object(vforge, "ensure_veyra_overlay"), \
+                 patch.object(vforge, "unmount_veyra_overlay"), \
+                 patch.object(vforge, "inspect", return_value={"State": {"Status": "exited"}}):
+                vforge.recover_rollback_transaction("backend", checkpoint_metadata)
+
+            self.assertEqual(created[0]["image"], checkpoint_image)
+            self.assertEqual(created[0]["layer_stack"], [checkpoint])
+            self.assertEqual(saved[-1]["layer_stack"], [checkpoint])
+            self.assertFalse(journal_path.exists())
+
+    def test_rollback_selects_frozen_snapshot_stack_without_copying_upper_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            layer_id = "9" * 32
+            vforge.layer_paths(layer_id, data_root)
+            frozen = data_root / "snapshots" / "backend" / "known-good"
+            (frozen / "usr-upper").mkdir(parents=True)
+            (frozen / "rpmdb-upper").mkdir()
+            metadata = {
+                "type": "named", "isolation": "integrated", "layer_id": layer_id,
+                "layer_stack": ["current"], "data_root": str(data_root),
+                "podman_root": str(data_root / "containers"), "network": "none",
+                "mounts": [], "permissions": {"home": "none"},
+            }
+            target_metadata = metadata.copy()
+            target_metadata["layer_stack"] = ["known-good"]
+            target_image = vforge.snapshot_image("backend", "known-good")
+            checkpoint_image = vforge.snapshot_image("backend", "rollback-point")
+            snapshots = {
+                "backend": [
+                    {"name": "known-good", "image": target_image, "upper": str(frozen),
+                     "environment": target_metadata, "host_runtime": "runtime-test"},
+                    {"name": "rollback-point", "image": checkpoint_image, "upper": None,
+                     "environment": {**metadata, "layer_stack": ["current", "rollback-point"]}},
+                ]
+            }
+            created: list[dict[str, object]] = []
+            with patch.object(vforge, "require_environment", return_value=("vforge-backend", {"State": {"Status": "running"}})), \
+                 patch.object(vforge, "env_state", return_value={"backend": metadata}), \
+                 patch.object(vforge, "snapshots_state", side_effect=lambda: snapshots), \
+                 patch.object(vforge, "make_snapshot", return_value="rollback-point"), \
+                 patch.object(vforge, "exists", return_value=False), \
+                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                 patch.object(vforge, "unmount_veyra_overlay"), \
+                 patch.object(vforge, "ensure_veyra_overlay"), \
+                 patch.object(vforge, "create_container", side_effect=lambda *args, **kwargs: created.append(kwargs)), \
+                 patch.object(vforge, "save_environment"), \
+                 patch.object(vforge, "host_runtime_id", return_value="runtime-test"):
+                vforge.rollback_to("backend", "known-good", confirm=False)
+
+            self.assertEqual(created[0]["layer_stack"], ["known-good"])
+            self.assertEqual(created[0]["image"], target_image)
+            self.assertFalse((data_root / ".rollback-transaction.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

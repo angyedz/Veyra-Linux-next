@@ -139,14 +139,28 @@ generation-specific lower and a coherent whole-root Veyra runtime remain
 unimplemented; do not claim complete 6.1/6.2 integration until that boundary
 is designed and tested.
 
-Snapshots commit the container writable layer and copy the Veyra `/usr` and
-RPM database uppers. Rollback first saves a recovery checkpoint, restores the
-copy and recreates the container. On ordinary ext4/XFS these are space-using
-file copies, not filesystem CoW snapshots; they can be large and are not an
-atomic crash-consistent transaction across container metadata and both upper
-trees. Size-capped environments include the snapshot images and Veyra upper
-copies in the same ext4 capacity limit. A failed operation may need recovery
-from the retained checkpoint.
+Integrated snapshots commit the container writable layer and freeze the
+current Veyra /usr and RPM database upper directories by same-store renames.
+Future writes go to new empty uppers; the frozen deltas become read-only
+OverlayFS lowers, newest first. This avoids copying unchanged upper files, but
+it is not a native filesystem CoW snapshot or reflink, and the growing lower
+stack can affect lookup performance. Snapshot creation flushes pending writes,
+then uses a private journal, fsynced directory renames and atomic state-file
+replacement. Startup completes a pending snapshot transaction before commands
+reuse that environment. Rollback first records a committed recovery checkpoint;
+if a rollback is interrupted, startup recreates that checkpoint rather than
+leaving a mixed target/old container state. Older copy-format snapshots remain
+readable through a compatibility restore path.
+
+These are source-level recovery semantics, not yet a power-cut guarantee:
+they still need execution in the validated Fedora 44 Veyra QEMU guest. The
+selected store and its layers/ and snapshots/ paths must support atomic
+directory rename within one filesystem; nested mount or subvolume boundaries
+can make a rename fail, in which case the journal is retained and startup fails
+closed until storage is repaired. Snapshots retain historical deltas and OCI
+images until deleted, so they consume additional space. Size-capped
+environments place their graphroot, uppers and snapshot deltas in the same
+sparse ext4 capacity limit.
 
 ## Verification status and limits
 
@@ -165,7 +179,10 @@ the OverlayFS lifecycle or the Veyra-generation integration.
 
 Vforge also relies on Podman defaults for user namespaces, seccomp and SELinux
 policy. It does not yet audit every global Podman hook/configuration, expose
-full Veyra `/etc`, automatically discover missing libraries, or provide
-filesystem CoW/crash-atomic snapshots. Size caps use a private ext4 image rather
-than filesystem quotas on arbitrary selected storage. These are explicit gaps;
-profiles and device grants are not a claim of VM-grade isolation.
+full Veyra `/etc`, automatically discover missing libraries, provide native
+filesystem CoW snapshots, or enforce `--size` on uncapped arbitrary storage.
+Size caps use a private sparse ext4 image rather than filesystem quotas on
+arbitrary selected storage. The frozen-layer journal/recovery path and the
+size-cap ENOSPC behavior still need Fedora 44 QEMU validation. These are
+explicit gaps; profiles and device grants are not a claim of VM-grade
+isolation.

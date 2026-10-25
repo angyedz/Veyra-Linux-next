@@ -97,6 +97,27 @@ def open_file_no_symlinks(directory: Path, filename: str, flags: int) -> int:
         os.close(directory_fd)
 
 
+def fsync_directory(path: Path) -> None:
+    descriptor = open_directory_no_symlinks(path)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def sync_storage(path: Path) -> None:
+    """Flush pending container/overlay writes before publishing a snapshot pointer."""
+    descriptor = open_directory_no_symlinks(path)
+    try:
+        syncfs = getattr(os, "syncfs", None)
+        if syncfs is not None:
+            syncfs(descriptor)
+        else:
+            os.sync()
+    finally:
+        os.close(descriptor)
+
+
 def ensure_private_directory(path: Path, *, chmod: bool = True) -> None:
     if path.name in {"", ".", ".."}:
         raise VforgeError(f"invalid Vforge state directory path: {path}")
@@ -213,6 +234,16 @@ def env_state() -> dict[str, object]:
             raise VforgeError(f"environment '{name}' contains paths outside its Vforge storage root")
         if metadata.get("size_image") != expected_image:
             raise VforgeError(f"environment '{name}' contains an unsafe size-cap image path")
+        layer_stack = metadata.get("layer_stack", [])
+        if not isinstance(layer_stack, list) or any(
+            not isinstance(layer, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,54}", layer)
+            for layer in layer_stack
+        ):
+            raise VforgeError(f"environment '{name}' has an invalid Veyra snapshot layer stack")
+        if layer_stack:
+            if metadata.get("isolation") == "strict":
+                raise VforgeError(f"strict environment '{name}' unexpectedly has Veyra snapshot layers")
+            snapshot_lowerdirs(Path("/usr"), Path(expected_root), name, layer_stack, "usr-upper")
     return environments
 
 
@@ -632,20 +663,133 @@ def layer_paths(layer_id: str, data_root: Path | str | None = None) -> dict[str,
     return paths
 
 
-def start_overlay_mount(lower: Path, upper: Path, work: Path, merged: Path, label: str) -> Path:
+def snapshot_lowerdirs(
+    base: Path, data_root: Path | str, name: str, layer_stack: Sequence[str], upper_name: str
+) -> list[Path]:
+    if upper_name not in {"usr-upper", "rpmdb-upper"}:
+        raise VforgeError("invalid Veyra snapshot upper layer type")
+    container_name(name)
+    if not isinstance(layer_stack, (list, tuple)):
+        raise VforgeError("Veyra snapshot layer stack is malformed")
+    root = Path(data_root) / "snapshots" / name
+    result: list[Path] = []
+    for snapshot in reversed(layer_stack):
+        if not isinstance(snapshot, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,54}", snapshot):
+            raise VforgeError("Veyra snapshot layer identifier is invalid")
+        frozen_root = root / snapshot
+        frozen_upper = frozen_root / upper_name
+        try:
+            reject_symlink_components(frozen_root, "Vforge snapshot layer")
+            info = frozen_upper.lstat()
+        except VforgeError as error:
+            raise VforgeError(f"Vforge snapshot layer is unsafe: {error}") from error
+        except OSError as error:
+            raise VforgeError(f"Vforge snapshot layer is unsafe or missing: {frozen_upper}") from error
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            raise VforgeError(f"Vforge snapshot layer is unsafe: {frozen_upper}")
+        result.append(frozen_upper)
+    return [*result, base]
+
+
+def finish_snapshot_layer_rotation(
+    name: str,
+    layer_id: str,
+    data_root: Path | str,
+    snapshot: str,
+    staging_name: str,
+    previous_stack: Sequence[str],
+) -> list[str]:
+    """Idempotently freeze both active uppers into a layered snapshot."""
+    container_name(name)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,54}", snapshot):
+        raise VforgeError("invalid Vforge snapshot name")
+    if not re.fullmatch(r"\.pending-[a-f0-9]{32}", staging_name):
+        raise VforgeError("invalid Vforge snapshot transaction directory")
+    if not isinstance(previous_stack, (list, tuple)):
+        raise VforgeError("Vforge snapshot layer stack is malformed")
+    for value in previous_stack:
+        if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,54}", value):
+            raise VforgeError("Vforge snapshot layer stack is malformed")
+    root = Path(data_root) / "snapshots" / name
+    ensure_private_directory(root)
+    stage = root / staging_name
+    final = root / snapshot
+    paths = layer_paths(layer_id, data_root)
+    keys = (("usr-upper", paths["upper"]), ("rpmdb-upper", paths["rpmdb-upper"]))
+    if stage.is_symlink() or final.is_symlink():
+        raise VforgeError("Vforge snapshot transaction paths may not be symlinks")
+    if final.exists():
+        if not final.is_dir():
+            raise VforgeError("completed Vforge snapshot layer is not a directory")
+        if stage.exists():
+            raise VforgeError("both staging and final Vforge snapshot layer paths exist")
+        for key, active in keys:
+            frozen = final / key
+            if not frozen.is_dir() or frozen.is_symlink() or not active.is_dir():
+                raise VforgeError("completed Vforge snapshot layer is incomplete")
+        return [*previous_stack, snapshot] if snapshot not in previous_stack else list(previous_stack)
+
+    if stage.exists():
+        if not stage.is_dir():
+            raise VforgeError("Vforge snapshot transaction directory is unsafe")
+    else:
+        stage.mkdir(mode=0o700)
+        fsync_directory(root)
+
+    for key, active in keys:
+        frozen = stage / key
+        if frozen.exists():
+            if frozen.is_symlink() or not frozen.is_dir():
+                raise VforgeError("staged Vforge upper layer is unsafe")
+            if active.exists() and any(active.iterdir()):
+                raise VforgeError("active Vforge upper is non-empty during snapshot recovery")
+            if not active.exists():
+                active.mkdir(mode=0o700)
+                fsync_directory(active.parent)
+        else:
+            if not active.is_dir() or active.is_symlink():
+                raise VforgeError(f"active Vforge upper layer is missing: {active}")
+            try:
+                os.rename(active, frozen)
+            except OSError as error:
+                if error.errno == errno.EXDEV:
+                    raise VforgeError(
+                        "Vforge snapshot uppers and snapshot directory must be on the same filesystem mount; "
+                        "the transaction journal was retained"
+                    ) from error
+                raise
+            fsync_directory(active.parent)
+            fsync_directory(stage)
+            active.mkdir(mode=0o700)
+            fsync_directory(active.parent)
+
+    try:
+        os.rename(stage, final)
+    except OSError as error:
+        if error.errno == errno.EXDEV:
+            raise VforgeError("Vforge staging and final snapshots must share one filesystem mount") from error
+        raise
+    fsync_directory(root)
+    stack = [*previous_stack, snapshot] if snapshot not in previous_stack else list(previous_stack)
+    snapshot_lowerdirs(Path("/usr"), data_root, name, stack, "usr-upper")
+    return stack
+
+
+def start_overlay_mount(lower: Path | Sequence[Path], upper: Path, work: Path, merged: Path, label: str) -> Path:
     if os.path.ismount(merged):
         return merged
     executable = shutil.which("fuse-overlayfs")
     if executable is None:
         raise VforgeError("fuse-overlayfs is required for integrated Vforge environments")
-    if any(":" in str(path) or "," in str(path) for path in (lower, upper, work, merged)):
+    lower_paths = list(lower) if isinstance(lower, (list, tuple)) else [lower]
+    if not lower_paths or any(":" in str(path) or "," in str(path) for path in (*lower_paths, upper, work, merged)):
         raise VforgeError("Vforge state path cannot contain ':' or ',' when using the OverlayFS backend")
     log = state_directory() / "fuse-overlayfs.log"
     try:
         with log.open("ab") as output:
             os.chmod(log, 0o600)
             process = subprocess.Popen(
-                [executable, "-f", "-o", f"lowerdir={lower},upperdir={upper},workdir={work}", str(merged)],
+                [executable, "-f", "-o", f"lowerdir={':'.join(map(str, lower_paths))},upperdir={upper},workdir={work}", str(merged)],
                 stdin=subprocess.DEVNULL, stdout=output, stderr=output, close_fds=True,
             )
         deadline = time.monotonic() + 5
@@ -675,13 +819,25 @@ def host_rpmdb_path() -> Path:
     return path
 
 
-def ensure_veyra_overlay(layer_id: str, data_root: Path | str | None = None) -> dict[str, Path]:
+def ensure_veyra_overlay(
+    layer_id: str, data_root: Path | str | None = None, layer_stack: Sequence[str] = (), environment_name: str | None = None,
+) -> dict[str, Path]:
     paths = layer_paths(layer_id, data_root)
-    paths["usr"] = start_overlay_mount(Path("/usr"), paths["upper"], paths["work"], paths["merged"], "Veyra /usr")
+    if layer_stack:
+        if environment_name is None or data_root is None:
+            raise VforgeError("layered Veyra uppers need an environment name and data directory")
+        usr_lower = snapshot_lowerdirs(Path("/usr"), data_root, environment_name, layer_stack, "usr-upper")
+    else:
+        usr_lower = [Path("/usr")]
+    paths["usr"] = start_overlay_mount(usr_lower, paths["upper"], paths["work"], paths["merged"], "Veyra /usr")
     try:
         db_path = host_rpmdb_path()
+        if layer_stack:
+            rpmdb_lower = snapshot_lowerdirs(db_path, data_root, str(environment_name), layer_stack, "rpmdb-upper")
+        else:
+            rpmdb_lower = [db_path]
         paths["rpmdb"] = start_overlay_mount(
-            db_path, paths["rpmdb-upper"], paths["rpmdb-work"], paths["rpmdb-merged"], "Veyra RPM database",
+            rpmdb_lower, paths["rpmdb-upper"], paths["rpmdb-work"], paths["rpmdb-merged"], "Veyra RPM database",
         )
     except VforgeError:
         unmount_veyra_overlay(layer_id)
@@ -691,14 +847,14 @@ def ensure_veyra_overlay(layer_id: str, data_root: Path | str | None = None) -> 
 
 
 def unmount_veyra_overlay(layer_id: str, data_root: Path | str | None = None) -> None:
+    paths = layer_paths(layer_id, data_root)
+    mounted = [paths[label] for label in ("rpmdb-merged", "merged") if os.path.ismount(paths[label])]
+    if not mounted:
+        return
     executable = shutil.which("fusermount3") or shutil.which("fusermount")
     if executable is None:
         raise VforgeError("fusermount is required to stop this integrated Vforge environment")
-    paths = layer_paths(layer_id, data_root)
-    for label in ("rpmdb-merged", "merged"):
-        merged = paths[label]
-        if not os.path.ismount(merged):
-            continue
+    for merged in mounted:
         result = subprocess.run([executable, "-u", str(merged)], capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise VforgeError("could not unmount Veyra OverlayFS" + (f": {result.stderr.strip()}" if result.stderr.strip() else ""))
@@ -1199,7 +1355,7 @@ def ensure_running(name: str) -> str:
         if running and not (os.path.ismount(active_paths["merged"]) and os.path.ismount(active_paths["rpmdb-merged"])):
             raise VforgeError(f"environment '{name}' is running without its Veyra OverlayFS mount; stop and start it")
         if not running:
-            ensure_veyra_overlay(layer_id, recorded.get("data_root"))
+            ensure_veyra_overlay(layer_id, recorded.get("data_root"), recorded.get("layer_stack", []), name)
     if not running:
         podman(["container", "start", podman_name])
     return podman_name
@@ -1213,6 +1369,7 @@ def create_container(
     data_root: Path | str | None = None,
     podman_root: Path | str | None = None,
     isolation: str = "integrated",
+    layer_stack: Sequence[str] = (),
     mounts: list[dict[str, str]] | None = None,
     resources: dict[str, object] | None = None,
     image: str = FEDORA_IMAGE,
@@ -1241,7 +1398,7 @@ def create_container(
     if isolation != "strict":
         if layer_id is None:
             raise VforgeError("integrated environments require a persistent Veyra system layer")
-        overlay_mounts = ensure_veyra_overlay(layer_id, data_root)
+        overlay_mounts = ensure_veyra_overlay(layer_id, data_root, layer_stack, name)
         all_mounts.append({"source": str(overlay_mounts["usr"]), "target": "/usr", "access": "read-write"})
         all_mounts.append({"source": str(overlay_mounts["rpmdb"]), "target": str(overlay_mounts["rpmdb-target"]), "access": "read-write"})
     home_mode = resource_model.get("home", "none")
@@ -1336,7 +1493,7 @@ def create(
         "type": "named", "isolation": isolation, "network": network,
         "image": FEDORA_IMAGE, "permissions": resources,
         "mounts": [], "host_runtime": runtime_id, "layer_id": layer_id, "data_root": str(data_root),
-        "podman_root": str(podman_root),
+        "podman_root": str(podman_root), "layer_stack": [],
     }
     if size_bytes is not None:
         metadata["size_bytes"] = size_bytes
@@ -1344,7 +1501,7 @@ def create(
     try:
         save_environment(name, metadata)
         create_container(name, network, isolation=isolation, layer_id=layer_id, data_root=data_root,
-                         podman_root=metadata["podman_root"], resources=resources)
+                         podman_root=metadata["podman_root"], resources=resources, layer_stack=[])
     except Exception:
         remove_environment_state(name)
         if size_image is not None:
@@ -1409,11 +1566,13 @@ def project_up(project: Path) -> None:
     if config["isolation"] != "strict":
         data_root.joinpath("layers").mkdir(mode=0o700, exist_ok=True)
     metadata["layer_id"] = uuid.uuid4().hex if config["isolation"] != "strict" else None
+    metadata["layer_stack"] = []
     if existing:
         if not isinstance(state, dict) or state.get("type") != "project" or state.get("project") != str(project):
             raise VforgeError(f"environment '{name}' exists outside this project; refusing to reuse it")
         if config["isolation"] != "strict" and state.get("isolation") != "strict" and isinstance(state.get("layer_id"), str):
             metadata["layer_id"] = state["layer_id"]
+            metadata["layer_stack"] = list(state.get("layer_stack", []))
         if state.get("config_digest") == config["config_digest"]:
             ensure_running(name)
         else:
@@ -1422,7 +1581,7 @@ def project_up(project: Path) -> None:
     else:
         labels = {"type": "project", "permission": str(config["permission_digest"])}
         create_container(
-            name, network, layer_id=metadata["layer_id"], isolation=str(config["isolation"]), mounts=mounts,
+            name, network, layer_id=metadata["layer_id"], isolation=str(config["isolation"]), layer_stack=metadata["layer_stack"], mounts=mounts,
             data_root=data_root, podman_root=metadata["podman_root"], resources=permissions, extra_labels=labels,
         )
         save_environment(name, metadata)
@@ -1451,6 +1610,7 @@ def replace_project_environment(name: str, checkpoint: str, metadata: dict[str, 
         labels = {"type": "project", "permission": str(config["permission_digest"])}
         create_container(
             name, new_network, layer_id=metadata.get("layer_id"), isolation=str(config["isolation"]),
+            layer_stack=metadata.get("layer_stack", []),
             data_root=metadata.get("data_root"), podman_root=metadata.get("podman_root"), mounts=metadata["mounts"], resources=permissions,
             image=checkpoint_image, extra_labels=labels,
         )
@@ -1540,6 +1700,195 @@ def save_snapshots(name: str, entries: list[object]) -> None:
     write_json_file(common_state_directory() / "snapshots.json", {"version": STATE_VERSION, "snapshots": snapshots})
 
 
+def read_private_json(path: Path, label: str) -> dict[str, object]:
+    try:
+        fd = open_file_no_symlinks(path.parent, path.name, os.O_RDONLY)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            os.close(fd)
+            raise VforgeError(f"unsafe {label} file: {path}")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+    except FileNotFoundError:
+        raise
+    except (OSError, json.JSONDecodeError) as error:
+        raise VforgeError(f"could not read {label} file {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise VforgeError(f"malformed {label} file: {path}")
+    return payload
+
+
+def remove_private_file(path: Path) -> None:
+    try:
+        parent_fd = open_directory_no_symlinks(path.parent)
+        try:
+            os.unlink(path.name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise VforgeError(f"could not remove transaction record {path}: {error}") from error
+
+
+def recover_snapshot_transaction(name: str, metadata: dict[str, object]) -> None:
+    """Finish an interrupted snapshot rotation before the environment is reused."""
+    data_root_text = metadata.get("data_root")
+    if not isinstance(data_root_text, str):
+        raise VforgeError("snapshot transaction has no valid Vforge data root")
+    data_root = Path(data_root_text)
+    journal_path = data_root / ".snapshot-transaction.json"
+    try:
+        record = read_private_json(journal_path, "Vforge snapshot transaction")
+    except FileNotFoundError:
+        return
+    if record.get("version") != STATE_VERSION or record.get("name") != name or record.get("data_root") != str(data_root):
+        raise VforgeError(f"Vforge snapshot transaction does not match environment '{name}'")
+    snapshot = record.get("snapshot")
+    layer_id = record.get("layer_id")
+    staging_name = record.get("staging_name")
+    before_stack = record.get("before_stack")
+    entry = record.get("entry")
+    was_running = record.get("was_running")
+    if (
+        not isinstance(snapshot, str) or not isinstance(layer_id, str)
+        or not isinstance(staging_name, str) or not isinstance(before_stack, list)
+        or not isinstance(entry, dict) or not isinstance(was_running, bool)
+        or metadata.get("layer_id") != layer_id
+    ):
+        raise VforgeError(f"Vforge snapshot transaction for '{name}' is malformed")
+    current_stack = metadata.get("layer_stack", [])
+    after_stack = [*before_stack, snapshot]
+    if current_stack not in (before_stack, after_stack):
+        raise VforgeError(f"Vforge snapshot transaction for '{name}' conflicts with current layer metadata")
+
+    podman_name = container_name(name)
+    image = entry.get("image")
+    if not isinstance(image, str) or image != snapshot_image(name, snapshot):
+        raise VforgeError(f"Vforge snapshot transaction for '{name}' has an unsafe image reference")
+    graphroot = metadata.get("podman_root")
+    if not isinstance(graphroot, str):
+        raise VforgeError(f"Vforge snapshot transaction for '{name}' has no Podman graphroot")
+    image_check = podman(["image", "exists", image], capture=True, check=False, root=graphroot)
+    if image_check.returncode != 0:
+        raise VforgeError(f"snapshot image '{image}' is missing; transaction retained for recovery")
+
+    current_state = inspect(podman_name)
+    if state(current_state) == "running":
+        podman(["container", "stop", "--time", "10", podman_name])
+    unmount_veyra_overlay(layer_id, data_root)
+
+    completed_stack = finish_snapshot_layer_rotation(
+        name, layer_id, data_root, snapshot, staging_name, before_stack,
+    )
+    if completed_stack != after_stack:
+        raise VforgeError("Vforge snapshot recovery produced an unexpected layer stack")
+    restored_metadata = copy.deepcopy(metadata)
+    restored_metadata["layer_stack"] = completed_stack
+    entry["environment"] = copy.deepcopy(restored_metadata)
+    if entry.get("upper") != str(data_root / "snapshots" / name / snapshot):
+        raise VforgeError("Vforge snapshot transaction has an unsafe upper-layer path")
+
+    save_environment(name, restored_metadata)
+    current_snapshots = snapshots_state().get(name, [])
+    if not isinstance(current_snapshots, list):
+        raise VforgeError(f"Vforge snapshot index for '{name}' is malformed")
+    found = next((item for item in current_snapshots if isinstance(item, dict) and item.get("name") == snapshot), None)
+    if found is None:
+        current_snapshots.append(entry)
+        save_snapshots(name, current_snapshots)
+    elif found.get("image") != image or found.get("upper") != entry.get("upper"):
+        raise VforgeError(f"Vforge snapshot index conflicts with pending transaction '{snapshot}'")
+
+    ensure_veyra_overlay(layer_id, data_root, completed_stack, name)
+    current_state = inspect(podman_name)
+    if was_running and state(current_state) != "running":
+        podman(["container", "start", podman_name])
+    remove_private_file(journal_path)
+
+
+def recover_pending_snapshot_transactions() -> None:
+    for name, metadata in env_state().items():
+        if not isinstance(metadata, dict):
+            continue
+        data_root = metadata.get("data_root")
+        if (
+            metadata.get("isolation") != "strict" and isinstance(data_root, str)
+            and (Path(data_root) / ".snapshot-transaction.json").exists()
+        ):
+            recover_snapshot_transaction(name, metadata)
+        if isinstance(data_root, str) and (Path(data_root) / ".rollback-transaction.json").exists():
+            recover_rollback_transaction(name, metadata)
+
+
+def recover_rollback_transaction(name: str, current_metadata: dict[str, object]) -> None:
+    """Recover an interrupted rollback to its already-committed pre-rollback checkpoint."""
+    data_root_text = current_metadata.get("data_root")
+    if not isinstance(data_root_text, str):
+        raise VforgeError("rollback transaction has no valid Vforge data root")
+    data_root = Path(data_root_text)
+    journal_path = data_root / ".rollback-transaction.json"
+    try:
+        record = read_private_json(journal_path, "Vforge rollback transaction")
+    except FileNotFoundError:
+        return
+    checkpoint = record.get("checkpoint")
+    checkpoint_image = record.get("checkpoint_image")
+    checkpoint_metadata = record.get("checkpoint_metadata")
+    was_running = record.get("was_running")
+    backup_name = record.get("backup_name")
+    if (
+        record.get("version") != STATE_VERSION or record.get("kind") != "rollback"
+        or record.get("name") != name or record.get("data_root") != str(data_root)
+        or not isinstance(checkpoint, str) or not isinstance(checkpoint_image, str)
+        or not isinstance(checkpoint_metadata, dict) or not isinstance(was_running, bool)
+        or checkpoint_image != snapshot_image(name, checkpoint)
+        or checkpoint_metadata.get("data_root") != str(data_root)
+        or not isinstance(backup_name, str)
+        or not re.fullmatch(re.escape(f"{CONTAINER_PREFIX}{name[:40]}-rollback-") + r"[a-f0-9]{6}", backup_name)
+    ):
+        raise VforgeError(f"Vforge rollback transaction for '{name}' is malformed")
+    expected_root = current_metadata.get("podman_root")
+    graphroot = checkpoint_metadata.get("podman_root")
+    layer_id = checkpoint_metadata.get("layer_id")
+    if not isinstance(graphroot, str) or graphroot != expected_root:
+        raise VforgeError("rollback transaction has an unsafe Podman graphroot")
+    image_check = podman(["image", "exists", checkpoint_image], capture=True, check=False, root=graphroot)
+    if image_check.returncode != 0:
+        raise VforgeError(f"rollback checkpoint image '{checkpoint_image}' is missing; transaction retained")
+    image, network, mounts, permissions = stored_container_options(checkpoint_metadata)
+    if image != checkpoint_image:
+        raise VforgeError("rollback checkpoint metadata points at a different image")
+    if checkpoint_metadata.get("isolation") != "strict" and not isinstance(layer_id, str):
+        raise VforgeError("rollback checkpoint has no Veyra system layer")
+
+    podman_name = container_name(name)
+    current_layer_id = current_metadata.get("layer_id")
+    if exists(podman_name, graphroot):
+        podman(["container", "stop", "--time", "0", podman_name], check=False, root=graphroot)
+    if exists(backup_name, graphroot):
+        podman(["container", "stop", "--time", "0", backup_name], check=False, root=graphroot)
+        podman(["container", "rm", "--force", backup_name], root=graphroot)
+    for value in {item for item in (current_layer_id, layer_id) if isinstance(item, str)}:
+        unmount_veyra_overlay(value, data_root)
+    if exists(podman_name, graphroot):
+        podman(["container", "rm", "--force", podman_name], root=graphroot)
+
+    restored = copy.deepcopy(checkpoint_metadata)
+    restored["image"] = checkpoint_image
+    create_container(
+        name, network, layer_id=layer_id if isinstance(layer_id, str) else None,
+        layer_stack=restored.get("layer_stack", []), data_root=data_root,
+        podman_root=graphroot, isolation=str(restored.get("isolation", "integrated")),
+        mounts=mounts, resources=permissions, image=checkpoint_image,
+    )
+    save_environment(name, restored)
+    if was_running:
+        podman(["container", "start", podman_name], root=graphroot)
+    remove_private_file(journal_path)
+
+
 def remove_snapshots(name: str) -> None:
     metadata = env_state().get(name)
     if isinstance(metadata, dict) and metadata.get("type") == "project":
@@ -1575,43 +1924,58 @@ def make_snapshot(name: str, label: str | None = None) -> str:
     if any(isinstance(entry, dict) and entry.get("name") == snapshot for entry in entries):
         raise VforgeError(f"snapshot '{snapshot}' already exists for '{name}'")
     was_running = state(container_metadata) == "running"
-    layer_copy: str | None = None
-    layer_copy_path: Path | None = None
-    layer_copy_created = False
+    integrated = metadata.get("isolation") != "strict"
     layer_id = metadata.get("layer_id")
+    journal_written = False
     try:
         if was_running:
             podman(["container", "stop", "--time", "10", podman_name])
-        podman(["container", "commit", "--pause=true", podman_name, image])
-        if metadata.get("isolation") != "strict":
-            if not isinstance(layer_id, str):
+        if integrated:
+            if not isinstance(layer_id, str) or not isinstance(metadata.get("data_root"), str):
                 raise VforgeError("integrated environment has no Veyra OverlayFS upper layer")
-            paths = layer_paths(layer_id, metadata.get("data_root"))
-            snapshots_root = Path(str(metadata.get("data_root"))) / "snapshots"
-            ensure_private_directory(snapshots_root)
-            environment_snapshots = snapshots_root / name
-            ensure_private_directory(environment_snapshots)
-            layer_copy_path = environment_snapshots / snapshot
-            layer_copy_path.mkdir(mode=0o700)
-            layer_copy_created = True
-            shutil.copytree(paths["upper"], layer_copy_path / "usr-upper", symlinks=True, copy_function=shutil.copy2)
-            shutil.copytree(paths["rpmdb-upper"], layer_copy_path / "rpmdb-upper", symlinks=True, copy_function=shutil.copy2)
-            layer_copy = str(layer_copy_path)
-        entries.append({
-            "name": snapshot, "image": image, "upper": layer_copy,
-            "host_runtime": host_runtime_id(), "environment": copy.deepcopy(metadata),
+            data_root = Path(str(metadata["data_root"]))
+            unmount_veyra_overlay(layer_id, data_root)
+            sync_storage(data_root)
+        podman(["container", "commit", "--pause=true", podman_name, image])
+
+        after_metadata = copy.deepcopy(metadata)
+        upper_path: str | None = None
+        entry: dict[str, object] = {
+            "name": snapshot, "image": image, "upper": None,
+            "host_runtime": host_runtime_id(), "environment": after_metadata,
             "created": datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        if integrated:
+            before_stack = metadata.get("layer_stack", [])
+            if not isinstance(before_stack, list):
+                raise VforgeError("integrated environment has malformed snapshot layer metadata")
+            data_root = Path(str(metadata["data_root"]))
+            staging_name = ".pending-" + uuid.uuid4().hex
+            upper_path = str(data_root / "snapshots" / name / snapshot)
+            after_metadata["layer_stack"] = [*before_stack, snapshot]
+            entry["upper"] = upper_path
+            entry["environment"] = copy.deepcopy(after_metadata)
+            write_json_file(data_root / ".snapshot-transaction.json", {
+                "version": STATE_VERSION, "name": name, "data_root": str(data_root),
+                "snapshot": snapshot, "layer_id": layer_id, "staging_name": staging_name,
+                "before_stack": before_stack, "entry": entry, "was_running": was_running,
+            })
+            journal_written = True
+            recover_snapshot_transaction(name, metadata)
+        else:
+            entries.append(entry)
+            save_snapshots(name, entries)
+            if was_running:
+                podman(["container", "start", podman_name])
     except Exception:
-        if layer_copy_created and layer_copy_path is not None:
-            shutil.rmtree(layer_copy_path, ignore_errors=True)
+        # Before the durable journal exists, the active uppers were not rotated and
+        # can safely be remounted/restarted. Afterward recovery owns the operation.
+        if not journal_written:
+            if integrated and isinstance(layer_id, str):
+                ensure_veyra_overlay(layer_id, metadata.get("data_root"), metadata.get("layer_stack", []), name)
+            if was_running:
+                podman(["container", "start", podman_name], check=False)
         raise
-    finally:
-        if was_running:
-            if metadata.get("isolation") != "strict" and isinstance(layer_id, str):
-                ensure_veyra_overlay(layer_id, metadata.get("data_root"))
-            podman(["container", "start", podman_name])
-    save_snapshots(name, entries)
     print(f"Saved snapshot '{snapshot}' for '{name}'.")
     return snapshot
 
@@ -1665,7 +2029,7 @@ def restore_upper_layer(layer_id: str, data_root: object, source: object) -> Non
 
 
 def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
-    podman_name, _ = require_environment(name)
+    podman_name, container_metadata = require_environment(name)
     metadata = env_state().get(name)
     if not isinstance(metadata, dict):
         raise VforgeError(f"environment '{name}' has no local vforge metadata")
@@ -1673,6 +2037,8 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
     selected = next((entry for entry in entries if isinstance(entry, dict) and entry.get("name") == snapshot), None) if isinstance(entries, list) else None
     if not isinstance(selected, dict) or not isinstance(selected.get("image"), str):
         raise VforgeError(f"snapshot '{snapshot}' does not exist for '{name}'")
+    if selected["image"] != snapshot_image(name, snapshot):
+        raise VforgeError(f"snapshot '{snapshot}' has an unsafe image reference")
     snapshot_metadata = selected.get("environment", metadata)
     if not isinstance(snapshot_metadata, dict):
         raise VforgeError("snapshot environment metadata is invalid")
@@ -1689,31 +2055,63 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
         name,
         "rollback-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6],
     )
+    # Snapshot creation freezes the current Veyra upper. Use that durable
+    # checkpoint as the recovery target if this rollback is interrupted.
+    metadata = env_state().get(name)
+    if not isinstance(metadata, dict):
+        raise VforgeError("environment metadata disappeared after rollback checkpoint")
+    entries = snapshots_state().get(name, [])
+    checkpoint_entry = next((item for item in entries if isinstance(item, dict) and item.get("name") == checkpoint), None) if isinstance(entries, list) else None
+    if not isinstance(checkpoint_entry, dict) or not isinstance(checkpoint_entry.get("environment"), dict):
+        raise VforgeError(f"rollback checkpoint '{checkpoint}' is missing its environment metadata")
+    checkpoint_metadata = copy.deepcopy(checkpoint_entry["environment"])
     checkpoint_image = snapshot_image(name, checkpoint)
+    checkpoint_metadata["image"] = checkpoint_image
+
+    selected = next((item for item in entries if isinstance(item, dict) and item.get("name") == snapshot), None)
+    if not isinstance(selected, dict) or not isinstance(selected.get("environment"), dict):
+        raise VforgeError(f"snapshot '{snapshot}' has invalid environment metadata")
+    snapshot_metadata = selected["environment"]
     _, network, mounts, permissions = stored_container_options(snapshot_metadata)
     old_layer_id = metadata.get("layer_id")
     target_layer_id = snapshot_metadata.get("layer_id")
     target_isolation = str(snapshot_metadata.get("isolation", "integrated"))
+    target_stack = snapshot_metadata.get("layer_stack", [])
+    if not isinstance(target_stack, list):
+        raise VforgeError("snapshot Veyra layer stack is malformed")
+    data_root = metadata.get("data_root")
+    podman_root = metadata.get("podman_root")
+    if snapshot_metadata.get("data_root") != data_root or snapshot_metadata.get("podman_root") != podman_root:
+        raise VforgeError("snapshot storage paths do not match the current environment")
     backup_name = f"{CONTAINER_PREFIX}{name[:40]}-rollback-{uuid.uuid4().hex[:6]}"
-    if exists(backup_name):
+    if exists(backup_name, podman_root):
         raise VforgeError(f"temporary rollback container already exists: {backup_name}")
-    was_running = state(inspect(podman_name)) == "running"
+    was_running = state(container_metadata) == "running"
+    tx_path = Path(str(data_root)) / ".rollback-transaction.json"
+    write_json_file(tx_path, {
+        "version": STATE_VERSION, "kind": "rollback", "name": name,
+        "data_root": data_root, "checkpoint": checkpoint, "checkpoint_image": checkpoint_image,
+        "checkpoint_metadata": checkpoint_metadata, "was_running": was_running,
+        "backup_name": backup_name,
+    })
     try:
         if was_running:
             podman(["container", "stop", "--time", "10", podman_name])
         if metadata.get("isolation") != "strict" and isinstance(old_layer_id, str):
             unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
+        if target_isolation != "strict" and isinstance(target_layer_id, str) and target_layer_id != old_layer_id:
+            unmount_veyra_overlay(target_layer_id, data_root)
         if target_isolation != "strict":
             if not isinstance(target_layer_id, str):
                 raise VforgeError("integrated environment has no Veyra OverlayFS layer")
-            if target_layer_id != old_layer_id:
-                unmount_veyra_overlay(target_layer_id, snapshot_metadata.get("data_root"))
-            restore_upper_layer(target_layer_id, snapshot_metadata.get("data_root"), selected.get("upper"))
-            ensure_veyra_overlay(target_layer_id, snapshot_metadata.get("data_root"))
+            if not target_stack:
+                # Compatibility with snapshots written before frozen layer stacks.
+                restore_upper_layer(target_layer_id, data_root, selected.get("upper"))
+            ensure_veyra_overlay(target_layer_id, data_root, target_stack, name)
         podman(["container", "rename", podman_name, backup_name])
         create_container(
             name, network, layer_id=target_layer_id if isinstance(target_layer_id, str) else None,
-            data_root=snapshot_metadata.get("data_root"), podman_root=snapshot_metadata.get("podman_root"),
+            layer_stack=target_stack, data_root=data_root, podman_root=podman_root,
             isolation=target_isolation, mounts=mounts, resources=permissions, image=selected["image"],
         )
         snapshot_runtime = selected.get("host_runtime")
@@ -1723,7 +2121,8 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
         restored_metadata = copy.deepcopy(snapshot_metadata)
         restored_metadata["image"] = selected["image"]
         save_environment(name, restored_metadata)
-        podman(["container", "rm", backup_name])
+        podman(["container", "rm", backup_name], root=podman_root)
+        remove_private_file(tx_path)
         if isinstance(old_layer_id, str) and old_layer_id != target_layer_id:
             try:
                 unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
@@ -1738,23 +2137,10 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
         else:
             print(f"Restored '{name}' from snapshot '{snapshot}'.")
     except Exception:
-        if exists(podman_name):
-            podman(["container", "rm", "--force", podman_name], check=False)
-        if exists(backup_name):
-            podman(["container", "rename", backup_name, podman_name], check=False)
-            if metadata.get("isolation") != "strict" and isinstance(old_layer_id, str):
-                unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
-                checkpoint_entry = next((item for item in snapshots_state().get(name, []) if isinstance(item, dict) and item.get("name") == checkpoint), None)
-                restore_upper_layer(old_layer_id, metadata.get("data_root"), checkpoint_entry.get("upper") if isinstance(checkpoint_entry, dict) else None)
-                ensure_veyra_overlay(old_layer_id, metadata.get("data_root"))
-            if was_running:
-                podman(["container", "start", podman_name], check=False)
-            save_environment(name, metadata)
         try:
-            if not exists(podman_name):
-                create_container(name, network, layer_id=metadata.get("layer_id"), data_root=metadata.get("data_root"), podman_root=metadata.get("podman_root"), isolation=str(metadata.get("isolation", "integrated")), mounts=mounts, resources=permissions, image=checkpoint_image)
-        except Exception:
-            print(f"Recovery failed; checkpoint remains available as {checkpoint_image}.", file=sys.stderr)
+            recover_rollback_transaction(name, metadata)
+        except Exception as recovery_error:
+            print(f"Rollback recovery is pending; checkpoint remains available as {checkpoint_image}: {recovery_error}", file=sys.stderr)
         raise
 
 
@@ -1768,7 +2154,7 @@ def upgrade(name: str) -> None:
             layer_id = metadata.get("layer_id")
             if not isinstance(layer_id, str):
                 raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer")
-            ensure_veyra_overlay(layer_id, metadata.get("data_root"))
+            ensure_veyra_overlay(layer_id, metadata.get("data_root"), metadata.get("layer_stack", []), name)
         podman(["container", "start", podman_name])
     checkpoint = make_snapshot(name, "pre-upgrade-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6])
     network = metadata.get("network", "none")
@@ -1877,7 +2263,7 @@ def start(name: str) -> None:
         layer_id = recorded.get("layer_id")
         if not isinstance(layer_id, str):
             raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer")
-        ensure_veyra_overlay(layer_id, recorded.get("data_root"))
+        ensure_veyra_overlay(layer_id, recorded.get("data_root"), recorded.get("layer_stack", []), name)
     podman(["container", "start", podman_name])
     print(f"Started '{name}'.")
 
@@ -2034,6 +2420,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         ACTIVE_STORAGE_ROOT = resolve_storage_root(override)
         ensure_persistent_size_mounts()
+        recover_pending_snapshot_transactions()
         if args.action == "create":
             create(args.name, args.network, args.isolation, args.home, args.gpu, args.wayland, args.audio, args.user_bus, args.size)
             return 0
