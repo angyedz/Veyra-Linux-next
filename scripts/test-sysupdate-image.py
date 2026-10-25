@@ -442,6 +442,8 @@ def main() -> int:
     parser.add_argument("--fingerprint", required=True)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
+    parser.add_argument("--qemu-accel", default="tcg")
+    parser.add_argument("--qemu-cpu", default="max")
     parser.add_argument("--qemu-data-dir", type=pathlib.Path)
     parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
     parser.add_argument("--ovmf-vars", required=True, type=pathlib.Path)
@@ -550,6 +552,8 @@ def main() -> int:
                     "--roothash", roothash,
                     "--ota-marker", ota_marker,
                     "--qemu", args.qemu,
+                    "--accel", args.qemu_accel,
+                    "--cpu", args.qemu_cpu,
                     "--ovmf-code", str(args.ovmf_code.resolve()),
                     "--ovmf-vars", str(args.ovmf_vars.resolve()),
                     "--boot-timeout", str(args.boot_timeout),

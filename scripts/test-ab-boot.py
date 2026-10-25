@@ -238,6 +238,8 @@ def boot_until(
     qemu_data_dir: pathlib.Path | None,
     expected: tuple[str, ...],
     timeout: int,
+    accel: str = "tcg",
+    cpu: str = "max",
     ota_port: int = 8765,
 ) -> str:
     log_path.unlink(missing_ok=True)
@@ -245,8 +247,8 @@ def boot_until(
     if qemu_data_dir:
         command.extend(["-L", str(qemu_data_dir)])
     command.extend([
-        "-machine", "q35,accel=tcg",
-        "-cpu", "max",
+        "-machine", f"q35,accel={accel}",
+        "-cpu", cpu,
         "-smp", "2",
         "-m", "2048",
         "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
@@ -310,6 +312,8 @@ def main() -> int:
     parser.add_argument("--ota-marker", required=True)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--qemu-data-dir", type=pathlib.Path)
+    parser.add_argument("--accel", default="tcg")
+    parser.add_argument("--cpu", default="max")
     parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
     parser.add_argument("--ovmf-vars", required=True, type=pathlib.Path)
     parser.add_argument("--boot-timeout", default=300, type=int)
@@ -362,6 +366,8 @@ def main() -> int:
                 qemu_data_dir=args.qemu_data_dir,
                 expected=tuple(successful_markers),
                 timeout=args.boot_timeout,
+                accel=args.accel,
+                cpu=args.cpu,
                 ota_port=args.ota_port,
             )
             if "device-mapper: verity" in successful_log or "metadata block" in successful_log:
@@ -457,6 +463,8 @@ def main() -> int:
                         mutation_message,
                     ),
                     timeout=args.boot_timeout,
+                    accel=args.accel,
+                    cpu=args.cpu,
                     ota_port=args.ota_port,
                 )
                 listing = mdir(test_image, esp_offset, args.mdir)
@@ -482,6 +490,8 @@ def main() -> int:
                     fallback_message,
                 ),
                 timeout=args.boot_timeout,
+                accel=args.accel,
+                cpu=args.cpu,
                 ota_port=args.ota_port,
             )
             if "Reached target emergency.target" in rollback:
