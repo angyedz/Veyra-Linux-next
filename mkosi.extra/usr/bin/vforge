@@ -1,0 +1,313 @@
+#!/usr/bin/python3
+"""Manage persistent, rootless Fedora development environments with Podman."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from typing import Sequence
+
+
+CONTAINER_PREFIX = "vforge-"
+LABEL = "io.veyra.vforge"
+FEDORA_IMAGE = "registry.fedoraproject.org/fedora:44"
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,54}$")
+NETWORKS = ("none", "bridge")
+
+
+class VforgeError(Exception):
+    pass
+
+
+def container_name(name: str) -> str:
+    if not NAME_RE.fullmatch(name):
+        raise VforgeError(
+            "environment names must start with a lowercase letter or digit and "
+            "contain only lowercase letters, digits, '.', '_' or '-' (up to 55 characters)"
+        )
+    return CONTAINER_PREFIX + name
+
+
+def podman(args: Sequence[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+    executable = shutil.which("podman")
+    if executable is None:
+        raise VforgeError("Podman is not installed; install the Veyra image's container tools first")
+
+    # vforge must operate on this user's local rootless store, never a remote or
+    # rootful Podman service selected through inherited connection variables.
+    env = os.environ.copy()
+    for key in ("CONTAINER_HOST", "CONTAINER_CONNECTION", "CONTAINER_SSHKEY", "DOCKER_HOST"):
+        env.pop(key, None)
+
+    try:
+        result = subprocess.run(
+            [executable, "--remote=false", *args],
+            check=False,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+        )
+    except OSError as error:
+        raise VforgeError(f"could not start Podman: {error}") from error
+
+    if check and result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        message = f"Podman {args[0]} failed"
+        if detail:
+            message += f": {detail}"
+        raise VforgeError(message)
+    return result
+
+
+def require_rootless_user() -> None:
+    if os.geteuid() == 0:
+        raise VforgeError("vforge runs rootless; run it as your normal user, without sudo")
+
+
+def exists(name: str) -> bool:
+    result = podman(["container", "exists", name], capture=True, check=False)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = (result.stderr or "").strip()
+    raise VforgeError(f"could not inspect Podman container {name}" + (f": {detail}" if detail else ""))
+
+
+def inspect(name: str) -> dict[str, object]:
+    result = podman(["container", "inspect", "--format", "json", name], capture=True)
+    try:
+        data = json.loads(result.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise VforgeError(f"Podman returned invalid metadata for {name}") from error
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        raise VforgeError(f"Podman returned no metadata for {name}")
+    labels = data.get("Config", {}).get("Labels", {}) if isinstance(data.get("Config"), dict) else {}
+    if not isinstance(labels, dict) or labels.get(LABEL) != "1":
+        raise VforgeError(f"{name} is not a vforge-managed environment")
+    return data
+
+
+def require_environment(name: str) -> tuple[str, dict[str, object]]:
+    podman_name = container_name(name)
+    if not exists(podman_name):
+        raise VforgeError(f"environment '{name}' does not exist")
+    return podman_name, inspect(podman_name)
+
+
+def state(metadata: dict[str, object]) -> str:
+    state_data = metadata.get("State")
+    if isinstance(state_data, dict):
+        return str(state_data.get("Status", "unknown"))
+    return "unknown"
+
+
+def ensure_running(name: str) -> str:
+    podman_name, metadata = require_environment(name)
+    if state(metadata) != "running":
+        podman(["container", "start", podman_name])
+    return podman_name
+
+
+def create(name: str, network: str) -> None:
+    podman_name = container_name(name)
+    if exists(podman_name):
+        raise VforgeError(f"environment '{name}' already exists")
+
+    podman(
+        [
+            "container",
+            "create",
+            "--pull=missing",
+            "--name",
+            podman_name,
+            "--hostname",
+            name,
+            "--label",
+            f"{LABEL}=1",
+            "--network",
+            network,
+            FEDORA_IMAGE,
+            "/usr/bin/sleep",
+            "infinity",
+        ]
+    )
+    print(f"Created '{name}' from {FEDORA_IMAGE} (network: {network}).")
+    print("Use 'vforge enter " + name + "' to start a shell; install packages with dnf, without sudo.")
+
+
+def list_environments() -> None:
+    result = podman(
+        ["container", "ls", "--all", f"--filter=label={LABEL}=1", "--format=json"], capture=True
+    )
+    try:
+        containers = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise VforgeError("Podman returned invalid container list metadata") from error
+    if not isinstance(containers, list):
+        raise VforgeError("Podman returned an unexpected container list")
+
+    rows: list[tuple[str, str, str]] = []
+    for item in containers:
+        if not isinstance(item, dict):
+            continue
+        names = item.get("Names")
+        podman_name = names[0] if isinstance(names, list) and names else item.get("Name")
+        if not isinstance(podman_name, str) or not podman_name.startswith(CONTAINER_PREFIX):
+            continue
+        rows.append(
+            (
+                podman_name[len(CONTAINER_PREFIX) :],
+                str(item.get("State", item.get("Status", "unknown"))),
+                str(item.get("Image", item.get("ImageName", "unknown"))),
+            )
+        )
+
+    if not rows:
+        print("No vforge environments.")
+        return
+    name_width = max(len("NAME"), *(len(row[0]) for row in rows))
+    state_width = max(len("STATE"), *(len(row[1]) for row in rows))
+    print(f"{'NAME':<{name_width}}  {'STATE':<{state_width}}  IMAGE")
+    for name, status, image in sorted(rows):
+        print(f"{name:<{name_width}}  {status:<{state_width}}  {image}")
+
+
+def enter(name: str) -> int:
+    podman_name = ensure_running(name)
+    args = ["container", "exec"]
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        args.extend(("--interactive", "--tty"))
+    args.extend((podman_name, "/bin/bash", "--login"))
+    return podman(args, check=False).returncode
+
+
+def execute(name: str, command: Sequence[str]) -> int:
+    command = list(command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise VforgeError("vforge exec requires a command after '--'")
+    podman_name = ensure_running(name)
+    args = ["container", "exec"]
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        args.extend(("--interactive", "--tty"))
+    args.extend((podman_name, *command))
+    return podman(args, check=False).returncode
+
+
+def start(name: str) -> None:
+    podman_name, metadata = require_environment(name)
+    if state(metadata) == "running":
+        print(f"Environment '{name}' is already running.")
+        return
+    podman(["container", "start", podman_name])
+    print(f"Started '{name}'.")
+
+
+def stop(name: str) -> None:
+    podman_name, metadata = require_environment(name)
+    if state(metadata) != "running":
+        print(f"Environment '{name}' is already stopped.")
+        return
+    podman(["container", "stop", "--time", "10", podman_name])
+    print(f"Stopped '{name}'.")
+
+
+def rename(old_name: str, new_name: str) -> None:
+    old_container, _ = require_environment(old_name)
+    new_container = container_name(new_name)
+    if exists(new_container):
+        raise VforgeError(f"environment '{new_name}' already exists")
+    podman(["container", "rename", old_container, new_container])
+    print(f"Renamed '{old_name}' to '{new_name}'.")
+
+
+def delete(name: str) -> None:
+    podman_name, metadata = require_environment(name)
+    if not sys.stdin.isatty():
+        raise VforgeError("deleting an environment requires an interactive confirmation")
+    answer = input(
+        f"Delete environment '{name}' and its installed packages? This cannot be undone. [y/N] "
+    ).strip().lower()
+    if answer not in {"y", "yes"}:
+        print("Deletion cancelled.")
+        return
+    if state(metadata) == "running":
+        podman(["container", "stop", "--time", "10", podman_name])
+    podman(["container", "rm", podman_name])
+    print(f"Deleted '{name}'.")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="vforge",
+        description="Manage persistent rootless development environments.",
+        epilog="Environments have no host mounts by default. Network is disabled unless enabled at creation.",
+    )
+    subparsers = parser.add_subparsers(dest="action", required=True)
+
+    create_parser = subparsers.add_parser("create", help="create a persistent Fedora 44 environment")
+    create_parser.add_argument("name")
+    create_parser.add_argument("--network", choices=NETWORKS, default="none")
+
+    subparsers.add_parser("list", help="list vforge environments")
+    for action in ("enter", "start", "stop", "delete"):
+        action_parser = subparsers.add_parser(action, help=f"{action} a named environment")
+        action_parser.add_argument("name")
+
+    exec_parser = subparsers.add_parser("exec", help="run a command inside an environment")
+    exec_parser.add_argument("name")
+    exec_parser.add_argument("command", nargs=argparse.REMAINDER)
+
+    rename_parser = subparsers.add_parser("rename", help="rename a named environment")
+    rename_parser.add_argument("old_name")
+    rename_parser.add_argument("new_name")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        require_rootless_user()
+        if args.action == "create":
+            create(args.name, args.network)
+            return 0
+        if args.action == "list":
+            list_environments()
+            return 0
+        if args.action == "enter":
+            return enter(args.name)
+        if args.action == "exec":
+            return execute(args.name, args.command)
+        if args.action == "start":
+            start(args.name)
+            return 0
+        if args.action == "stop":
+            stop(args.name)
+            return 0
+        if args.action == "rename":
+            rename(args.old_name, args.new_name)
+            return 0
+        if args.action == "delete":
+            delete(args.name)
+            return 0
+        raise VforgeError(f"unsupported command: {args.action}")
+    except VforgeError as error:
+        print(f"vforge: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("vforge: interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
