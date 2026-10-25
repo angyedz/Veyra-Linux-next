@@ -1,6 +1,12 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+virtualizer="$(systemd-detect-virt --vm 2>/dev/null || true)"
+if [[ "$virtualizer" != "qemu" && "$virtualizer" != "kvm" ]]; then
+    echo "Run Veyra package tests only inside a QEMU/KVM guest with virtual disks." >&2
+    exit 2
+fi
+
 root=/var/lib/veyra/vpkg/root
 repo=/var/lib/veyra/vpkg-ci-repo
 marker="persistent state created before the A/B update"
@@ -32,11 +38,24 @@ grep -Fxq "$marker" /var/lib/veyra/vpkg-ci-persisted
 grep -Fxq "$marker" /home/.veyra-vpkg-ci-persisted
 echo "Veyra A/B VM test: /etc, /var and /home persisted across the system update"
 
+stage_pass=/var/lib/veyra/vpkg-ci-stage-pass
+if [[ -e "$stage_pass" ]]; then
+    touch "$complete"
+    echo "The staged-generation rollback scenario passed before graphical.target."
+    echo "VEYRA_VPKG_CI_PASS"
+    exit 0
+fi
+
 if [[ -e "$complete" ]]; then
     echo "Veyra vpkg VM test already completed on an earlier boot"
     echo "VEYRA_VPKG_CI_PASS"
     exit 0
 fi
+
+echo "Veyra vpkg VM test: run package safety unit tests"
+python3 -m unittest discover \
+    --start-directory /var/lib/veyra/vpkg-ci-tests/repo/tests \
+    --pattern 'test_*.py'
 
 echo "Veyra vpkg VM test: initialize isolated RPM database"
 mkdir -p "$root"
@@ -45,6 +64,9 @@ repo_key_hash="${repo_key_hash%% *}"
 image_key_hash="$(sha256sum /usr/share/veyra/RPM-GPG-KEY-VEYRA)"
 image_key_hash="${image_key_hash%% *}"
 test "$repo_key_hash" = "$image_key_hash"
+# Trust the disposable fixture key only in this VM's RPM database. vpkg copies
+# that database into its isolated installroot before resolving app packages.
+rpm --import "$repo/RPM-GPG-KEY-VEYRA"
 rpm --root "$root" --initdb
 rpm --root "$root" --import /usr/share/veyra/RPM-GPG-KEY-VEYRA
 
@@ -131,6 +153,58 @@ if command -v htop >/dev/null 2>&1; then
 fi
 echo "Veyra vpkg VM test: signed local RPM installed and removed transactionally"
 
+unit_rpm="$(find "$repo/local-upstream/x86_64" -maxdepth 1 \
+    -name 'vpkg-unit-fixture-*.rpm' -print -quit)"
+test -s "$unit_rpm"
+vpkg install "$unit_rpm"
+unit_name=veyra-vpkg-unit-fixture.service
+test "$(systemctl show --property=LoadState --value "$unit_name")" = loaded
+test "$(systemctl show --property=ActiveState --value "$unit_name")" = inactive
+unit_enabled="$(systemctl is-enabled "$unit_name" 2>/dev/null || true)"
+test "$unit_enabled" = disabled
+vpkg remove vpkg-unit-fixture
+if systemctl cat "$unit_name" >/dev/null 2>&1; then
+    echo "systemd still sees the unit after its app generation was removed." >&2
+    exit 1
+fi
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg VM test: additive systemd unit became visible without being started or enabled"
+
+scriptlet_rpm="$(find "$repo/local-upstream/x86_64" -maxdepth 1 \
+    -name 'vpkg-scriptlet-fixture-*.rpm' -print -quit)"
+test -s "$scriptlet_rpm"
+post_marker=/var/lib/veyra/vpkg-ci-scriptlet-post-ran
+trigger_marker=/var/lib/veyra/vpkg-ci-scriptlet-trigger-ran
+rm -f "$post_marker" "$trigger_marker"
+failure_log=/var/lib/veyra/vpkg-ci-scriptlet-install.log
+if vpkg install "$scriptlet_rpm" >"$failure_log" 2>&1; then
+    cat "$failure_log"
+    echo "vpkg unexpectedly accepted an RPM declaring scriptlets and triggers." >&2
+    exit 1
+fi
+cat "$failure_log"
+# The fixture's pre hook is fatal; post and trigger hooks return distinct
+# errors. Their output sentinels also make any executed hook observable.
+grep -Fq "REJECT: package vpkg-scriptlet-fixture declares RPM scriptlets or triggers" "$failure_log"
+if grep -Eq 'VEYRA_CI_SCRIPTLET_(PRE|POST|TRIGGER)_RAN' "$failure_log"; then
+    echo "vpkg ran an RPM scriptlet or trigger before rejecting its package." >&2
+    exit 1
+fi
+if [[ -e "$post_marker" || -e "$trigger_marker" ]]; then
+    echo "vpkg executed an RPM scriptlet or trigger while rejecting its package." >&2
+    exit 1
+fi
+if rpm --root "$root" -q vpkg-scriptlet-fixture >/dev/null 2>&1; then
+    echo "vpkg left the rejected scriptlet fixture installed in its package database." >&2
+    exit 1
+fi
+if vpkg list | grep -Fq "vpkg-scriptlet-fixture:"; then
+    echo "vpkg recorded the rejected scriptlet fixture in the app layer." >&2
+    exit 1
+fi
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg VM test: scriptlet and trigger package rejected without running either hook"
+
 protected_kernel="$(rpm -q --qf '%{NEVRA}' kernel-core)"
 if vpkg install kernel-core >/var/lib/veyra/vpkg-ci-protected-package.log 2>&1; then
     echo "vpkg unexpectedly accepted a kernel package." >&2
@@ -179,5 +253,124 @@ if rpm -q veyra-shell-tools >/dev/null 2>&1; then
 fi
 
 echo "Veyra vpkg VM test: remove detached the extension and preserved the base RPM database"
-touch "$complete"
-echo "VEYRA_VPKG_CI_PASS"
+
+# Exercise the OTA handoff against a real package generation. Keep this part in
+# the guest fixture so candidate RPM solving, the base RPM database, and the
+# pending-update lock are all tested in the same disposable Veyra VM.
+vpkg sync
+old_generation="$(readlink -f /var/lib/veyra/vpkg/apps/current)"
+old_roothash="$(python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("veyra_vpkg", "/usr/bin/vpkg")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.running_deployment_roothash())
+PY
+)"
+old_version="$(python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("veyra_vpkg", "/usr/bin/vpkg")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.running_uki_version())
+PY
+)"
+test "${#old_roothash}" -eq 64
+test -n "$old_version"
+
+vpkg install htop
+htop_pin="$(rpm --root "$root" -q --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}' htop)"
+vpkg pin htop "$htop_pin"
+vpkg rollback
+python3 -c 'import json,sys; requests=json.load(open(sys.argv[1]))["requests"]; assert len(requests)==1 and "pin" not in requests[0]' \
+    /var/lib/veyra/vpkg/intents.json
+vpkg list | grep -Fq 'htop:'
+vpkg pin htop "$htop_pin"
+old_generation="$(readlink -f /var/lib/veyra/vpkg/apps/current)"
+old_intents="$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)"
+old_binding="/var/lib/veyra/vpkg/deployments/$old_roothash--$old_version.json"
+old_binding_hash="$(sha256sum "$old_binding" | cut -d ' ' -f 1)"
+old_manifest_requests="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["requests"],sort_keys=True))' "$old_generation/manifest.json")"
+if rpm -q htop >/dev/null 2>&1; then
+    echo "The app-layer htop transaction modified the immutable base RPM database." >&2
+    exit 1
+fi
+rpm --root "$root" -q htop >/dev/null
+if [[ "$old_manifest_requests" != *"\"pin\": \"$htop_pin\""* ]]; then
+    echo "vpkg did not persist the explicit htop EVR pin in its app generation." >&2
+    exit 1
+fi
+
+# A candidate root that introduces an app-file collision must be rejected
+# without changing the currently selected generation or the user's request.
+candidate_root=/var/tmp/veyra-vpkg-ci-candidate-root
+mkdir -p "$candidate_root/usr/lib/sysimage" "$candidate_root/usr/bin"
+cp -a /usr/lib/sysimage/rpm "$candidate_root/usr/lib/sysimage/rpm"
+touch "$candidate_root/usr/bin/htop"
+candidate_roothash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+conflict_output=/var/lib/veyra/vpkg/app-layers/generation-conflict
+conflict_log=/var/lib/veyra/vpkg-ci-candidate-conflict.json
+if vpkg prepare-for-base --base-root "$candidate_root" --roothash "$candidate_roothash" \
+    --output "$conflict_output" >"$conflict_log"; then
+    cat "$conflict_log"
+    echo "vpkg unexpectedly resolved the pinned app against a colliding candidate base." >&2
+    exit 1
+fi
+grep -Fq '"status": "rejected"' "$conflict_log"
+test "$(readlink -f /var/lib/veyra/vpkg/apps/current)" = "$old_generation"
+test "$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)" = "$old_intents"
+test "$(sha256sum "$old_binding" | cut -d ' ' -f 1)" = "$old_binding_hash"
+test ! -e "$conflict_output"
+test ! -e /var/lib/veyra/vpkg/pending.json
+echo "Veyra vpkg VM test: candidate conflict preserved the active generation and pinned request"
+
+# Resolve the same persisted request against a candidate base and bind it to a
+# different IMAGE_VERSION with the same roothash. The identity pair must keep
+# both generations distinct while the candidate remains pending.
+candidate_version="${old_version}.ci-candidate"
+candidate_output=/var/lib/veyra/vpkg/app-layers/generation-ci-candidate
+prepared=/var/lib/veyra/vpkg-ci-prepared-generation.json
+vpkg prepare-for-base --base-root / --roothash "$old_roothash" --output "$candidate_output" >"$prepared"
+candidate_generation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' "$prepared")"
+test "$candidate_generation" = "$candidate_output"
+candidate_requests="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["requests"],sort_keys=True))' "$candidate_generation/manifest.json")"
+test "$candidate_requests" = "$old_manifest_requests"
+candidate_evr="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["installed"]["htop"])' "$candidate_generation/manifest.json")"
+test "$candidate_evr" = "htop-$htop_pin.x86_64"
+vpkg bind-generation --roothash "$old_roothash" --version "$candidate_version" --generation "$candidate_generation"
+test -s "/var/lib/veyra/vpkg/deployments/$old_roothash--$old_version.json"
+test -s "/var/lib/veyra/vpkg/deployments/$old_roothash--$candidate_version.json"
+
+for command in \
+    "install jq" \
+    "remove htop" \
+    "upgrade" \
+    "pin htop 0:1-1" \
+    "unpin htop"; do
+    read -r -a mutation <<< "$command"
+    if vpkg "${mutation[@]}" >/var/lib/veyra/vpkg-ci-pending-lock.log 2>&1; then
+        echo "vpkg unexpectedly allowed package mutation during pending OTA: $command" >&2
+        exit 1
+    fi
+    grep -Fq "Package changes are blocked while OTA $candidate_version is pending." \
+        /var/lib/veyra/vpkg-ci-pending-lock.log
+done
+vpkg sync
+test "$(readlink -f /var/lib/veyra/vpkg/apps/current)" = "$old_generation"
+test "$(sha256sum /var/lib/veyra/vpkg/intents.json | cut -d ' ' -f 1)" = "$old_intents"
+test -e /var/lib/veyra/vpkg/pending.json
+echo "Veyra vpkg VM test: explicit requests and pins were re-resolved, pair-keyed, and locked through pending OTA"
+
+# Keep the trial/update assertions above independent, then verify the staged
+# generation protocol on a clean next boot. The early recovery service runs
+# after sysext health checks but before graphical.target, so `vpkg rollback`
+# is exercised without KDE.
+vpkg cancel-pending --roothash "$old_roothash" --version "$candidate_version"
+if command -v jq >/dev/null 2>&1; then
+    echo "The base image unexpectedly provides jq; staged test would not prove layer activation." >&2
+    exit 1
+fi
+vpkg stage install jq --yes
+touch /var/lib/veyra/vpkg-ci-stage-phase
+systemd-run --no-block --unit=veyra-vpkg-stage-reboot --on-active=30s /usr/bin/systemctl reboot
+echo "Prepared a staged jq generation; reboot scheduled for text-mode rollback validation."

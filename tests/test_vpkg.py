@@ -5,6 +5,7 @@ from importlib.machinery import SourceFileLoader
 import json
 import subprocess
 import stat
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +19,288 @@ vpkg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vpkg)
 
 
+def running_in_qemu_vm() -> bool:
+    try:
+        result = subprocess.run(
+            ["systemd-detect-virt", "--vm"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0 and result.stdout.strip() in {"qemu", "kvm"}
+
+
+@unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
 class VpkgPolicyTests(unittest.TestCase):
+    def test_generation_integrity_detects_payload_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            generation = Path(temporary) / "generation-test"
+            tree = generation / "tree"
+            payload = tree / "usr/bin/example"
+            payload.parent.mkdir(parents=True)
+            payload.write_text("original", encoding="utf-8")
+            manifest = {
+                "schema": 1,
+                "generation_id": generation.name,
+                "requests": [{"kind": "repo", "name": "example"}],
+                "installed": {"example": "example-0:1-1.x86_64"},
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(tree)},
+            }
+            (generation / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            vpkg.verify_user_app_generation(generation)
+            payload.write_text("modified", encoding="utf-8")
+            with self.assertRaisesRegex(vpkg.VpkgError, "SHA-256 integrity check"):
+                vpkg.verify_user_app_generation(generation)
+
+    def test_empty_generation_records_its_parent_for_remove_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            previous = layer_dir / "generation-previous"
+            previous.mkdir(parents=True)
+            (previous / "tree").mkdir()
+            (previous / "manifest.json").write_text(
+                json.dumps({"schema": 1, "requests": [], "installed": {}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "active_user_app_generation", return_value=previous),
+            ):
+                generation = vpkg.create_empty_user_app_generation("a" * 64, "remove")
+            manifest = vpkg.verify_user_app_generation(generation)
+            self.assertEqual(manifest["parent_generation"], str(previous))
+            self.assertEqual(manifest["transaction"], "remove")
+            self.assertEqual(manifest["requests"], [])
+            self.assertEqual(manifest["installed"], {})
+
+    def test_rollback_selects_parent_generation_without_crossing_base_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            state_dir = root / "apps"
+            previous = layer_dir / "generation-previous"
+            current = layer_dir / "generation-current"
+            for generation in (previous, current):
+                tree = generation / "tree"
+                tree.mkdir(parents=True)
+            previous_manifest = {
+                "schema": 1,
+                "generation_id": previous.name,
+                "parent_generation": None,
+                "requests": [],
+                "installed": {},
+                "base_roothash": "a" * 64,
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(previous / "tree")},
+            }
+            (previous / "manifest.json").write_text(json.dumps(previous_manifest), encoding="utf-8")
+            current_manifest = {
+                "schema": 1,
+                "generation_id": current.name,
+                "parent_generation": str(previous),
+                "requests": [{"kind": "repo", "name": "example"}],
+                "installed": {"example": "example-0:1-1.x86_64"},
+                "base_roothash": "a" * 64,
+                "integrity": {"tree_sha256": vpkg.user_app_tree_digest(current / "tree")},
+            }
+            (current / "manifest.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+            state_dir.mkdir()
+            current_link = state_dir / "current"
+            current_link.symlink_to(current, target_is_directory=True)
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "USER_APP_STATE", state_dir),
+                patch.object(vpkg, "USER_APP_CURRENT", current_link),
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                patch.object(vpkg, "require_no_pending_update"),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.0.0"),
+                patch.object(vpkg, "commit_user_app_generation") as commit,
+            ):
+                vpkg.rollback_user_apps()
+            commit.assert_called_once_with(previous, [], "a" * 64, "1.0.0")
+
+    def test_prepare_for_empty_intents_returns_ready_without_creating_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            output = layer_dir / "generation-candidate"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "load_pending_update", return_value=None),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                result = vpkg.prepare_for_base(root, "a" * 64, output)
+            self.assertEqual(result["status"], "ready")
+            self.assertIsNone(result["generation"])
+            self.assertFalse(output.exists())
+
+    def test_running_uki_version_is_read_from_its_osrel_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            uki = Path(temporary) / "current.efi"
+            image = bytearray(0x600)
+            pe_offset = 0x80
+            image[0:2] = b"MZ"
+            struct.pack_into("<I", image, 0x3C, pe_offset)
+            image[pe_offset : pe_offset + 4] = b"PE\0\0"
+            struct.pack_into("<H", image, pe_offset + 6, 1)
+            struct.pack_into("<H", image, pe_offset + 20, 0xF0)
+            section = pe_offset + 24 + 0xF0
+            image[section : section + 6] = b".osrel"
+            osrel = b'ID=fedora\nIMAGE_VERSION="1.2.3-test"\n\0'
+            struct.pack_into("<I", image, section + 8, len(osrel))
+            struct.pack_into("<I", image, section + 16, len(osrel))
+            struct.pack_into("<I", image, section + 20, 0x400)
+            image[0x400 : 0x400 + len(osrel)] = osrel
+            uki.write_bytes(image)
+            with patch.object(
+                vpkg,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, str(uki) + "\n", ""),
+            ):
+                self.assertEqual(vpkg.running_uki_version(), "1.2.3-test")
+
+    def test_pending_completion_requires_exact_roothash_and_uki_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "pending.json"
+            marker.write_text(
+                json.dumps({"schema": 1, "target_roothash": "a" * 64, "version": "1.0.1"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.0.2"),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "exact target roothash and UKI version"):
+                    vpkg.complete_pending_update()
+            self.assertTrue(marker.exists())
+            with (
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.0.1"),
+            ):
+                vpkg.complete_pending_update()
+            self.assertFalse(marker.exists())
+
+    def test_binding_creates_target_mapping_and_pending_lock_under_one_vpkg_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            mapping_dir = root / "deployments"
+            marker = root / "pending.json"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "DEPLOYMENT_BINDING_DIR", mapping_dir),
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                patch.object(vpkg, "running_deployment_roothash", return_value="b" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.2.2"),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                vpkg.bind_generation("b" * 64, "1.2.3", "none")
+            binding = json.loads((mapping_dir / f"{'b' * 64}--1.2.3.json").read_text(encoding="utf-8"))
+            pending = json.loads(marker.read_text(encoding="utf-8"))
+            self.assertEqual(binding["generation"], None)
+            self.assertEqual(binding["requests"], [])
+            self.assertEqual(pending["target_roothash"], "b" * 64)
+            self.assertEqual(pending["version"], "1.2.3")
+
+    def test_binding_rejects_stale_candidate_before_pending_lock_is_created(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            candidate = layer_dir / "generation-candidate"
+            candidate.mkdir()
+            (candidate / "manifest.json").write_text(
+                json.dumps({
+                    "schema": 1,
+                    "base_roothash": "b" * 64,
+                    "requests": [{"kind": "repo", "name": "htop"}],
+                    "installed": {},
+                }),
+                encoding="utf-8",
+            )
+            marker = root / "pending.json"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "DEPLOYMENT_BINDING_DIR", root / "deployments"),
+                patch.object(vpkg, "PENDING_UPDATE_FILE", marker),
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                patch.object(vpkg, "running_deployment_roothash", return_value="a" * 64),
+                patch.object(vpkg, "running_uki_version", return_value="1.2.2"),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "intents are stale"):
+                    vpkg.bind_generation("b" * 64, "1.2.3", str(candidate))
+            self.assertFalse(marker.exists())
+            self.assertFalse((root / "deployments" / f"{'b' * 64}--1.2.3.json").exists())
+
+    def test_same_roothash_different_versions_selects_distinct_app_generations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            mapping_dir = root / "deployments"
+            generations = []
+            for version in ("1.0.0", "1.0.1"):
+                generation = layer_dir / f"generation-{version}"
+                generation.mkdir()
+                (generation / "manifest.json").write_text(
+                    json.dumps({
+                        "schema": 1,
+                        "base_roothash": "c" * 64,
+                        "requests": [],
+                        "installed": {"marker": version},
+                    }),
+                    encoding="utf-8",
+                )
+                generations.append(generation)
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "DEPLOYMENT_BINDING_DIR", mapping_dir),
+                patch.object(vpkg, "USER_APP_INTENTS", root / "intents.json"),
+                patch.object(vpkg, "set_user_app_current") as select_current,
+                patch.object(vpkg, "sync_user_app_extension_link"),
+                patch.object(vpkg, "write_user_app_intents"),
+            ):
+                vpkg.write_deployment_binding("c" * 64, "1.0.0", generations[0], [])
+                vpkg.write_deployment_binding("c" * 64, "1.0.1", generations[1], [])
+                vpkg.select_deployment_generation("c" * 64, "1.0.1")
+            self.assertEqual(select_current.call_args.args[0], generations[1])
+            self.assertTrue((mapping_dir / f"{'c' * 64}--1.0.0.json").is_file())
+            self.assertTrue((mapping_dir / f"{'c' * 64}--1.0.1.json").is_file())
+
+    def test_cancel_pending_requires_exact_pair_and_rejects_cancelling_running_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "pending.json"
+            marker.write_text(
+                json.dumps({"schema": 1, "target_roothash": "d" * 64, "version": "2.0.0"}),
+                encoding="utf-8",
+            )
+            with patch.object(vpkg, "PENDING_UPDATE_FILE", marker):
+                with self.assertRaisesRegex(vpkg.VpkgError, "does not match"):
+                    vpkg.cancel_pending_update("d" * 64, "2.0.1")
+                with (
+                    patch.object(vpkg, "running_deployment_roothash", return_value="d" * 64),
+                    patch.object(vpkg, "running_uki_version", return_value="2.0.0"),
+                ):
+                    with self.assertRaisesRegex(vpkg.VpkgError, "Cannot cancel"):
+                        vpkg.cancel_pending_update("d" * 64, "2.0.0")
+                self.assertTrue(marker.exists())
+                with patch.object(vpkg, "running_deployment_roothash", return_value="e" * 64):
+                    vpkg.cancel_pending_update("d" * 64, "2.0.0")
+            self.assertFalse(marker.exists())
+
     def test_upstream_package_policy_blocks_kernel_init_boot_and_driver_packages(self) -> None:
         for name in (
             "kernel-core",
@@ -64,17 +346,51 @@ class VpkgPolicyTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(vpkg.VpkgError):
                 vpkg.validate_user_package_paths([path])
 
-    def test_upstream_dnf_root_is_separate_and_uses_only_fedora_sources(self) -> None:
-        installroot = Path("/var/lib/veyra/vpkg/staging-root")
-        prefix = vpkg.user_package_dnf_prefix(installroot)
-        self.assertIn("--installroot=" + str(installroot), prefix)
-        self.assertIn("--use-host-config", prefix)
-        self.assertIn(
-            "--repo=" + ",".join((*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS)),
-            prefix,
+    def test_upstream_libdnf_session_uses_fedora_sources_without_veyra(self) -> None:
+        self.assertEqual(
+            vpkg.selected_repo_ids("both", include_veyra=False),
+            (*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS),
         )
-        self.assertTrue(any("localpkg_gpgcheck=True" in item for item in prefix))
-        self.assertFalse(any("veyra-main" in item or "veyra-testing" in item for item in prefix))
+
+    def test_fedora_release_is_derived_from_candidate_os_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "etc").mkdir()
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "etc/os-release").write_text(
+                'NAME="Fedora Linux"\nID=fedora\nVERSION_ID="44"\n',
+                encoding="utf-8",
+            )
+            (root / "usr/lib/os-release").symlink_to("../../etc/os-release")
+
+            self.assertEqual(vpkg.fedora_release_from_root(root), "44")
+            with patch.object(vpkg, "Session") as session:
+                vpkg.package_session(
+                    Path("/tmp/installroot"),
+                    base_root=root,
+                    app_transaction=True,
+                    include_veyra=False,
+                )
+            self.assertEqual(session.call_args.kwargs["releasever"], "44")
+
+    def test_fedora_46_candidate_is_rejected_before_generation_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "usr/lib/os-release").write_text(
+                'ID=fedora\nVERSION_ID="46"\n', encoding="utf-8"
+            )
+            layer_dir = root / "app-layers"
+            layer_dir.mkdir()
+            output = layer_dir / "generation-candidate"
+            with (
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layer_dir),
+                patch.object(vpkg, "load_pending_update", return_value=None),
+                patch.object(vpkg, "load_user_app_intents", return_value=[]),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgReject, "Fedora 44"):
+                    vpkg.prepare_for_base(root, "a" * 64, output)
+            self.assertFalse(output.exists())
 
     def test_user_app_rpm_transaction_keeps_base_inventory_unchanged(self) -> None:
         base = {"bash": {"bash-0:5.2-1.x86_64"}}
@@ -83,7 +399,11 @@ class VpkgPolicyTests(unittest.TestCase):
             "tree": {"tree-0:2.1.1-1.x86_64"},
             "gpg-pubkey": {"gpg-pubkey-123"},
         }
-        with patch.object(vpkg, "rpm_records", return_value=installed):
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
+            patch.object(vpkg, "validate_installed_app_payloads"),
+        ):
             added = vpkg.package_records_after_install(Path("/stage"), base)
         self.assertEqual(added, {"tree": "tree-0:2.1.1-1.x86_64"})
 
@@ -91,8 +411,76 @@ class VpkgPolicyTests(unittest.TestCase):
         base = {"systemd": {"systemd-0:257-1.x86_64"}}
         installed = {"systemd": {"systemd-0:258-1.x86_64"}}
         with patch.object(vpkg, "rpm_records", return_value=installed):
-            with self.assertRaisesRegex(vpkg.VpkgError, "changes base package systemd"):
+            with self.assertRaisesRegex(vpkg.VpkgError, "REJECT: transaction changes protected base package"):
                 vpkg.package_records_after_install(Path("/stage"), base)
+
+    def test_user_app_transaction_classifies_safe_additions_as_live(self) -> None:
+        base = {"bash": {"bash-0:5.2-1.x86_64"}}
+        installed = {
+            **base,
+            "tree": {"tree-0:2.1.1-1.x86_64"},
+            "gpg-pubkey": {"gpg-pubkey-123"},
+        }
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
+            patch.object(vpkg, "validate_installed_app_payloads"),
+        ):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "LIVE")
+        self.assertEqual(added, {"tree": "tree-0:2.1.1-1.x86_64"})
+        self.assertIsNone(reason)
+
+    def test_user_app_transaction_rejects_rpm_scriptlets_and_triggers(self) -> None:
+        base = {"bash": {"bash-0:5.2-1.x86_64"}}
+        installed = {**base, "example": {"example-1-1.x86_64"}}
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=True),
+            patch.object(vpkg, "validate_installed_app_payloads") as validate_payloads,
+        ):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("declares RPM scriptlets, triggers, or SYSUSERS actions", reason or "")
+        validate_payloads.assert_not_called()
+
+    def test_rpm_sysusers_metadata_is_rejected_without_executing_it(self) -> None:
+        outputs = ["", "", "", "absent", "u example - - /var/lib/example"]
+        with patch.object(
+            vpkg,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0, output, "") for output in outputs
+            ],
+        ) as mocked_run:
+            self.assertTrue(vpkg.rpm_package_has_execution_hooks(Path("/stage"), "example"))
+        self.assertEqual(mocked_run.call_count, 5)
+        self.assertIn("%{SYSUSERS}", mocked_run.call_args.args[0][-2])
+
+    def test_rpm_hook_inspection_detects_package_triggers_without_running_them(self) -> None:
+        with patch.object(
+            vpkg,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "trigger script", ""),
+            ],
+        ) as mocked_run:
+            self.assertTrue(vpkg.rpm_package_has_execution_hooks(Path("/stage"), "example"))
+        self.assertEqual(mocked_run.call_count, 2)
+        self.assertEqual(mocked_run.call_args_list[0].args[0][4], "--scripts")
+        self.assertEqual(mocked_run.call_args_list[1].args[0][4], "--triggers")
+
+    def test_user_app_transaction_rejects_unsupported_staged_replacements(self) -> None:
+        base = {"python3": {"python3-0:3.13-1.x86_64"}}
+        installed = {"python3": {"python3-0:3.14-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value=installed):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("staged system-package generations", reason or "")
+        self.assertIn("does not support yet", reason or "")
 
     def test_user_app_rpm_payload_policy_accepts_additive_application_files(self) -> None:
         regular = stat.S_IFREG | 0o755
@@ -169,11 +557,13 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "seed_user_app_installroot", side_effect=seed),
                 patch.object(vpkg, "rpm_records", return_value=added),
                 patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")),
-                patch.object(vpkg, "user_package_dnf_prefix", return_value=["dnf5", "--installroot=/tmp/root"]),
+                patch.object(vpkg, "package_session") as package_session,
                 patch.object(vpkg, "extension_release_text", return_value="ID=fedora\nVERSION_ID=44\nSYSEXT_LEVEL=test\n"),
+                patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
                 patch.object(vpkg, "validate_installed_app_payloads"),
                 patch.object(vpkg, "run") as run,
             ):
+                package_session.return_value.resolve.return_value = None
                 generation = vpkg.build_user_app_generation(
                     [{"kind": "repo", "name": "tree"}], {}
                 )
@@ -184,7 +574,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 json.loads((generation / "manifest.json").read_text(encoding="utf-8"))["installed"],
                 {"tree": "tree-0:2.1.1-1.x86_64"},
             )
-            self.assertEqual(run.call_count, 1)
+            package_session.assert_called_once()
 
     def test_sync_app_extension_link_follows_the_persistent_generation_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -312,7 +702,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 with self.assertRaises(vpkg.VpkgError):
                     vpkg.selected_channel()
 
-    def test_dnf_uses_fedora_rpmfusion_and_selected_veyra_channels(self) -> None:
+    def test_libdnf_uses_fedora_rpmfusion_and_selected_veyra_channels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             channel_file = Path(temporary) / "channel"
             channel_file.write_text("testing\n", encoding="utf-8")
@@ -322,11 +712,9 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "CHANNEL_FILE", channel_file),
                 patch.object(vpkg, "VPKG_PUBLIC_KEY", key_file),
             ):
-                selected = next(
-                    item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
-                )
+                selected = vpkg.selected_repo_ids()
                 self.assertEqual(
-                    selected.removeprefix("--repo=").split(","),
+                    list(selected),
                     [
                         "fedora",
                         "updates",
@@ -337,30 +725,26 @@ class VpkgPolicyTests(unittest.TestCase):
                         "veyra-testing",
                     ],
                 )
-                both = next(
-                    item for item in vpkg.dnf_prefix("both") if item.startswith("--repo=")
-                )
-                self.assertTrue(both.endswith("veyra-main,veyra-testing"))
+                both = vpkg.selected_repo_ids("both")
+                self.assertEqual(both[-2:], ("veyra-main", "veyra-testing"))
 
     def test_fedora_queries_work_without_a_veyra_signing_key(self) -> None:
         with patch.object(vpkg, "VPKG_PUBLIC_KEY", Path("/missing/veyra-key")):
-            selected = next(
-                item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
-            )
+            selected = vpkg.selected_repo_ids()
         self.assertEqual(
-            selected.removeprefix("--repo=").split(","),
+            list(selected),
             [*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS],
         )
 
-    def test_veyra_extension_transactions_do_not_require_rpm_fusion_repos(self) -> None:
-        selected = next(
-            item
-            for item in vpkg.dnf_prefix("testing", include_rpmfusion=False)
-            if item.startswith("--repo=")
+    def test_veyra_extension_transactions_use_only_the_selected_channel(self) -> None:
+        selected = vpkg.selected_repo_ids(
+            "testing",
+            include_rpmfusion=False,
+            include_upstream=False,
         )
         self.assertEqual(
-            selected.removeprefix("--repo=").split(","),
-            [*vpkg.FEDORA_REPOS, "veyra-testing"],
+            selected,
+            ("veyra-testing",),
         )
 
     def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
@@ -383,19 +767,13 @@ class VpkgPolicyTests(unittest.TestCase):
                     patch.object(vpkg, "require_root"),
                     patch.object(vpkg, "selected_channel", return_value=channel),
                     patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
-                    patch.object(vpkg, "latest_history_id", return_value=7),
-                    patch.object(vpkg, "dnf") as dnf,
-                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "run_veyra_transaction") as transaction,
                     patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
                 ):
                     vpkg.install(["veyra-shell-tools"])
 
                 inspect.assert_called_once_with("install", ["veyra-shell-tools"], channel=channel)
-                dnf.assert_called_once_with(
-                    ["install", f"--from-repo={vpkg.CHANNELS[channel]}", "veyra-shell-tools"],
-                    channel=channel,
-                    include_rpmfusion=False,
-                )
+                transaction.assert_called_once_with("install", ["veyra-shell-tools"])
 
     def test_upgrade_transaction_uses_same_channel_as_preflight_download(self) -> None:
         for channel in ("main", "testing"):
@@ -404,32 +782,25 @@ class VpkgPolicyTests(unittest.TestCase):
                     patch.object(vpkg, "require_root"),
                     patch.object(vpkg, "selected_channel", return_value=channel),
                     patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
-                    patch.object(vpkg, "latest_history_id", return_value=7),
-                    patch.object(vpkg, "dnf") as dnf,
-                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "run_veyra_transaction") as transaction,
                     patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
                 ):
                     vpkg.upgrade()
 
                 inspect.assert_called_once_with("upgrade", channel=channel)
-                dnf.assert_called_once_with(
-                    ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
-                    channel=channel,
-                    include_rpmfusion=False,
-                )
+                transaction.assert_called_once_with("upgrade")
 
-    def test_upgrade_preflight_invalidates_and_refreshes_repository_metadata(self) -> None:
+    def test_upgrade_preflight_resolves_from_api_with_refresh_requested(self) -> None:
         with (
             patch.object(vpkg, "selected_channel", return_value="testing"),
-            patch.object(vpkg, "run") as run,
+            patch.object(vpkg, "package_session") as package_session,
             patch.object(vpkg, "inspect_extension_rpms", return_value=[]),
         ):
+            package_session.return_value.resolve.return_value.changes = []
             self.assertFalse(vpkg.download_for_inspection("upgrade"))
 
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0][-2:], ["clean", "metadata"])
-        self.assertIn("--refresh", commands[1])
-        self.assertLess(commands[1].index("--refresh"), commands[1].index("upgrade"))
+        self.assertTrue(package_session.call_args.kwargs["refresh"])
+        package_session.return_value.resolve.assert_called_once()
 
     def test_extension_rpm_policy_allows_only_var_extension_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -9,11 +9,16 @@ Veyra.
 ## Transaction boundary
 
 `vpkg` has two transaction paths. Veyra-maintained RPMs are signed wrappers
-around one `.raw` system-extension image and are installed in a separate DNF5
-installroot on writable `/var`. For Fedora and RPM Fusion applications,
-`vpkg` copies the base RPM database into a disposable DNF5 installroot, resolves
-and installs the requested RPM set there, then rejects any transaction that
-changes a base package. The resulting `/usr` and `/opt` payload becomes a
+around one `.raw` system-extension image and are installed in a separate RPM
+root on writable `/var`, using libdnf5's Python API. For Fedora and RPM Fusion
+applications, `vpkg` copies the base RPM database into a disposable libdnf5
+installroot, resolves
+and installs the requested RPM set there with RPM scriptlets and triggers
+disabled. It classifies the resolved transaction from the installroot's actual
+RPM records and payload: only additive `/usr` and `/opt` packages with no
+package-defined scriptlets or triggers are accepted as `LIVE`. A transaction
+that changes a base package is rejected; permitted staged system-package
+generations are not implemented. The resulting `/usr` and `/opt` payload becomes a
 persistent directory system extension named `vpkg-apps`; the running base RPM
 database remains unchanged. Veyra wrapper RPM transactions create symlinks under
 `/etc/extensions`; the app layer uses one generation pointer. Both refresh
@@ -45,6 +50,10 @@ outside `/usr` and `/opt`. Existing shared directories such as `/usr/bin` are
 allowed, but existing files cannot be replaced. RPMs that ship `/etc`
 configuration and local packages signed by third-party keys are not supported
 until Veyra has a configuration-extension design and explicit key enrollment.
+Packages that require scriptlets or triggers are rejected until vpkg has a
+supported, confined way to process their effects. This is a limited app-layer
+prototype, not full RPM layering; it does not yet provide staged system-package
+generations or a general RPM scriptlet policy.
 The repository RPM is a small wrapper around a version-compatible system
 extension image. Extension images are built for Fedora 44 in this prototype
 and must be rebuilt and tested when Veyra changes Fedora base versions. They
@@ -53,14 +62,24 @@ also carry the Veyra `SYSEXT_LEVEL` stored in
 extension ABI changes. Boot assessment rejects a new OS slot if a persistent
 extension is not active under the new image.
 
+The package-policy unit suite and functional package checks run from the
+disposable Veyra guest in the QEMU/KVM image workflow. The package build
+workflow only validates RPM/repository artifacts; it does not execute `vpkg`
+against the CI runner's RPM database.
+
 ## Channels and publication
 
-The configured repository locations are:
-
-* `https://angyedz.github.io/Veyra-next/packages/main/$basearch/`
-* `https://angyedz.github.io/Veyra-next/packages/testing/$basearch/`
-
-These are Veyra add-on channels only. They do not mirror Fedora or RPM Fusion.
+Veyra RPM clients consume versioned GitHub Release snapshots from
+`angyedz/veyra-pkgrepo`; they do not fetch RPMs from raw GitHub or GitHub Pages.
+Stable uses the highest valid non-prerelease `rpm-vX.Y.Z` tag. Testing uses the
+highest valid prerelease `rpm-vX.Y.Z-testing` tag. Each release must publish
+`veyra-rpm-repo-x86_64.tar.gz` and the detached
+`veyra-rpm-repo-x86_64.tar.gz.sha256` asset. `vpkg` downloads those assets via
+HTTPS, checks the archive SHA256, safely extracts the repository, then verifies
+`repodata/repomd.xml.asc` with the image-pinned Veyra public key before exposing
+the local snapshot to libdnf5. Fedora and RPM Fusion remain their separately
+configured remote repositories. Veyra channels do not mirror Fedora or RPM
+Fusion.
 
 Both repos require RPM signatures and signed `repomd.xml` metadata. The
 publisher must sign each RPM and repository metadata with the same trusted
@@ -86,16 +105,11 @@ disabled and cannot use `vpkg` until a trusted key is supplied. The CI image
 uses a short-lived test key; the signed system-release workflow embeds the
 public half corresponding to `VEYRA_RPM_SIGNING_KEY`.
 
-The manual **Publish Veyra RPM repository** workflow publishes a rebuilt
-`testing` snapshot or promotes the exact already-signed testing RPMs into
-`main`. Promotion requires the package name to appear in both channel manifests.
-Before each deployment it downloads the current channel RPMs, validates signed
-metadata, checks RPM checksums and signatures, and preserves all existing
-versions. A package filename may not be replaced by different bytes; bump its
-RPM version/release for changed content. The workflow publishes both channel
-directories and their signed metadata together as a GitHub Pages artifact.
-The publisher pins the existing site's RPM key to the signing secret's
-fingerprint and refuses an unplanned key change.
+The manual **Publish Veyra RPM repository** workflow may continue to publish
+development channel mirrors. Production clients use the signed versioned
+release snapshots above. The release workflow must attach the repository
+archive and its detached checksum alongside signed RPMs and signed metadata;
+tag policy and release assets are defined in `veyra-pkgrepo`.
 Before the first deployment, set the repository's Pages source to **GitHub
 Actions** in **Settings → Pages**; the repository does not have a Pages site
 enabled yet.

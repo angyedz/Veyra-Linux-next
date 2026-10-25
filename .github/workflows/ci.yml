@@ -109,6 +109,80 @@ jobs:
             --define "_topdir $PWD/build/incompatible" \
             --define "_sourcedir $PWD/build/incompatible/SOURCES" \
             --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          mkdir -p build/scriptlet/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          printf 'Disposable vpkg scriptlet policy fixture.\n' > build/scriptlet/SOURCES/README
+          cat > build/scriptlet/SPECS/vpkg-scriptlet-fixture.spec <<'EOF'
+          Name:           vpkg-scriptlet-fixture
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Disposable vpkg RPM scriptlet policy fixture
+          License:        MIT
+          BuildArch:      x86_64
+          Source0:        README
+
+          %description
+          Used only to verify that vpkg rejects packages declaring RPM hooks.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/opt/vpkg-scriptlet-fixture/README
+          %files
+          /opt/vpkg-scriptlet-fixture/README
+
+          %pre
+          echo VEYRA_CI_SCRIPTLET_PRE_RAN
+          exit 70
+
+          %post
+          echo VEYRA_CI_SCRIPTLET_POST_RAN
+          touch /var/lib/veyra/vpkg-ci-scriptlet-post-ran
+          exit 71
+
+          %transfiletriggerin -- /opt/vpkg-scriptlet-fixture
+          echo VEYRA_CI_SCRIPTLET_TRIGGER_RAN
+          touch /var/lib/veyra/vpkg-ci-scriptlet-trigger-ran
+          exit 72
+          EOF
+          rpmbuild -bb build/scriptlet/SPECS/vpkg-scriptlet-fixture.spec \
+            --define "_topdir $PWD/build/scriptlet" \
+            --define "_sourcedir $PWD/build/scriptlet/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          mkdir -p build/unit/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat > build/unit/SOURCES/veyra-vpkg-unit-fixture.service <<'EOF'
+          [Unit]
+          Description=Veyra vpkg systemd unit integration fixture
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          cat > build/unit/SPECS/vpkg-unit-fixture.spec <<'EOF'
+          Name:           vpkg-unit-fixture
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Disposable vpkg systemd unit fixture
+          License:        MIT
+          BuildArch:      x86_64
+          Source0:        veyra-vpkg-unit-fixture.service
+
+          %description
+          Used only to verify that vpkg exposes and reloads a systemd unit.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/usr/lib/systemd/system/veyra-vpkg-unit-fixture.service
+          %files
+          /usr/lib/systemd/system/veyra-vpkg-unit-fixture.service
+          EOF
+          rpmbuild -bb build/unit/SPECS/vpkg-unit-fixture.spec \
+            --define "_topdir $PWD/build/unit" \
+            --define "_sourcedir $PWD/build/unit/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
       - name: Sign the disposable VM test repository
         shell: bash
         run: |
@@ -119,7 +193,8 @@ jobs:
           gpg --batch --armor --export "$fingerprint" > build/site/RPM-GPG-KEY-VEYRA
           rpm --import build/site/RPM-GPG-KEY-VEYRA
           rpmsign --define "_gpg_name $fingerprint" --addsign \
-            build/rpms/*.rpm build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm
+            build/rpms/*.rpm build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm \
+            build/scriptlet/RPMS/*.rpm build/unit/RPMS/*.rpm
           scripts/build-package-repo.sh testing build/rpms build/site
           scripts/build-package-repo.sh main build/empty-rpms build/site
           testing_repo=build/site/packages/testing/x86_64
@@ -138,9 +213,12 @@ jobs:
           upstream=build/site/local-upstream/x86_64
           mkdir -p "$upstream"
           dnf5 --repo=fedora download --resolve --alldeps --destdir="$upstream" htop
+          cp build/scriptlet/RPMS/*.rpm build/unit/RPMS/*.rpm "$upstream/"
           createrepo_c --database "$upstream"
           test -s "$upstream/repodata/repomd.xml"
           test -n "$(find "$upstream" -maxdepth 1 -name 'htop-*.rpm' -print -quit)"
+          test -s "$upstream/vpkg-scriptlet-fixture-0.1.0-1.fc44.x86_64.rpm"
+          test -s "$upstream/vpkg-unit-fixture-0.1.0-1.fc44.x86_64.rpm"
           test "$(find build/site/packages/testing/x86_64 -maxdepth 1 -name 'veyra-shell-tools-*.rpm' | wc -l)" -eq 2
           test -s build/site/packages/testing/x86_64/veyra-broken-extension-0.1.0-1.fc44.x86_64.rpm
       - uses: actions/upload-artifact@v4
@@ -180,10 +258,14 @@ jobs:
             mkosi.extra/usr/lib/systemd/system/veyra-vpkg-ci.service
           sudo install -D -m 0644 tests/fixtures/vpkg-image/boot-complete-vpkg-ci.conf \
             mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra-vpkg-ci.conf
+          sudo install -D -m 0644 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery.service \
+            mkosi.extra/usr/lib/systemd/system/veyra-vpkg-stage-recovery.service
           sudo install -D -m 0644 tests/fixtures/vpkg-image/systemd-bless-boot-vpkg-ci.conf \
             mkosi.extra/usr/lib/systemd/system/systemd-bless-boot.service.d/veyra-vpkg-ci.conf
           sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-ci-test \
             mkosi.extra/usr/libexec/veyra-vpkg-ci-test
+          sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery \
+            mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
       - name: Verify the packages inside the built image
@@ -192,9 +274,20 @@ jobs:
           check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
-            flatpak dnf5 dnf5-plugins gcc git cmake python3 nodejs22
+            flatpak libdnf5 python3-libdnf5 gcc git cmake python3 nodejs22
+          test "$(rpm -E '%{fedora}')" = 44
+          grep -Fxq 'ID=fedora' /usr/lib/os-release
+          grep -Fxq 'VERSION_ID=44' /usr/lib/os-release
+          test "$(rpm -q --qf '%{RELEASE}\n' libdnf5 python3-libdnf5 | grep -Ec '\.fc44$')" -eq 2
+          if rpm -qa --qf '%{NAME} %{RELEASE}\n' | grep -Eiq 'fc46|rawhide'; then
+            echo 'Fedora46/Rawhide RPM detected in the Fedora44 image' >&2
+            exit 1
+          fi
+          ! rpm -q dnf5 dnf5-plugins
           check systemd-sysupdate test -x /usr/lib/systemd/systemd-sysupdate
           check vpkg test -x /usr/bin/vpkg
+          check python-libdnf5 python3 -c "import libdnf5"
+          check dnf5-cli-absent sh -eu -c "! command -v dnf5"
           check veyra-update test -x /usr/bin/veyra-update
           check veyra-update-help /usr/bin/veyra-update --help
           check plasma-wayland test -x /usr/bin/startplasma-wayland

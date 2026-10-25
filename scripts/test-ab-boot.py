@@ -178,7 +178,10 @@ def main() -> int:
             print(f"Booted signed update {args.version} from the inactive slot and observed dm-verity.", flush=True)
             print("systemd reached graphical.target, completed boot health checks, and blessed the UKI.", flush=True)
             if args.expect_vpkg_test:
-                print("The signed vpkg install, upgrade and remove test passed inside Veyra.", flush=True)
+                print(
+                    "The signed vpkg RPM and OTA-generation contract tests passed inside Veyra.",
+                    flush=True,
+                )
 
             # Add a higher-priority emergency UKI to simulate the next update's
             # application failing during boot. Its version and roothash refer to

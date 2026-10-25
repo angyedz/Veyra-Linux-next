@@ -74,12 +74,12 @@ def main() -> int:
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
         "kernel",
+        "libdnf5",
         "systemd-udev",
         "NetworkManager",
         "firewalld",
         "flatpak",
-        "dnf5",
-        "dnf5-plugins",
+        "python3-libdnf5",
         "plasma-setup",
         "plasma-login-manager",
         "plasma-desktop",
@@ -119,13 +119,11 @@ def main() -> int:
         return fail("vpkg must be installed as an executable in the base image")
     vpkg_content = vpkg.read_text(encoding="utf-8")
     for expected in (
-        "--installroot=",
-        "--resolve",
-        "user_package_dnf_prefix",
-        "--use-host-config",
-        "localpkg_gpgcheck=True",
+        "from vpkg_libdnf import LibdnfError, Session",
+        "package_session(",
+        'commands.add_parser("stage"',
+        "stage_user_apps(arguments.packages, assume_yes=arguments.yes)",
         "systemd-sysext",
-        "--installed-from-repo=veyra-main,veyra-testing",
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
         "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
         "BLOCKED_PACKAGE_PREFIXES",
@@ -137,6 +135,17 @@ def main() -> int:
     ):
         if expected not in vpkg_content:
             return fail(f"vpkg safety contract must include {expected!r}")
+    backend = ROOT / "mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"
+    if not backend.is_file():
+        return fail("vpkg must install its libdnf5 API adapter")
+    backend_content = backend.read_text(encoding="utf-8")
+    for expected in ("libdnf5.base.Base()", "libdnf5.base.Goal", "transaction.run()", '"noscripts", "notriggers"'):
+        if expected not in backend_content:
+            return fail(f"libdnf5 API adapter must include {expected!r}")
+    if "dnf5" in packages or "dnf5-plugins" in packages:
+        return fail("the installed image must not include the DNF5 CLI")
+    if re.search(r"run\(\s*\[\s*['\"]dnf5['\"]", vpkg_content):
+        return fail("vpkg must not spawn the DNF5 CLI")
     for channel in ("main", "testing"):
         repo_file = ROOT / f"mkosi.extra/etc/yum.repos.d/veyra-{channel}.repo"
         if not repo_file.is_file():
@@ -144,7 +153,7 @@ def main() -> int:
         repo_content = repo_file.read_text(encoding="utf-8")
         for expected in (
             f"[veyra-{channel}]",
-            f"/packages/{channel}/$basearch/",
+            f"/repositories/{channel}/current/x86_64/",
             "enabled=0",
             "gpgcheck=1",
             "repo_gpgcheck=1",
@@ -152,6 +161,24 @@ def main() -> int:
         ):
             if expected not in repo_content:
                 return fail(f"Veyra {channel} repository must include {expected!r}")
+        if "raw.githubusercontent.com" in repo_content or "github.io" in repo_content:
+            return fail(f"Veyra {channel} RPMs must be resolved from GitHub Release snapshots")
+    release_provider = ROOT / "mkosi.extra/usr/lib/veyra/veyra_repo.py"
+    if not release_provider.is_file():
+        return fail("the signed GitHub Releases repository provider must be installed")
+    provider_content = release_provider.read_text(encoding="utf-8")
+    for expected in (
+        "veyra-rpm-repo-x86_64.tar.gz",
+        "veyra-rpm-repo-x86_64.tar.gz.sha256",
+        "repomd.xml.asc",
+        "--verify",
+        "_safe_extract",
+        "rpm-vX.Y.Z-testing",
+    ):
+        if expected not in provider_content:
+            return fail(f"the release provider must enforce {expected!r}")
+    if "gnupg2" not in packages:
+        return fail("the runtime image must include GnuPG for pinned repomd signature verification")
     rpmfusion = ROOT / "mkosi.extra/etc/yum.repos.d/rpmfusion.repo"
     if not rpmfusion.is_file():
         return fail("RPM Fusion free/nonfree repositories must be available to vpkg")
@@ -194,6 +221,12 @@ def main() -> int:
         return fail("Veyra package link synchronization must run before systemd-sysext")
     if "After=veyra-vpkg-sync.service" not in sysext_dropin.read_text(encoding="utf-8"):
         return fail("systemd-sysext must wait for Veyra extension links to synchronize")
+    stage_test_service = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery.service"
+    stage_test_script = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery"
+    if not stage_test_service.is_file() or not stage_test_script.is_file():
+        return fail("the QEMU fixture must cover staged-generation rollback before graphical.target")
+    if "Before=graphical.target" not in stage_test_service.read_text(encoding="utf-8"):
+        return fail("the staged rollback QEMU helper must run before the graphical target")
     for channel in ("main", "testing"):
         package_list = ROOT / f"packages/{channel}/packages.list"
         if not package_list.is_file():
