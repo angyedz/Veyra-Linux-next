@@ -197,8 +197,9 @@ jobs:
   build:
     needs: vpkg-image-fixture
     runs-on: ubuntu-24.04
-    container: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
-    options: --security-opt seccomp=unconfined
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
+      options: --security-opt seccomp=unconfined
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
