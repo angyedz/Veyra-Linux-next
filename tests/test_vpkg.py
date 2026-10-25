@@ -30,7 +30,7 @@ def running_in_qemu_vm() -> bool:
         )
     except FileNotFoundError:
         return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+    return result.returncode == 0 and result.stdout.strip() in {"qemu", "kvm"}
 
 
 @unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
