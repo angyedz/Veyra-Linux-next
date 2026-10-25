@@ -346,18 +346,11 @@ class VpkgPolicyTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(vpkg.VpkgError):
                 vpkg.validate_user_package_paths([path])
 
-    def test_upstream_dnf_root_is_separate_and_uses_only_fedora_sources(self) -> None:
-        installroot = Path("/var/lib/veyra/vpkg/staging-root")
-        prefix = vpkg.user_package_dnf_prefix(installroot)
-        self.assertIn("--installroot=" + str(installroot), prefix)
-        self.assertIn("--use-host-config", prefix)
-        self.assertIn(
-            "--repo=" + ",".join((*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS)),
-            prefix,
+    def test_upstream_libdnf_session_uses_fedora_sources_without_veyra(self) -> None:
+        self.assertEqual(
+            vpkg.selected_repo_ids("both", include_veyra=False),
+            (*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS),
         )
-        self.assertTrue(any("localpkg_gpgcheck=True" in item for item in prefix))
-        self.assertIn("--setopt=tsflags=noscripts,notriggers", prefix)
-        self.assertFalse(any("veyra-main" in item or "veyra-testing" in item for item in prefix))
 
     def test_fedora_release_is_derived_from_candidate_os_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -371,8 +364,14 @@ class VpkgPolicyTests(unittest.TestCase):
             (root / "usr/lib/os-release").symlink_to("../../etc/os-release")
 
             self.assertEqual(vpkg.fedora_release_from_root(root), "44")
-            prefix = vpkg.user_package_dnf_prefix(Path("/tmp/installroot"), root)
-            self.assertIn("--releasever=44", prefix)
+            with patch.object(vpkg, "Session") as session:
+                vpkg.package_session(
+                    Path("/tmp/installroot"),
+                    base_root=root,
+                    app_transaction=True,
+                    include_veyra=False,
+                )
+            self.assertEqual(session.call_args.kwargs["releasever"], "44")
 
     def test_fedora_46_candidate_is_rejected_before_generation_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -558,12 +557,13 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "seed_user_app_installroot", side_effect=seed),
                 patch.object(vpkg, "rpm_records", return_value=added),
                 patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")),
-                patch.object(vpkg, "user_package_dnf_prefix", return_value=["dnf5", "--installroot=/tmp/root"]),
+                patch.object(vpkg, "package_session") as package_session,
                 patch.object(vpkg, "extension_release_text", return_value="ID=fedora\nVERSION_ID=44\nSYSEXT_LEVEL=test\n"),
                 patch.object(vpkg, "rpm_package_has_execution_hooks", return_value=False),
                 patch.object(vpkg, "validate_installed_app_payloads"),
                 patch.object(vpkg, "run") as run,
             ):
+                package_session.return_value.resolve.return_value = None
                 generation = vpkg.build_user_app_generation(
                     [{"kind": "repo", "name": "tree"}], {}
                 )
@@ -574,7 +574,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 json.loads((generation / "manifest.json").read_text(encoding="utf-8"))["installed"],
                 {"tree": "tree-0:2.1.1-1.x86_64"},
             )
-            self.assertEqual(run.call_count, 1)
+            package_session.assert_called_once()
 
     def test_sync_app_extension_link_follows_the_persistent_generation_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -702,7 +702,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 with self.assertRaises(vpkg.VpkgError):
                     vpkg.selected_channel()
 
-    def test_dnf_uses_fedora_rpmfusion_and_selected_veyra_channels(self) -> None:
+    def test_libdnf_uses_fedora_rpmfusion_and_selected_veyra_channels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             channel_file = Path(temporary) / "channel"
             channel_file.write_text("testing\n", encoding="utf-8")
@@ -712,11 +712,9 @@ class VpkgPolicyTests(unittest.TestCase):
                 patch.object(vpkg, "CHANNEL_FILE", channel_file),
                 patch.object(vpkg, "VPKG_PUBLIC_KEY", key_file),
             ):
-                selected = next(
-                    item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
-                )
+                selected = vpkg.selected_repo_ids()
                 self.assertEqual(
-                    selected.removeprefix("--repo=").split(","),
+                    list(selected),
                     [
                         "fedora",
                         "updates",
@@ -727,30 +725,26 @@ class VpkgPolicyTests(unittest.TestCase):
                         "veyra-testing",
                     ],
                 )
-                both = next(
-                    item for item in vpkg.dnf_prefix("both") if item.startswith("--repo=")
-                )
-                self.assertTrue(both.endswith("veyra-main,veyra-testing"))
+                both = vpkg.selected_repo_ids("both")
+                self.assertEqual(both[-2:], ("veyra-main", "veyra-testing"))
 
     def test_fedora_queries_work_without_a_veyra_signing_key(self) -> None:
         with patch.object(vpkg, "VPKG_PUBLIC_KEY", Path("/missing/veyra-key")):
-            selected = next(
-                item for item in vpkg.dnf_prefix() if item.startswith("--repo=")
-            )
+            selected = vpkg.selected_repo_ids()
         self.assertEqual(
-            selected.removeprefix("--repo=").split(","),
+            list(selected),
             [*vpkg.FEDORA_REPOS, *vpkg.RPMFUSION_REPOS],
         )
 
-    def test_veyra_extension_transactions_do_not_require_rpm_fusion_repos(self) -> None:
-        selected = next(
-            item
-            for item in vpkg.dnf_prefix("testing", include_rpmfusion=False)
-            if item.startswith("--repo=")
+    def test_veyra_extension_transactions_use_only_the_selected_channel(self) -> None:
+        selected = vpkg.selected_repo_ids(
+            "testing",
+            include_rpmfusion=False,
+            include_upstream=False,
         )
         self.assertEqual(
-            selected.removeprefix("--repo=").split(","),
-            [*vpkg.FEDORA_REPOS, "veyra-testing"],
+            selected,
+            ("veyra-testing",),
         )
 
     def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
@@ -773,19 +767,13 @@ class VpkgPolicyTests(unittest.TestCase):
                     patch.object(vpkg, "require_root"),
                     patch.object(vpkg, "selected_channel", return_value=channel),
                     patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
-                    patch.object(vpkg, "latest_history_id", return_value=7),
-                    patch.object(vpkg, "dnf") as dnf,
-                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "run_veyra_transaction") as transaction,
                     patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
                 ):
                     vpkg.install(["veyra-shell-tools"])
 
                 inspect.assert_called_once_with("install", ["veyra-shell-tools"], channel=channel)
-                dnf.assert_called_once_with(
-                    ["install", f"--from-repo={vpkg.CHANNELS[channel]}", "veyra-shell-tools"],
-                    channel=channel,
-                    include_rpmfusion=False,
-                )
+                transaction.assert_called_once_with("install", ["veyra-shell-tools"])
 
     def test_upgrade_transaction_uses_same_channel_as_preflight_download(self) -> None:
         for channel in ("main", "testing"):
@@ -794,32 +782,25 @@ class VpkgPolicyTests(unittest.TestCase):
                     patch.object(vpkg, "require_root"),
                     patch.object(vpkg, "selected_channel", return_value=channel),
                     patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
-                    patch.object(vpkg, "latest_history_id", return_value=7),
-                    patch.object(vpkg, "dnf") as dnf,
-                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "run_veyra_transaction") as transaction,
                     patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
                 ):
                     vpkg.upgrade()
 
                 inspect.assert_called_once_with("upgrade", channel=channel)
-                dnf.assert_called_once_with(
-                    ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
-                    channel=channel,
-                    include_rpmfusion=False,
-                )
+                transaction.assert_called_once_with("upgrade")
 
-    def test_upgrade_preflight_invalidates_and_refreshes_repository_metadata(self) -> None:
+    def test_upgrade_preflight_resolves_from_api_with_refresh_requested(self) -> None:
         with (
             patch.object(vpkg, "selected_channel", return_value="testing"),
-            patch.object(vpkg, "run") as run,
+            patch.object(vpkg, "package_session") as package_session,
             patch.object(vpkg, "inspect_extension_rpms", return_value=[]),
         ):
+            package_session.return_value.resolve.return_value.changes = []
             self.assertFalse(vpkg.download_for_inspection("upgrade"))
 
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0][-2:], ["clean", "metadata"])
-        self.assertIn("--refresh", commands[1])
-        self.assertLess(commands[1].index("--refresh"), commands[1].index("upgrade"))
+        self.assertTrue(package_session.call_args.kwargs["refresh"])
+        package_session.return_value.resolve.assert_called_once()
 
     def test_extension_rpm_policy_allows_only_var_extension_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

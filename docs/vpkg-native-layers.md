@@ -7,27 +7,28 @@ prototype with rollback metadata. It is not yet a complete native RPM manager.
 
 | Master specification | Current implementation | Remaining gap |
 |---|---|---|
-| Classify the resolved transaction as LIVE, STAGED, or REJECT | DNF resolves the complete request in a disposable installroot; current policy permits LIVE or returns REJECT | No supported STAGED class or confirmation flow |
+| Classify the resolved transaction as LIVE, STAGED, or REJECT | libdnf5 resolves the complete request in a disposable installroot; additive app transactions can be LIVE, explicitly reboot-staged app generations are supported, and unsupported changes are REJECT | General system RPM replacement transactions are not supported; classification is intentionally conservative |
 | Analyze dependencies, paths, conflicts, hooks, ABI, and privileges | Checks base RPM changes, payload paths, collisions, file types, setuid/setgid, capabilities, protected package names, scriptlets, triggers, file triggers, and SYSUSERS | `/etc` is rejected; unit handling needs real package coverage; ABI analysis is limited to sysext compatibility |
-| Keep arbitrary RPM scriptlets from running with host privileges | DNF uses `noscripts,notriggers`; any package declaring hooks or SYSUSERS metadata is rejected | No constrained effect adapter or scriptlet executor; unsupported hooks remain REJECT |
+| Keep arbitrary RPM scriptlets from running with host privileges | libdnf5 uses `noscripts,notriggers`; any package declaring hooks or SYSUSERS metadata is rejected | No constrained effect adapter or scriptlet executor; unsupported hooks remain REJECT |
 | Install native RPM files on immutable EROFS | Additive `/usr` and `/opt` content is exposed through systemd-sysext | No full root overlay, `/etc` layer, generation-owned host RPM database, or system-package replacement |
-| Preserve and restore package generations | App payload directories and transaction manifests live under `/var/lib/veyra/vpkg/app-layers`; rollback changes the active generation and refreshes systemd-sysext | ext4 directories are copied, not snapshots; storage use grows with retained generations; no Recovery boot path |
-| Coordinate with OTA identity and requests | Explicit requests/pins and bindings use `(roothash, IMAGE_VERSION)`; prepare/bind/complete/cancel APIs exist | OTA caller integration and trial-UKI ownership must be validated together |
+| Preserve and restore package generations | App payload directories and transaction manifests live under `/var/lib/veyra/vpkg/app-layers`; rollback changes the active generation and refreshes systemd-sysext. `vpkg stage install` records a trial marker and selects its generation after reboot, before sysext activation; a failed candidate can be rolled back from a text console | ext4 directories are copied, not snapshots; storage use grows with retained generations; no separate Recovery boot entry |
+| Coordinate with OTA identity and requests | Explicit requests/pins and bindings use `(roothash, IMAGE_VERSION)`; prepare/bind/complete/cancel APIs exist, and OTA pending blocks vpkg mutations | The shared VM integration run must still prove cross-process locking and trial-UKI behavior |
 
 The QEMU fixture is designed to exercise signed package install, upgrade,
 remove, scriptlet rejection, systemd unit discovery, app rollback, immutable
 base RPM database, candidate conflict preservation, pinned request
 re-resolution, pending locks, and pair-keyed deployment bindings. These
-scenarios have not yet been run in a valid Fedora 44 guest. The previously
-available image reports Fedora 46 while the build configuration says Release
-44 and is not valid evidence.
+scenarios have not yet been run in a valid Fedora 44 guest. The previous image
+reports Fedora 46 while the build configuration says Release 44 and is not valid
+evidence. The runtime image uses Python bindings and the library, not the DNF5
+CLI. Build-only containers may still use that CLI.
 
 vpkg reads `ID` and `VERSION_ID` from the selected base root's
 `/usr/lib/os-release`, resolving symlinks within that root without sourcing or
-executing the file. It requires `ID=fedora` and `VERSION_ID=44` before preparing
-an OTA generation. DNF `--releasever` and sysext `VERSION_ID` use the validated
-selected-base value. A Fedora 46 image is rejected before candidate generation
-creation; the compile-time supported-release policy remains 44.
+executing the file. Current package transactions and OTA candidate preparation
+require `ID=fedora` and `VERSION_ID=44`. The validated selected-base version is
+passed to libdnf5 and used for sysext `VERSION_ID`. Fedora 44 is the current
+target policy, not a permanent restriction on future Fedora targets.
 
 ## Storage contract under the current image layout
 
@@ -60,11 +61,12 @@ The classifier consumes the solved RPM result, not a product-name shortcut.
   refresh systemd-sysext, reload the system unit catalogue when the generation
   contains system units, then atomically publish intents and the deployment
   binding. A new service is never started or enabled automatically.
-- **STAGED:** not implemented. A future implementation must prepare a separate
-  root/configuration upper generation and a boot trial identity, ask for
-  confirmation, and preserve the previous bootable generation until health
-  checks bless the target. It must not report STAGED until that boot and
-  rollback path exists.
+- **STAGED:** `vpkg stage install` can prepare an additive app-layer generation
+  and persist the exact base pair, previous generation, requests, and origin
+  boot ID. The boot sync unit selects it only on a later boot and only for the
+  matching pair; the health check completes the trial after sysext activation.
+  `vpkg rollback` can restore the previous app generation from a text console.
+  This does not stage arbitrary host RPM replacements or `/etc` changes.
 - **REJECT:** protected boot/kernel/driver/systemd-core/RPM files, base package
   replacements without a staged mechanism, `/etc` changes without a
   generation-owned configuration layer, unresolved conflicts, unsafe file

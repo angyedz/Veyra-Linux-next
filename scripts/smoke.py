@@ -74,12 +74,12 @@ def main() -> int:
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
         "kernel",
+        "libdnf5",
         "systemd-udev",
         "NetworkManager",
         "firewalld",
         "flatpak",
-        "dnf5",
-        "dnf5-plugins",
+        "python3-libdnf5",
         "plasma-setup",
         "plasma-login-manager",
         "plasma-desktop",
@@ -119,13 +119,9 @@ def main() -> int:
         return fail("vpkg must be installed as an executable in the base image")
     vpkg_content = vpkg.read_text(encoding="utf-8")
     for expected in (
-        "--installroot=",
-        "--resolve",
-        "user_package_dnf_prefix",
-        "--use-host-config",
-        "localpkg_gpgcheck=True",
+        "from vpkg_libdnf import LibdnfError, Session",
+        "package_session(",
         "systemd-sysext",
-        "--installed-from-repo=veyra-main,veyra-testing",
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
         "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
         "BLOCKED_PACKAGE_PREFIXES",
@@ -137,6 +133,17 @@ def main() -> int:
     ):
         if expected not in vpkg_content:
             return fail(f"vpkg safety contract must include {expected!r}")
+    backend = ROOT / "mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"
+    if not backend.is_file():
+        return fail("vpkg must install its libdnf5 API adapter")
+    backend_content = backend.read_text(encoding="utf-8")
+    for expected in ("libdnf5.base.Base()", "libdnf5.base.Goal", "transaction.run()", '"noscripts", "notriggers"'):
+        if expected not in backend_content:
+            return fail(f"libdnf5 API adapter must include {expected!r}")
+    if "dnf5" in packages or "dnf5-plugins" in packages:
+        return fail("the installed image must not include the DNF5 CLI")
+    if re.search(r"run\(\s*\[\s*['\"]dnf5['\"]", vpkg_content):
+        return fail("vpkg must not spawn the DNF5 CLI")
     for channel in ("main", "testing"):
         repo_file = ROOT / f"mkosi.extra/etc/yum.repos.d/veyra-{channel}.repo"
         if not repo_file.is_file():
