@@ -158,6 +158,8 @@ if vpkg install "$scriptlet_rpm" >"$failure_log" 2>&1; then
     exit 1
 fi
 cat "$failure_log"
+# The fixture hooks return distinct nonzero statuses. If either runs, RPM
+# reports a transaction error before vpkg can reach its metadata REJECT path.
 grep -Fq "REJECT: package vpkg-scriptlet-fixture declares RPM scriptlets or triggers" "$failure_log"
 if [[ -e "$post_marker" || -e "$trigger_marker" ]]; then
     echo "vpkg executed an RPM scriptlet or trigger while rejecting its package." >&2

@@ -132,9 +132,11 @@ jobs:
 
           %post
           touch /var/lib/veyra/vpkg-ci-scriptlet-post-ran
+          exit 71
 
           %transfiletriggerin -- /opt/vpkg-scriptlet-fixture
           touch /var/lib/veyra/vpkg-ci-scriptlet-trigger-ran
+          exit 72
           EOF
           rpmbuild -bb build/scriptlet/SPECS/vpkg-scriptlet-fixture.spec \
             --define "_topdir $PWD/build/scriptlet" \
