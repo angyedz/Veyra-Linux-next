@@ -5,6 +5,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/check-build-environment.py"
 SPEC = importlib.util.spec_from_loader(
@@ -97,6 +98,35 @@ class BuildEnvironmentGateTests(unittest.TestCase):
                 mounts=("36 25 0:32 / / rw - overlay overlay rw\n"
                         "37 36 8:1 /home/user/.cache/mkosi /root/.cache/mkosi rw - ext4 /dev/sda1 rw\n"),
             )
+
+    def test_allows_only_github_actions_home_bind_mount(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_ACTIONS": "true", "HOME": "/github/home"}):
+            self.validate(
+                repos=self.fedora_repos(),
+                listing=self.fedora_listing(),
+                mounts=("36 25 0:32 / / rw - overlay overlay rw\n"
+                        "37 36 8:1 /home/runner/work/_temp/_github_home /github/home rw - ext4 /dev/sda1 rw\n"),
+            )
+
+    def test_rejects_github_home_mount_outside_actions(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_ACTIONS": "false", "HOME": "/github/home"}):
+            with self.assertRaisesRegex(gate.BuildEnvironmentError, "host DNF/cache"):
+                self.validate(
+                    repos=self.fedora_repos(),
+                    listing=self.fedora_listing(),
+                    mounts=("36 25 0:32 / / rw - overlay overlay rw\n"
+                            "37 36 8:1 /home/runner/work/_temp/_github_home /github/home rw - ext4 /dev/sda1 rw\n"),
+                )
+
+    def test_still_rejects_github_actions_cache_bind_mount(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_ACTIONS": "true"}):
+            with self.assertRaisesRegex(gate.BuildEnvironmentError, "host DNF/cache"):
+                self.validate(
+                    repos=self.fedora_repos(),
+                    listing=self.fedora_listing(),
+                    mounts=("36 25 0:32 / / rw - overlay overlay rw\n"
+                            "37 36 8:1 /home/runner/.cache /github/home/.cache rw - ext4 /dev/sda1 rw\n"),
+                )
 
     def test_rejects_non_container_host_build(self) -> None:
         with self.assertRaisesRegex(gate.BuildEnvironmentError, "isolated Fedora container"):

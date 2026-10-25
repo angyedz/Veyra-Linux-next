@@ -69,6 +69,7 @@ awk -v home="${HOME:-/root}" '
   {
     mountpoint=$5; gsub(/\\040/," ",mountpoint)
     if (mountpoint == "/") next
+    if (ENVIRON["GITHUB_ACTIONS"] == "true" && mountpoint == "/github/home") next
     if (mountpoint ~ /(^|\/)(\.cache|cache|dnf|libdnf5|mkosi)(\/|$)/ ||
         overlap(mountpoint,"/etc/dnf") || overlap(mountpoint,"/etc/yum.repos.d") ||
         overlap(mountpoint,"/var/cache/dnf") || overlap(mountpoint,"/var/cache/libdnf5") ||

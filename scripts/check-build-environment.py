@@ -116,6 +116,10 @@ def validate_environment(
         if len(fields) < 5:
             continue
         mountpoint = pathlib.Path(fields[4].replace("\\040", " ")).resolve()
+        if os.environ.get("GITHUB_ACTIONS") == "true" and mountpoint == pathlib.Path("/github/home"):
+            # GitHub Actions bind-mounts this directory as the job container's HOME.
+            # The actual cache directory (/github/home/.cache) remains blocked below.
+            continue
         if mountpoint != pathlib.Path("/") and (
             any(part in {"cache", ".cache", "dnf", "libdnf5", "mkosi"} for part in mountpoint.parts)
             or any(
