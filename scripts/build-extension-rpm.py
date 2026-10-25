@@ -200,7 +200,7 @@ def build_extension_rpm(name: str, release: str, output: Path, work: Path) -> Pa
         "--define", "_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm",
     ])
 
-    built = list((topdir / "RPMS/x86_64").glob("*.rpm"))
+    built = list((topdir / "RPMS").rglob("*.rpm"))
     if len(built) != 1:
         raise RuntimeError(f"Expected one RPM from {spec.name}, found {len(built)}.")
     output.mkdir(parents=True, exist_ok=True)
