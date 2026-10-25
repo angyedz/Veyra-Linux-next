@@ -167,9 +167,154 @@ class VforgeCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(vforge.VforgeError, "compatibility metadata is incomplete"):
             vforge.runtime_digest(identity, "glibc=1", "1", "")
 
-    def test_explicit_size_limit_fails_when_backend_cannot_enforce_it(self) -> None:
-        with self.assertRaisesRegex(vforge.VforgeError, "size limits are unsupported"):
-            vforge.create("backend", "none", isolation="strict", size="20GiB")
+    def test_size_units_convert_to_exact_byte_caps(self) -> None:
+        self.assertEqual(vforge.parse_size_bytes("20GiB"), 20 * 1024**3)
+        self.assertEqual(vforge.parse_size_bytes("2GB"), 2_000_000_000)
+        self.assertIsNone(vforge.parse_size_bytes(None))
+        for invalid in ("0GiB", "20Gi", "-1GiB", "2.5GB", "20 GiB"):
+            with self.subTest(invalid=invalid), self.assertRaises(vforge.VforgeError):
+                vforge.parse_size_bytes(invalid)
+
+    def test_size_capped_store_uses_sparse_ext4_image_and_fuse2fs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "environment.img"
+            mount = root / "mounted"
+            result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            with patch.object(vforge.shutil, "which", side_effect=lambda executable: f"/usr/bin/{executable}"), patch.object(
+                vforge.subprocess, "run", return_value=result
+            ) as run, patch.object(vforge.os.path, "ismount", side_effect=lambda _: run.call_count >= 2):
+                vforge.create_size_capped_store(image, mount, 8 * 1024**3)
+
+            self.assertEqual(image.stat().st_size, 8 * 1024**3)
+            self.assertLess(image.stat().st_blocks * 512, image.stat().st_size)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0][:6], ["/usr/bin/mkfs.ext4", "-F", "-t", "ext4", "-m", "0"])
+            self.assertEqual(run.call_args_list[1].args[0], ["/usr/bin/fuse2fs", "-o", "fakeroot", str(image), str(mount)])
+
+    def test_size_capped_store_mounts_existing_ext4_without_reformatting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "environment.img"
+            with image.open("wb") as stream:
+                stream.truncate(4 * 1024**3)
+            fd = os.open(image, os.O_WRONLY)
+            try:
+                os.pwrite(fd, b"\x53\xef", 1080)
+            finally:
+                os.close(fd)
+            mount = root / "mounted"
+            result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            with patch.object(vforge.shutil, "which", side_effect=lambda executable: f"/usr/bin/{executable}"), patch.object(
+                vforge.subprocess, "run", return_value=result
+            ) as run, patch.object(vforge.os.path, "ismount", side_effect=lambda _: run.call_count >= 1):
+                vforge.create_size_capped_store(image, mount, 4 * 1024**3)
+
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0][0], "/usr/bin/fuse2fs")
+
+    def test_size_capped_store_rejects_an_existing_non_ext4_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "environment.img"
+            image.write_bytes(b"not an ext4 filesystem")
+            image_size = image.stat().st_size
+            with patch.object(vforge.shutil, "which", side_effect=lambda executable: f"/usr/bin/{executable}"), patch.object(
+                vforge.subprocess, "run"
+            ) as run, self.assertRaisesRegex(vforge.VforgeError, "not a valid ext filesystem"):
+                vforge.create_size_capped_store(image, root / "mounted", image_size)
+
+            run.assert_not_called()
+
+    def test_delete_size_capped_store_unmounts_before_removing_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "environment.img"
+            image.write_bytes(b"filesystem")
+            mountpoint = root / "mounted"
+            mountpoint.mkdir()
+            (mountpoint / "data").mkdir()
+            (mountpoint / "data" / "state").write_text("persistent", encoding="utf-8")
+            mounted = iter((True, False, False))
+            result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            with patch.object(vforge.shutil, "which", return_value="/usr/bin/fusermount3"), patch.object(
+                vforge.subprocess, "run", return_value=result
+            ) as run, patch.object(vforge.os.path, "ismount", side_effect=lambda _: next(mounted)):
+                vforge.remove_size_capped_store(image, mountpoint, discard=True)
+
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/fusermount3", "-u", str(mountpoint)])
+            self.assertFalse(image.exists())
+            self.assertFalse(mountpoint.exists())
+
+    def test_explicit_size_limit_provisions_capped_store(self) -> None:
+        with patch.object(vforge, "exists", return_value=False), patch.object(
+            vforge, "create_size_capped_store"
+        ) as create_store, patch.object(vforge, "host_runtime_id", return_value="runtime-test"), patch.object(
+            vforge, "podman"
+        ) as podman_call:
+            vforge.create("backend", "none", isolation="strict", size="8GiB")
+
+        create_store.assert_called_once()
+        self.assertEqual(create_store.call_args.args[2], 8 * 1024**3)
+        self.assertIn("/environments/backend/store/containers", str(podman_call.call_args.kwargs["root"]))
+
+    def test_project_size_cap_stores_runtime_state_in_project_store(self) -> None:
+        with tempfile.TemporaryDirectory() as project_dir:
+            project = Path(project_dir)
+            (project / ".vforge.toml").write_text(
+                '[environment]\nname = "backend"\nisolation = "strict"\nsize = "3GiB"\n',
+                encoding="utf-8",
+            )
+            with patch.object(vforge, "approve_project"), patch.object(vforge, "ignore_project_state"), patch.object(
+                vforge, "create_size_capped_store"
+            ) as create_store, patch.object(vforge, "env_state", return_value={}), patch.object(
+                vforge, "exists", return_value=False
+            ), patch.object(vforge, "host_runtime_id", return_value="runtime-test"), patch.object(
+                vforge, "create_container"
+            ) as create_container, patch.object(vforge, "save_environment") as save, patch.object(
+                vforge, "podman"
+            ):
+                vforge.project_up(project)
+
+            self.assertEqual(create_store.call_args.args[2], 3 * 1024**3)
+            metadata = save.call_args.args[1]
+            self.assertEqual(metadata["data_root"], str(project / ".vforge" / "store"))
+            self.assertEqual(metadata["podman_root"], str(project / ".vforge" / "store" / "containers"))
+            self.assertEqual(create_container.call_args.kwargs["podman_root"], metadata["podman_root"])
+
+    def test_environment_metadata_rejects_size_image_path_escape(self) -> None:
+        with patch.object(vforge, "read_store_state", return_value={
+            "version": vforge.STATE_VERSION,
+            "environments": {
+                "backend": {
+                    "type": "named", "isolation": "strict", "size_bytes": 1024,
+                    "size_image": "/tmp/attacker.img", "data_root": "/tmp/store",
+                    "podman_root": "/tmp/store/containers",
+                }
+            },
+        }), patch.object(vforge, "read_state", return_value={"version": vforge.STATE_VERSION, "projects": {}}), patch.object(
+            vforge, "common_store_root", return_value=Path("/tmp/vforge")
+        ):
+            with self.assertRaisesRegex(vforge.VforgeError, "outside its Vforge storage root|unsafe size-cap image path"):
+                vforge.env_state()
+
+    def test_size_cap_metadata_uses_one_per_environment_podman_root(self) -> None:
+        store = Path("/tmp/vforge/environments/backend/store")
+        with patch.object(vforge, "read_store_state", return_value={
+            "version": vforge.STATE_VERSION,
+            "environments": {
+                "backend": {
+                    "type": "named", "isolation": "strict", "size_bytes": 8 * 1024**3,
+                    "size_image": "/tmp/vforge/environments/backend/.vforge-size.img",
+                    "data_root": str(store), "podman_root": str(store / "containers"),
+                }
+            },
+        }), patch.object(vforge, "read_state", return_value={"version": vforge.STATE_VERSION, "projects": {}}), patch.object(
+            vforge, "common_store_root", return_value=Path("/tmp/vforge")
+        ):
+            metadata = vforge.env_state()["backend"]
+
+        self.assertEqual(metadata["podman_root"], "/tmp/vforge/environments/backend/store/containers")
 
     def test_named_environment_rejects_project_only_home_without_project(self) -> None:
         with self.assertRaisesRegex(vforge.VforgeError, "available only for project environments"):

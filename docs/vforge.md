@@ -42,10 +42,19 @@ The persistent setting is saved in `$XDG_CONFIG_HOME/veyra/vforge.toml` (or
 `~/.config/veyra/vforge.toml`). Storage uses ordinary free space on the selected
 filesystem; there is no preallocation or separate partition. Symlinked storage
 path components and roots not owned by the current user are rejected. Vforge
-does not elevate privileges. A requested hard size limit (`--size` or
-`[environment].size`) currently fails with an explicit unsupported-backend
-error: rootless FUSE uppers, Podman writable layers and copied snapshots cannot
-be reliably quota-accounted together on arbitrary ext4/XFS storage.
+does not elevate privileges. An optional hard size cap is available with
+`vforge create backend --size 20GiB` or `[environment].size = "20GiB"`. Vforge
+stores that environment's Podman graphroot, Veyra upper/work directories and
+snapshot data inside one sparse ext4 image mounted through `fuse2fs`; ext4
+capacity (including filesystem metadata) is the cap, and the backing file
+allocates host blocks only as they are written. It does not reserve the full
+amount in advance. Small Vforge registry/config metadata outside the image is
+not counted. On a full image, package installation or snapshot creation can
+fail with `ENOSPC`. The cap cannot be resized in place; delete and recreate the
+environment to choose another size. An interrupted initial format can leave an
+incomplete image requiring manual removal. The implementation requires
+`e2fsprogs`, `/dev/fuse`, and a working rootless FUSE setup; this path still
+needs validation in the Fedora 44 Veyra guest before runtime verification.
 Changing the selected root does not move existing data; pass the old root
 explicitly to continue using environments stored there. Project registry data
 is kept under the user's XDG state directory, so changing the common root does
@@ -133,7 +142,9 @@ RPM database uppers. Rollback first saves a recovery checkpoint, restores the
 copy and recreates the container. On ordinary ext4/XFS these are space-using
 file copies, not filesystem CoW snapshots; they can be large and are not an
 atomic crash-consistent transaction across container metadata and both upper
-trees. A failed operation may need recovery from the retained checkpoint.
+trees. Size-capped environments include the snapshot images and Veyra upper
+copies in the same ext4 capacity limit. A failed operation may need recovery
+from the retained checkpoint.
 
 ## Verification status and limits
 
@@ -152,6 +163,7 @@ the OverlayFS lifecycle or the Veyra-generation integration.
 
 Vforge also relies on Podman defaults for user namespaces, seccomp and SELinux
 policy. It does not yet audit every global Podman hook/configuration, expose
-full Veyra `/etc`, automatically discover missing libraries, or enforce a
-per-environment storage quota. These are explicit gaps; profiles and device
-grants are not a claim of VM-grade isolation.
+full Veyra `/etc`, automatically discover missing libraries, or provide
+filesystem CoW/crash-atomic snapshots. Size caps use a private ext4 image rather
+than filesystem quotas on arbitrary selected storage. These are explicit gaps;
+profiles and device grants are not a claim of VM-grade isolation.

@@ -35,6 +35,8 @@ HOST_SOURCE_DENYLIST = ("/", "/root", "/etc", "/usr", "/boot", "/var/lib", "/pro
 PROJECT_CONFIG = ".vforge.toml"
 STATE_VERSION = 1
 ACTIVE_STORAGE_ROOT: Path | None = None
+SIZE_UNITS = {"B": 1, "KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4,
+              "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}
 
 
 class VforgeError(Exception):
@@ -190,16 +192,27 @@ def env_state() -> dict[str, object]:
             project = canonical_project_root(Path(str(metadata.get("project", ""))))
             if project_references.get(name) != str(project):
                 raise VforgeError(f"project environment '{name}' does not match its external state index")
-            data_root = project_data_root(project, create=False)
+            size_bytes = metadata.get("size_bytes")
+            if size_bytes is not None and (not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes <= 0):
+                raise VforgeError(f"project environment '{name}' has invalid size-cap metadata")
+            data_root = project_runtime_root(project, size_bytes, create=False)
             expected_root = str(data_root)
             expected_podman = str(data_root / "containers")
+            expected_image = str(project_data_root(project, create=False) / ".vforge-size.img") if size_bytes is not None else None
         elif metadata.get("type") == "named":
-            expected_root = str(common_store_root() / "environments" / name)
-            expected_podman = str(common_store_root() / "containers")
+            size_bytes = metadata.get("size_bytes")
+            if size_bytes is not None and (not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes <= 0):
+                raise VforgeError(f"named environment '{name}' has invalid size-cap metadata")
+            parent = named_environment_parent(name)
+            expected_root = str(parent / "store" if size_bytes is not None else parent)
+            expected_podman = str(Path(expected_root) / "containers" if size_bytes is not None else common_store_root() / "containers")
+            expected_image = str(parent / ".vforge-size.img") if size_bytes is not None else None
         else:
             raise VforgeError(f"invalid Vforge environment type for '{name}'")
         if metadata.get("data_root") != expected_root or metadata.get("podman_root") != expected_podman:
             raise VforgeError(f"environment '{name}' contains paths outside its Vforge storage root")
+        if metadata.get("size_image") != expected_image:
+            raise VforgeError(f"environment '{name}' contains an unsafe size-cap image path")
     return environments
 
 
@@ -258,6 +271,120 @@ def remove_environment_state(name: str) -> None:
 def stable_digest(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def parse_size_bytes(value: str | None) -> int | None:
+    if value is None:
+        return None
+    match = re.fullmatch(r"([1-9][0-9]*)(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)", value)
+    if not match:
+        raise VforgeError("size must be a positive value such as '20GiB'")
+    return int(match.group(1)) * SIZE_UNITS[match.group(2)]
+
+
+def create_size_capped_store(image: Path, mountpoint: Path, size_bytes: int) -> None:
+    """Create and mount a sparse ext4 filesystem whose capacity is the env cap.
+
+    fuse2fs keeps this available to a rootless Vforge process; all Podman graphroot,
+    Veyra uppers and snapshot data for the environment must be placed below it.
+    The backing file grows only as ext4 blocks are written.
+    """
+    if size_bytes <= 0:
+        raise VforgeError("Vforge size cap must be a positive number of bytes")
+    reject_symlink_components(image, "Vforge size-cap image path")
+    reject_symlink_components(mountpoint, "Vforge size-cap mount path")
+    ensure_private_directory(image.parent)
+    ensure_private_directory(mountpoint)
+    if os.path.ismount(mountpoint):
+        try:
+            info = image.lstat()
+        except OSError as error:
+            raise VforgeError(f"Vforge size-cap image is missing: {image}") from error
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_size != size_bytes:
+            raise VforgeError("mounted Vforge size-cap image does not match its recorded size")
+        return
+
+    created = False
+    try:
+        try:
+            fd = os.open(image, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            created = True
+            try:
+                os.ftruncate(fd, size_bytes)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            info = image.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_size != size_bytes:
+                raise VforgeError(f"existing Vforge size-cap image is unsafe or has a different size: {image}")
+
+        mkfs = shutil.which("mkfs.ext4")
+        fuse2fs = shutil.which("fuse2fs")
+        if mkfs is None or fuse2fs is None:
+            raise VforgeError("size caps require e2fsprogs (mkfs.ext4 and fuse2fs)")
+        if created:
+            formatted = subprocess.run(
+                [mkfs, "-F", "-t", "ext4", "-m", "0", str(image)],
+                check=False, capture_output=True, text=True,
+            )
+            if formatted.returncode != 0:
+                detail = (formatted.stderr or "").strip()
+                raise VforgeError("could not format Vforge size-cap filesystem" + (f": {detail}" if detail else ""))
+        else:
+            image_fd = open_file_no_symlinks(image.parent, image.name, os.O_RDONLY)
+            try:
+                if os.pread(image_fd, 2, 1080) != b"\x53\xef":
+                    raise VforgeError(f"existing Vforge size-cap image is not a valid ext filesystem: {image}")
+            finally:
+                os.close(image_fd)
+        mounted = subprocess.run(
+            [fuse2fs, "-o", "fakeroot", str(image), str(mountpoint)],
+            check=False, capture_output=True, text=True,
+        )
+        if mounted.returncode != 0 or not os.path.ismount(mountpoint):
+            detail = (mounted.stderr or "").strip()
+            raise VforgeError("could not mount Vforge size-cap filesystem with fuse2fs" + (f": {detail}" if detail else ""))
+    except OSError as error:
+        if created:
+            image.unlink(missing_ok=True)
+        raise VforgeError(f"could not prepare Vforge size-cap filesystem: {error}") from error
+    except VforgeError:
+        if created and not os.path.ismount(mountpoint):
+            image.unlink(missing_ok=True)
+        raise
+
+
+def remove_size_capped_store(image: Path, mountpoint: Path, *, discard: bool = False) -> None:
+    reject_symlink_components(image, "Vforge size-cap image path")
+    reject_symlink_components(mountpoint, "Vforge size-cap mount path")
+    if os.path.ismount(mountpoint):
+        executable = shutil.which("fusermount3") or shutil.which("fusermount")
+        if executable is None:
+            raise VforgeError("fusermount is required to remove a size-capped environment")
+        result = subprocess.run([executable, "-u", str(mountpoint)], check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip()
+            raise VforgeError("could not unmount Vforge size-cap filesystem" + (f": {detail}" if detail else ""))
+    if discard and mountpoint.exists() and not os.path.ismount(mountpoint):
+        for child in mountpoint.iterdir():
+            if child.is_symlink() or not child.is_dir():
+                child.unlink()
+            else:
+                shutil.rmtree(child)
+    try:
+        image_info = image.lstat()
+    except FileNotFoundError:
+        image_info = None
+    if image_info is not None:
+        if not stat.S_ISREG(image_info.st_mode) or image_info.st_uid != os.geteuid():
+            raise VforgeError(f"refusing to remove unsafe Vforge size-cap image: {image}")
+        image.unlink()
+    if mountpoint.exists() and not os.path.ismount(mountpoint):
+        try:
+            mountpoint.rmdir()
+        except OSError as error:
+            raise VforgeError(f"Vforge size-cap mount directory is not empty: {mountpoint}") from error
 
 
 def storage_config_path() -> Path:
@@ -368,6 +495,59 @@ def common_store_root() -> Path:
     if ACTIVE_STORAGE_ROOT is None:
         ACTIVE_STORAGE_ROOT = resolve_storage_root()
     return ACTIVE_STORAGE_ROOT
+
+
+def named_environment_parent(name: str) -> Path:
+    container_name(name)
+    return common_store_root() / "environments" / name
+
+
+def configure_environment_store(parent: Path, size_bytes: int | None) -> tuple[Path, Path | None]:
+    """Return the root for all persistent data, optionally backed by a hard-cap FS."""
+    ensure_private_directory(parent)
+    if size_bytes is None:
+        return parent, None
+    image = parent / ".vforge-size.img"
+    mountpoint = parent / "store"
+    create_size_capped_store(image, mountpoint, size_bytes)
+    return mountpoint, image
+
+
+def project_runtime_root(project: Path, size_bytes: int | None, *, create: bool = True) -> Path:
+    project_state = project_data_root(project, create=create)
+    if size_bytes is None:
+        return project_state
+    return project_state / "store"
+
+
+def ensure_persistent_size_mounts() -> None:
+    """Reattach user-owned size-cap filesystems before reading their environments."""
+    common = read_store_state("environments.json", {"version": STATE_VERSION, "environments": {}})
+    if not isinstance(common, dict) or common.get("version") != STATE_VERSION or not isinstance(common.get("environments"), dict):
+        raise VforgeError("unsupported or malformed Vforge environment state")
+    for name, metadata in common["environments"].items():
+        if not isinstance(metadata, dict) or metadata.get("type") != "named" or metadata.get("size_bytes") is None:
+            continue
+        if not isinstance(metadata.get("size_bytes"), int) or isinstance(metadata.get("size_bytes"), bool):
+            raise VforgeError(f"named environment '{name}' has invalid size-cap metadata")
+        parent = named_environment_parent(name)
+        create_size_capped_store(parent / ".vforge-size.img", parent / "store", int(metadata["size_bytes"]))
+
+    projects = read_state("project-environments.json", {"version": STATE_VERSION, "projects": {}})
+    if not isinstance(projects, dict) or projects.get("version") != STATE_VERSION or not isinstance(projects.get("projects"), dict):
+        raise VforgeError("unsupported or malformed project environment index")
+    for name, reference in projects["projects"].items():
+        if not isinstance(reference, dict) or not isinstance(reference.get("project"), str):
+            raise VforgeError(f"invalid project environment index entry: {name}")
+        project = canonical_project_root(Path(reference["project"]))
+        project_state = project_data_root(project, create=False)
+        metadata = read_project_environment(project, project_state)
+        if not isinstance(metadata, dict) or metadata.get("size_bytes") is None:
+            continue
+        size_bytes = metadata.get("size_bytes")
+        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes <= 0:
+            raise VforgeError(f"project environment '{name}' has invalid size-cap metadata")
+        create_size_capped_store(project_state / ".vforge-size.img", project_state / "store", size_bytes)
 
 
 def common_state_directory() -> Path:
@@ -894,7 +1074,10 @@ def podman_store_for(args: Sequence[str]) -> Path:
                     raise VforgeError(f"project environment '{name}' has an unsafe Podman store path")
                 return expected
             if isinstance(metadata, dict) and metadata.get("type") == "named":
-                expected = common_store_root() / "containers"
+                if metadata.get("size_bytes") is not None:
+                    expected = Path(str(metadata.get("data_root", ""))) / "containers"
+                else:
+                    expected = common_store_root() / "containers"
                 if metadata.get("podman_root") != str(expected):
                     raise VforgeError(f"named environment '{name}' has an unsafe Podman store path")
                 return expected
@@ -1107,10 +1290,7 @@ def create(
     gpu: bool = False, wayland: bool = False, audio: bool = False, user_bus: bool = False,
     size: str | None = None,
 ) -> None:
-    if size is not None:
-        if not re.fullmatch(r"[1-9][0-9]*(?:B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)", size):
-            raise VforgeError("--size must be a positive size such as '20GiB'")
-        raise VforgeError("hard per-environment size limits are unsupported with the current rootless OverlayFS and snapshot backend")
+    size_bytes = parse_size_bytes(size)
     if isolation not in PROFILES or home_mode not in HOME_MODES:
         raise VforgeError("invalid isolation profile or Home permission")
     if home_mode == "project-only":
@@ -1130,13 +1310,13 @@ def create(
         if input("Approve? [y/N] ").strip().lower() not in {"y", "yes"}:
             raise VforgeError("requested permissions were not approved")
     runtime_id = host_runtime_id()
-    podman_root = common_store_root() / "containers"
-    if exists(container_name(name), podman_root):
+    if name in env_state() or exists(container_name(name)):
         raise VforgeError(f"environment '{name}' already exists")
-    environments_root = common_store_root() / "environments"
-    ensure_private_directory(environments_root)
-    data_root = environments_root / name
-    ensure_private_directory(data_root)
+    parent = named_environment_parent(name)
+    data_root, size_image = configure_environment_store(parent, size_bytes)
+    podman_root = data_root / "containers" if size_bytes is not None else common_store_root() / "containers"
+    if exists(container_name(name), podman_root):
+        raise VforgeError(f"an unregistered Podman environment '{name}' already exists in the selected storage; inspect it before reuse")
     layer_id = uuid.uuid4().hex if isolation != "strict" else None
     metadata = {
         "type": "named", "isolation": isolation, "network": network,
@@ -1144,13 +1324,19 @@ def create(
         "mounts": [], "host_runtime": runtime_id, "layer_id": layer_id, "data_root": str(data_root),
         "podman_root": str(podman_root),
     }
-    save_environment(name, metadata)
+    if size_bytes is not None:
+        metadata["size_bytes"] = size_bytes
+        metadata["size_image"] = str(size_image)
     try:
+        save_environment(name, metadata)
         create_container(name, network, isolation=isolation, layer_id=layer_id, data_root=data_root,
                          podman_root=metadata["podman_root"], resources=resources)
     except Exception:
         remove_environment_state(name)
-        shutil.rmtree(data_root, ignore_errors=True)
+        if size_image is not None:
+            remove_size_capped_store(size_image, data_root, discard=True)
+        else:
+            shutil.rmtree(data_root, ignore_errors=True)
         raise
     print("Use 'vforge enter " + name + "' to start a shell; install packages with dnf, without sudo.")
 
@@ -1161,13 +1347,12 @@ def project_up(project: Path) -> None:
     project_identity = (project_stat.st_dev, project_stat.st_ino)
     project_data_root(project, create=False)
     config = parse_project_config(project)
-    if config["size"] is not None:
-        raise VforgeError("hard per-environment size limits are unsupported with the current rootless OverlayFS and snapshot backend")
+    size_bytes = parse_size_bytes(config["size"])
     approve_project(config, project)
     after_approval = project.stat()
     if (after_approval.st_dev, after_approval.st_ino) != project_identity:
         raise VforgeError("project directory changed during permission approval; run 'vforge up' again")
-    data_root = project_data_root(project)
+    project_state_root = project_data_root(project)
     ignore_project_state(project)
     name = str(config["name"])
     permissions = config["permissions"]
@@ -1179,14 +1364,22 @@ def project_up(project: Path) -> None:
         raise VforgeError("project packages need network = 'shared' so Fedora can resolve and install them")
     state = env_state().get(name)
     if state is None:
-        local_state = read_project_environment(project, data_root)
+        local_state = read_project_environment(project, project_state_root)
         if local_state is not None:
-            if local_state.get("type") != "project" or local_state.get("project") != str(project) or local_state.get("data_root") != str(data_root):
+            if local_state.get("type") != "project" or local_state.get("project") != str(project):
                 raise VforgeError("project-local Vforge state does not match this project; inspect .vforge/environment.json")
             save_environment(name, local_state)
             state = local_state
     if isinstance(state, dict) and (state.get("type") != "project" or state.get("project") != str(project)):
         raise VforgeError(f"environment name '{name}' is already used by another Vforge environment")
+    if isinstance(state, dict) and state.get("size_bytes") != size_bytes:
+        raise VforgeError(
+            "changing or adding/removing a project's size cap requires deleting and recreating its Vforge environment"
+        )
+    if size_bytes is None:
+        data_root, size_image = project_state_root, None
+    else:
+        data_root, size_image = configure_environment_store(project_state_root, size_bytes)
     existing = exists(container_name(name), data_root / "containers")
     metadata = {
         "type": "project", "project": str(project), "config_digest": config["config_digest"],
@@ -1196,6 +1389,9 @@ def project_up(project: Path) -> None:
     }
     metadata["data_root"] = str(data_root)
     metadata["podman_root"] = str(data_root / "containers")
+    if size_bytes is not None:
+        metadata["size_bytes"] = size_bytes
+        metadata["size_image"] = str(size_image)
     if config["isolation"] != "strict":
         data_root.joinpath("layers").mkdir(mode=0o700, exist_ok=True)
     metadata["layer_id"] = uuid.uuid4().hex if config["isolation"] != "strict" else None
@@ -1692,6 +1888,8 @@ def rename(old_name: str, new_name: str) -> None:
     metadata = env_state().get(old_name)
     if isinstance(metadata, dict) and metadata.get("type") == "project":
         raise VforgeError("project environment names are declared in .vforge.toml and cannot be renamed separately")
+    if isinstance(metadata, dict) and metadata.get("size_bytes") is not None:
+        raise VforgeError("size-capped environments cannot be renamed; delete and recreate with the new name")
     new_container = container_name(new_name)
     if exists(new_container):
         raise VforgeError(f"environment '{new_name}' already exists")
@@ -1732,7 +1930,23 @@ def delete(name: str) -> None:
     data_root = recorded.get("data_root") if isinstance(recorded, dict) else None
     remove_environment_state(name)
     if isinstance(recorded, dict) and recorded.get("type") != "project" and isinstance(data_root, str):
-        shutil.rmtree(data_root, ignore_errors=True)
+        if isinstance(recorded.get("size_image"), str):
+            size_parent = named_environment_parent(name)
+            remove_size_capped_store(Path(recorded["size_image"]), Path(data_root), discard=True)
+            shutil.rmtree(size_parent, ignore_errors=True)
+        else:
+            shutil.rmtree(data_root, ignore_errors=True)
+    elif isinstance(recorded, dict) and recorded.get("type") == "project" and isinstance(recorded.get("size_image"), str):
+        project_state = project_data_root(canonical_project_root(Path(str(recorded.get("project", "")))), create=False)
+        if Path(str(recorded.get("size_image"))) != project_state / ".vforge-size.img":
+            raise VforgeError("refusing to remove project size-cap data outside .vforge")
+        remove_size_capped_store(Path(recorded["size_image"]), Path(data_root), discard=True)
+        for filename in ("environment.json", "snapshots.json"):
+            (project_state / filename).unlink(missing_ok=True)
+        try:
+            project_state.rmdir()
+        except OSError:
+            pass
     print(f"Deleted '{name}'.")
 
 
@@ -1805,6 +2019,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Vforge common storage root set to {selected}.")
             return 0
         ACTIVE_STORAGE_ROOT = resolve_storage_root(override)
+        ensure_persistent_size_mounts()
         if args.action == "create":
             create(args.name, args.network, args.isolation, args.home, args.gpu, args.wayland, args.audio, args.user_bus, args.size)
             return 0

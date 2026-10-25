@@ -58,10 +58,11 @@ The image is configured to offer KDE Plasma Setup on first boot so the user can 
 Those are product goals, not claims that this image already provides them.
 
 `vforge` supports project `.vforge.toml`, named and project storage, explicit
-mount permissions, isolation profiles, snapshots/rollback and Veyra runtime
-compatibility checks. The full filtered `/etc` lower, whole-root Veyra
-integration, quota enforcement and crash-atomic CoW snapshots remain
-unimplemented. See [the vforge implementation and limits](docs/vforge.md).
+mount permissions, isolation profiles, snapshots/rollback, Veyra runtime
+compatibility checks and sparse ext4 size-cap storage. The size-cap path still
+needs Fedora 44 QEMU validation. The full filtered `/etc` lower, whole-root
+Veyra integration and crash-atomic CoW snapshots remain unimplemented. See
+[the vforge implementation and limits](docs/vforge.md).
 
 ## Architectural direction
 

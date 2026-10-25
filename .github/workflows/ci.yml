@@ -274,7 +274,7 @@ jobs:
           check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
-            flatpak libdnf5 python3-libdnf5 gcc git cmake python3 nodejs22
+            flatpak libdnf5 python3-libdnf5 e2fsprogs gcc git cmake python3 nodejs22
           test "$(rpm -E "%{fedora}")" = 44
           grep -Fxq "ID=fedora" /usr/lib/os-release
           grep -Fxq "VERSION_ID=44" /usr/lib/os-release
@@ -291,6 +291,7 @@ jobs:
           done
           check systemd-sysupdate test -x /usr/lib/systemd/systemd-sysupdate
           check vpkg test -x /usr/bin/vpkg
+          check fuse2fs test -x /usr/bin/fuse2fs
           check python-libdnf5 python3 -c "import libdnf5"
           check dnf5-cli-absent sh -eu -c "! command -v dnf5"
           check veyra-update test -x /usr/bin/veyra-update

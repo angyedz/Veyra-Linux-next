@@ -96,6 +96,7 @@ def main() -> int:
         "cmake",
         "python3",
         "nodejs",
+        "e2fsprogs",
     }
     missing = sorted(required_packages - packages)
     if missing:
