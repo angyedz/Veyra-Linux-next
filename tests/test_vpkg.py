@@ -420,10 +420,15 @@ class VpkgPolicyTests(unittest.TestCase):
         self.assertEqual(policy["schema"], 1)
         self.assertEqual(policy["supported_base"], {"id": "fedora", "version_id": "44"})
         self.assertIn("glibc", policy["protected_packages"]["names"])
+        self.assertIn("python3-libdnf5", policy["protected_packages"]["names"])
         with patch.object(vpkg, "VPKG_POLICY_FILE", policy_path):
             vpkg.load_vpkg_policy()
             with self.assertRaisesRegex(vpkg.VpkgError, "protected system path"):
                 vpkg.validate_user_package_paths(["/usr/lib/modules/test.ko"])
+            with self.assertRaisesRegex(vpkg.VpkgError, "protected system path"):
+                vpkg.validate_user_package_paths(["/usr/share/veyra/injected.conf"])
+            with self.assertRaisesRegex(vpkg.VpkgError, "base-system packages"):
+                vpkg.validate_user_package_name("python3-libdnf5")
         with tempfile.TemporaryDirectory() as temporary:
             malformed = Path(temporary) / "policy.json"
             malformed.write_text('{"schema": 1}', encoding="utf-8")

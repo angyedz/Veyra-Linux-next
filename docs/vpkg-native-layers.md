@@ -35,7 +35,10 @@ The immutable policy at `/usr/share/veyra/vpkg/protected-core.json` uses schema
 prefixes, the only permitted additive payload roots, and exact/prefix protected
 paths. Missing, malformed, unknown-schema, or wrong-target policy data fails
 closed before a package request or payload is accepted. The policy is shipped
-by the `veyra-vpkg` RPM as well as the image build source.
+by the `veyra-vpkg` RPM as well as the image build source. Its protected RPM
+names cover the image's init, boot, kernel/firmware, package-manager and
+integrity stack, including `libdnf5` and its Python bindings; `/usr/lib/veyra`
+and `/usr/share/veyra` are protected payload roots for Veyra-owned userland.
 
 ## Storage contract under the current image layout
 

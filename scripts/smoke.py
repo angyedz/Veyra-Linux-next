@@ -149,7 +149,9 @@ def main() -> int:
         policy.get("schema") != 1
         or policy.get("supported_base") != {"id": "fedora", "version_id": "44"}
         or "glibc" not in policy.get("protected_packages", {}).get("names", [])
+        or "python3-libdnf5" not in policy.get("protected_packages", {}).get("names", [])
         or "/usr/lib/modules/" not in policy.get("payload_paths", {}).get("denied_prefixes", [])
+        or "/usr/share/veyra/" not in policy.get("payload_paths", {}).get("denied_prefixes", [])
     ):
         return fail("vpkg protected-core policy must target Fedora 44 and protect critical core payloads")
     backend_content = backend.read_text(encoding="utf-8")
