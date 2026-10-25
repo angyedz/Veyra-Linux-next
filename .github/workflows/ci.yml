@@ -198,6 +198,7 @@ jobs:
     needs: vpkg-image-fixture
     runs-on: ubuntu-24.04
     container: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
+    options: --security-opt seccomp=unconfined
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -215,6 +216,8 @@ jobs:
             cryptsetup sudo systemd-container systemd-ukify uv xz zstd
       - name: Gate the build container and Fedora 44 repositories
         run: python3 scripts/check-build-environment.py
+      - name: Check that mkosi user namespaces are available
+        run: unshare --user --map-root-user true
       - name: Check image configuration
         run: python3 scripts/smoke.py
       - name: Add the CI-only vpkg boot test to this disposable image
