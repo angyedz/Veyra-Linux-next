@@ -229,6 +229,8 @@ def main() -> int:
         transfer = (transfer_dir / name).read_text(encoding="utf-8")
         if "PartitionUUID=@u" not in transfer:
             return fail(f"{name} must preserve the split UUID required by the dm-verity root hash")
+        if "ReadOnly=1" not in transfer:
+            return fail(f"{name} must mark updated root and verity partitions read-only")
     uki_transfer = (transfer_dir / "99-uki.transfer").read_text(encoding="utf-8")
     for expected in ("TriesLeft=3", "TriesDone=0", "InstancesMax=2", "PathRelativeTo=boot"):
         if expected not in uki_transfer:
@@ -239,6 +241,8 @@ def main() -> int:
         return fail("the initial UKI filename must use the same version as the root slot")
     if not (ROOT / "scripts/check-image.py").is_file():
         return fail("the built GPT layout must be checked in CI")
+    if not (ROOT / "scripts/test-ab-boot.py").is_file():
+        return fail("CI must boot a staged A/B update and exercise boot-count rollback")
     update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
     if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
         return fail("the image must install the veyra-update command")

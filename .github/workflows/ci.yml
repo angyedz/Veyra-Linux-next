@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -22,7 +23,7 @@ jobs:
           sudo apt-get install --yes \
             btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
             debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
-            systemd-container systemd-ukify xz-utils zstd
+            cryptsetup-bin ovmf systemd-container systemd-ukify xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
       - name: Build the Fedora KDE disk image
@@ -87,9 +88,26 @@ jobs:
           }
           trap restore_keyring EXIT
           sudo install -D -m 0644 "$RUNNER_TEMP/veyra-ci-update-key.gpg" "$keyring"
+          ovmf_code=""
+          for candidate in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/x64/OVMF_CODE.4m.fd; do
+            if [[ -s "$candidate" ]]; then ovmf_code="$candidate"; break; fi
+          done
+          ovmf_vars=""
+          for candidate in \
+            /usr/share/OVMF/OVMF_VARS_4M.fd \
+            /usr/share/OVMF/OVMF_VARS.fd \
+            /usr/share/edk2/x64/OVMF_VARS.4m.fd; do
+            if [[ -s "$candidate" ]]; then ovmf_vars="$candidate"; break; fi
+          done
+          test -n "$ovmf_code" && test -n "$ovmf_vars"
           python3 scripts/test-sysupdate-image.py \
             --image mkosi.output/veyra-next.raw \
             --current-version "$version" \
             --transfer-dir mkosi.extra/usr/lib/sysupdate.d \
             --fingerprint "$fingerprint" \
+            --ovmf-code "$ovmf_code" \
+            --ovmf-vars "$ovmf_vars" \
             --sudo-sysupdate

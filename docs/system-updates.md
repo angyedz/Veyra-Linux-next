@@ -21,9 +21,19 @@ sudo veyra-update reboot
 
 Staging and rebooting are separate actions. After reboot, systemd's boot
 assessment checks the required boot targets. A trial UKI is marked good only
-when those targets succeed; repeated failed boots are expected to fall back to
-the previously working UKI. That final A→B and rollback behavior still needs
-to be demonstrated in a VM before this design is considered validated.
+when those targets succeed; repeated failed boots fall back to the previously
+working UKI.
+
+CI exercises that path with a disposable disk image. It signs a temporary
+manifest, creates a fresh dm-verity tree for the built EROFS root, applies the
+update with `systemd-sysupdate`, and boots the new slot in QEMU/OVMF. The test
+checks the new root hash, `graphical.target`, `boot-complete.target`, successful
+boot blessing, and GPT read-only flags on the updated root and verity
+partitions. It then adds a test-only UKI that enters `emergency.target`, boots
+it three times, verifies each try counter, and checks that the next boot
+returns to the blessed slot. The failure UKI is injected directly into this
+temporary test image; this does not publish a release or assert that an
+application rollback is already available to users.
 
 ## Update signing and publication
 

@@ -1,6 +1,6 @@
 # Veyra Next architecture — working proposal
 
-**Status:** source defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfers and a three-try boot-assessment policy. CI builds and inspects the image and stages a signed test update into the inactive slots of a disposable image. A VM must still prove successful A→B boot and failed-boot return. No production update is signed or published yet; installer, Recovery and Developer Mode are not implemented.
+**Status:** source defines an EROFS + dm-verity A/B disk layout, early persistent-state mounts, `systemd-sysupdate` transfers and a three-try boot-assessment policy. CI builds a signed test update, applies it to a disposable image, boots the new slot in QEMU/OVMF, checks dm-verity and boot blessing, then observes fallback after three deliberately failed trial boots. No production update is signed or published yet; installer, Recovery and Developer Mode are not implemented.
 
 ## Product shape
 
@@ -10,9 +10,9 @@ Kinoite informs the desktop experience: Plasma, Discover, Flatpak and an atomic-
 
 ## Selected prototype foundation
 
-The current implementation uses Fedora 44, glibc and systemd. This replaces the earlier ADR's OpenRC preference for the new project: systemd is already the native service manager on Fedora and provides the boot, partition and image-update tools being evaluated. `mkosi` composes the image, `systemd-repart` lays out its disk, and `systemd-sysupdate` stages updates. Their end-to-end behavior still needs to be demonstrated as Veyra behavior rather than inherited from Kinoite.
+The current implementation uses Fedora 44, glibc and systemd. This replaces the earlier ADR's OpenRC preference for the new project: systemd is already the native service manager on Fedora and provides the boot, partition and image-update tools being evaluated. `mkosi` composes the image, `systemd-repart` lays out its disk, and `systemd-sysupdate` stages updates. CI now exercises their end-to-end A/B behavior on a Veyra image rather than treating configuration alone as proof.
 
-The current UKIs are unsigned and the VM uses ordinary UEFI. Secure Boot is deliberately not claimed or enabled until key ownership, signing and enrollment are designed.
+The CI boot exercise uses ordinary UEFI with Secure Boot disabled. It proves the update and boot-count behavior in a virtual machine; it does not qualify physical hardware or authenticate the EFI boot path. Secure Boot is deliberately not claimed or enabled until key ownership, signing and enrollment are designed.
 
 ## Build and release direction
 
@@ -20,7 +20,7 @@ The current UKIs are unsigned and the VM uses ordinary UEFI. Secure Boot is deli
 2. The image also has writable ext4 partitions for `/etc` and `/var`, mounted from the initrd before switch-root, and a separate persistent `/home` partition. Cross-version compatibility and migration for persistent state still need a policy.
 3. `systemd-sysupdate` transfers the matching verity and root images to the unused partitions. Release filenames carry the two halves of the dm-verity root hash; `PartitionUUID=@u` preserves those UUIDs when writing the new slots. The UKI is transferred last and receives three boot attempts; its presence is the entry point for the new version. The current version is protected while an update is staged.
 4. Update definitions require GPG verification of `SHA256SUMS` (`Verify=yes`). The manual release workflow builds with the public half of a dedicated Veyra update key, signs the root/verity/UKI manifest and publishes those assets. Until its private key is provisioned and the workflow is run from `main`, there is no usable signed release today.
-5. `systemd-boot` boot counting and an enabled systemd boot health check are configured to bless a trial only after the boot reaches the completion target without failed units. The A→B transition and automatic return after three failed attempts remain to be demonstrated in a VM.
+5. `systemd-boot` boot counting and an enabled systemd boot health check bless a trial only after the boot reaches the completion target without failed units. CI applies a signed B-slot update, confirms it reaches `graphical.target`, `boot-complete.target` and the successful bless service, then boots a deliberately failing higher-version entry three times and confirms that the next boot returns to the previously blessed slot.
 
 This reuses systemd's image, partition and boot tools instead of writing a replacement package manager or custom cryptographic format. The A/B layout is two versions of one OS, never two concurrently running user environments.
 
@@ -60,4 +60,4 @@ Recovery should boot independently of the installed system, offer logs and a res
 
 ## Acceptance boundary
 
-Pre-alpha should not be called usable until there is a user-creation/install path, KDE Wayland login, actual update A → B → failed-boot rollback, persistent home checks, Recovery boot, and application testing. Steam/Proton and Discord screen sharing must be exercised on real NVIDIA and AMD hardware before compatibility is claimed.
+Pre-alpha should not be called usable until there is a user-creation/install path, KDE Wayland login, the CI A → B and failed-boot rollback job passing, persistent home checks across an update, Recovery boot, and application testing. Steam/Proton and Discord screen sharing must be exercised on real NVIDIA and AMD hardware before compatibility is claimed.

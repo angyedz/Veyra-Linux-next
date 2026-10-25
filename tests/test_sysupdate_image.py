@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+import struct
 import tempfile
 import unittest
 
@@ -15,6 +16,14 @@ SPEC = importlib.util.spec_from_loader(
 assert SPEC and SPEC.loader
 sysupdate_image = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sysupdate_image)
+
+BOOT_SPEC = importlib.util.spec_from_loader(
+    "veyra_ab_boot",
+    SourceFileLoader("veyra_ab_boot", str(ROOT / "scripts/test-ab-boot.py")),
+)
+assert BOOT_SPEC and BOOT_SPEC.loader
+ab_boot = importlib.util.module_from_spec(BOOT_SPEC)
+BOOT_SPEC.loader.exec_module(ab_boot)
 
 
 class SysupdateImageTests(unittest.TestCase):
@@ -48,6 +57,62 @@ class SysupdateImageTests(unittest.TestCase):
                 else:
                     self.assertIn(".raw.xz", content)
                     self.assertIn("Type=partition", content)
+                    self.assertIn("ReadOnly=1", content)
+
+    def test_uki_fixture_sets_the_verity_hash_boot_target_and_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source.efi"
+            destination = Path(temporary) / "update.efi"
+            sections = {
+                b".cmdline": (b"systemd.unit=graphical.target\0", 0x300),
+                b".osrel": (b'ID=fedora\nVERSION_ID=44\nIMAGE_VERSION="0.1.0"\n', 0x400),
+            }
+            image = bytearray(0x600)
+            pe_offset = 0x80
+            struct.pack_into("<I", image, 0x3C, pe_offset)
+            image[pe_offset : pe_offset + 4] = b"PE\0\0"
+            struct.pack_into("<H", image, pe_offset + 6, len(sections))
+            struct.pack_into("<H", image, pe_offset + 20, 0xF0)
+            section_table = pe_offset + 24 + 0xF0
+            for index, (name, (content, raw_offset)) in enumerate(sections.items()):
+                header = section_table + index * 40
+                image[header : header + len(name)] = name
+                struct.pack_into("<I", image, header + 8, len(content))
+                struct.pack_into("<I", image, header + 16, 0x100)
+                struct.pack_into("<I", image, header + 20, raw_offset)
+                image[raw_offset : raw_offset + len(content)] = content
+            source.write_bytes(image)
+
+            roothash = "a" * 64
+            sysupdate_image.patch_uki(
+                source, destination, "0.1.1", roothash, "graphical.target"
+            )
+
+            sections_written = sysupdate_image.pe_sections(destination)
+            _, cmdline_offset, _ = sections_written[b".cmdline"]
+            with destination.open("rb") as stream:
+                stream.seek(cmdline_offset)
+                cmdline = stream.read(256).split(b"\0", 1)[0].decode("ascii")
+            self.assertIn(f"roothash={roothash}", cmdline)
+            self.assertIn("systemd.firstboot=no", cmdline)
+            self.assertIn("systemd.unit=graphical.target", cmdline)
+            self.assertEqual(sysupdate_image.os_release_value(destination, "VERSION_ID"), "44")
+            self.assertEqual(sysupdate_image.os_release_value(destination, "IMAGE_VERSION"), "0.1.1")
+
+    def test_uki_fixture_rejects_a_malformed_verity_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source.efi"
+            source.write_bytes(b"not a PE image")
+            with self.assertRaisesRegex(RuntimeError, "invalid dm-verity root hash"):
+                sysupdate_image.patch_uki(source, source.with_name("target.efi"), "0.1.1", "bad", "graphical.target")
+
+    def test_boot_log_normalizer_preserves_systemd_markers_around_terminal_escapes(self) -> None:
+        log = (
+            "\x1b]3008;start=boot\x1b\\"
+            "[\x1b[0;32m  OK  \x1b[0m] Reached target "
+            "\x1b[0;1;39mgraphical.target\x1b[0m - Graphical Interface.\r\n"
+        )
+        self.assertIn("Reached target graphical.target", ab_boot.normalize_log(log))
 
 
 if __name__ == "__main__":
