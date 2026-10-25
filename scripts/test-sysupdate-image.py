@@ -68,7 +68,12 @@ def write_test_definitions(
         )
         if replacements != 1:
             raise RuntimeError(f"Could not redirect the release source in {name}.")
-        (destination / name).write_text(content, encoding="utf-8")
+        # Ubuntu 24.04 CI ships systemd 255, which still enumerates .conf
+        # definitions. Fedora 44's systemd 259 reads .transfer and retains
+        # .conf as a backwards-compatible suffix.
+        (destination / f"{pathlib.Path(name).stem}.conf").write_text(
+            content, encoding="utf-8"
+        )
     return destination
 
 

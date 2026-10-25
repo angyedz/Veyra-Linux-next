@@ -36,13 +36,13 @@ class SysupdateImageTests(unittest.TestCase):
             )
             self.assertEqual(
                 {path.name for path in definitions.iterdir()},
-                {"10-root-verity.transfer", "20-root.transfer", "99-uki.transfer"},
+                {"10-root-verity.conf", "20-root.conf", "99-uki.conf"},
             )
-            for path in definitions.glob("*.transfer"):
+            for path in definitions.glob("*.conf"):
                 content = path.read_text(encoding="utf-8")
                 self.assertIn("Path=http://127.0.0.1:8765/", content)
                 self.assertIn("Verify=yes", content)
-                if path.name == "99-uki.transfer":
+                if path.name == "99-uki.conf":
                     self.assertIn("Type=regular-file", content)
                 else:
                     self.assertIn("Type=partition", content)
