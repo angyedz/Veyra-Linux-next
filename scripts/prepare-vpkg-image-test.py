@@ -105,6 +105,7 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             test_sources = [
                 pathlib.Path("scripts/build-extension-rpm.py"),
                 pathlib.Path("scripts/mirror-package-site.py"),
+                pathlib.Path("scripts/prepare-vpkg-image-test.py"),
                 pathlib.Path("scripts/test-ab-boot.py"),
                 pathlib.Path("scripts/test-sysupdate-image.py"),
                 pathlib.Path("mkosi.extra/usr/bin/vpkg"),
