@@ -740,6 +740,48 @@ class VforgeCommandTests(unittest.TestCase):
             self.assertEqual(created[0]["image"], target_image)
             self.assertFalse((data_root / ".rollback-transaction.json").exists())
 
+    def test_legacy_snapshot_rollback_uses_a_fresh_layer_to_preserve_checkpoint_upper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            old_layer_id = "8" * 32
+            vforge.layer_paths(old_layer_id, data_root)
+            legacy_upper = data_root / "snapshots" / "backend" / "legacy"
+            (legacy_upper / "usr-upper").mkdir(parents=True)
+            (legacy_upper / "rpmdb-upper").mkdir()
+            metadata = {
+                "type": "named", "isolation": "integrated", "layer_id": old_layer_id,
+                "layer_stack": [], "data_root": str(data_root),
+                "podman_root": str(data_root / "containers"), "network": "none",
+                "mounts": [], "permissions": {"home": "none"},
+            }
+            target_image = vforge.snapshot_image("backend", "legacy")
+            checkpoint_image = vforge.snapshot_image("backend", "rollback-point")
+            snapshots = {"backend": [
+                {"name": "legacy", "image": target_image, "upper": str(legacy_upper),
+                 "environment": metadata.copy(), "host_runtime": "runtime-test"},
+                {"name": "rollback-point", "image": checkpoint_image, "upper": None,
+                 "environment": {**metadata, "layer_stack": ["rollback-point"]}},
+            ]}
+            created: list[dict[str, object]] = []
+            restored: list[str] = []
+            with patch.object(vforge, "require_environment", return_value=("vforge-backend", {"State": {"Status": "running"}})), \
+                 patch.object(vforge, "env_state", return_value={"backend": metadata}), \
+                 patch.object(vforge, "snapshots_state", side_effect=lambda: snapshots), \
+                 patch.object(vforge, "make_snapshot", return_value="rollback-point"), \
+                 patch.object(vforge, "exists", return_value=False), \
+                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                 patch.object(vforge, "unmount_veyra_overlay"), \
+                 patch.object(vforge, "ensure_veyra_overlay"), \
+                 patch.object(vforge, "restore_upper_layer", side_effect=lambda layer_id, *_: restored.append(layer_id)), \
+                 patch.object(vforge, "create_container", side_effect=lambda *args, **kwargs: created.append(kwargs)), \
+                 patch.object(vforge, "save_environment"), \
+                 patch.object(vforge, "host_runtime_id", return_value="runtime-test"):
+                vforge.rollback_to("backend", "legacy", confirm=False)
+
+            self.assertNotEqual(created[0]["layer_id"], old_layer_id)
+            self.assertEqual(restored, [created[0]["layer_id"]])
+            self.assertFalse((data_root / ".rollback-transaction.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

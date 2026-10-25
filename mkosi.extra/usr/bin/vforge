@@ -2079,6 +2079,14 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
     target_stack = snapshot_metadata.get("layer_stack", [])
     if not isinstance(target_stack, list):
         raise VforgeError("snapshot Veyra layer stack is malformed")
+    if target_isolation != "strict" and not target_stack:
+        # The legacy copy format must never overwrite the checkpoint's active
+        # upper during rollback. Restore it into a fresh isolated layer id.
+        if not isinstance(target_layer_id, str):
+            raise VforgeError("legacy integrated snapshot has no Veyra layer id")
+        target_layer_id = uuid.uuid4().hex
+        snapshot_metadata = copy.deepcopy(snapshot_metadata)
+        snapshot_metadata["layer_id"] = target_layer_id
     data_root = metadata.get("data_root")
     podman_root = metadata.get("podman_root")
     if snapshot_metadata.get("data_root") != data_root or snapshot_metadata.get("podman_root") != podman_root:
@@ -2096,7 +2104,7 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
     })
     try:
         if was_running:
-            podman(["container", "stop", "--time", "10", podman_name])
+            podman(["container", "stop", "--time", "10", podman_name], root=podman_root)
         if metadata.get("isolation") != "strict" and isinstance(old_layer_id, str):
             unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
         if target_isolation != "strict" and isinstance(target_layer_id, str) and target_layer_id != old_layer_id:
@@ -2108,7 +2116,7 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
                 # Compatibility with snapshots written before frozen layer stacks.
                 restore_upper_layer(target_layer_id, data_root, selected.get("upper"))
             ensure_veyra_overlay(target_layer_id, data_root, target_stack, name)
-        podman(["container", "rename", podman_name, backup_name])
+        podman(["container", "rename", podman_name, backup_name], root=podman_root)
         create_container(
             name, network, layer_id=target_layer_id if isinstance(target_layer_id, str) else None,
             layer_stack=target_stack, data_root=data_root, podman_root=podman_root,
@@ -2117,7 +2125,7 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
         snapshot_runtime = selected.get("host_runtime")
         runtime_compatible = target_isolation == "strict" or snapshot_runtime == host_runtime_id()
         if was_running and runtime_compatible:
-            podman(["container", "start", podman_name])
+            podman(["container", "start", podman_name], root=podman_root)
         restored_metadata = copy.deepcopy(snapshot_metadata)
         restored_metadata["image"] = selected["image"]
         save_environment(name, restored_metadata)
