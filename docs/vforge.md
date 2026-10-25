@@ -1,75 +1,157 @@
-# Vforge development environments
+# vforge development environments
 
-**Status:** product design; no `vforge` command or runtime integration is
-implemented yet.
+`vforge` provides persistent named environments and project environments. It
+uses rootless Podman with the fixed Fedora 44 image. Run the command as the
+logged-in user, never with `sudo`; Podman runs with `--remote=false` and an
+explicit per-user graphroot/runroot. The container shares the Veyra kernel and
+is a development environment, not a VM or an absolute security boundary.
 
-`vforge` is the planned name of Veyra's development-environment manager. It
-will cover two use cases without making either one mandatory:
-
-1. **Project environment:** a project includes a small Vforge configuration
-   describing its base image, packages, environment variables and explicitly
-   mounted directories. A developer enters or runs commands in that environment
-   from the project directory. The configuration can be committed with the
-   source so teammates can recreate the toolchain.
-2. **Persistent named environment:** a user creates an environment such as
-   `web-dev`, `rust`, or `python-data` independently of any project. It has a
-   long-lived writable environment, so packages installed inside it and its
-   settings persist between sessions and host reboots. It can be entered from
-   any directory, renamed, stopped, started, upgraded and removed without
-   changing the host OS. A project directory is mounted only when the user
-   explicitly selects it.
-
-The first command shape is:
+## Named environments
 
 ```sh
-vforge create web-dev
-vforge list
-vforge enter web-dev
-vforge exec web-dev -- node --version
-vforge stop web-dev
-vforge start web-dev
-vforge rename web-dev web-dev-old
-vforge delete web-dev
+vforge create backend
+vforge enter backend
+vforge exec backend -- python3 --version
+vforge snapshot backend before-upgrade
+vforge upgrade backend
+vforge rollback backend before-upgrade
+vforge stop backend
+vforge start backend
+vforge delete backend
 ```
 
-Entering an environment is the normal place to install a toolchain with Fedora
-packages, for example `dnf install nodejs python3`. Those changes belong to the
-named environment; they do not update Veyra's host RPM database or system
-image. `vpkg` remains the route for applications installed into Veyra's shared
-app layer.
+Network is disabled by default. `--network bridge` is an explicit, interactively
+approved grant. `--home` accepts `none`, `project-only`, `read-only`, or
+`read-write`; `project-only` does not mount the whole host Home. GPU, Wayland,
+PipeWire and the user's session D-Bus socket require `--isolation trusted` and
+interactive approval. The whole system D-Bus is never exposed. `strict` rejects
+all host mounts/resources and does not use the Veyra `/usr` overlay.
 
-For a project environment, a project-local config will select the environment
-definition and provide the corresponding run/enter command. The config format
-and final command names are still to be implemented and documented; the example
-above is the agreed direction, not a claim that these commands currently work.
+The common named-environment root is user-selectable. By default it is
+`$XDG_DATA_HOME/vforge`, or `~/.local/share/vforge` when XDG_DATA_HOME is unset.
+Set and inspect the persistent root with:
 
-## Language tools and packages
+```sh
+vforge config show
+vforge config storage-root /path/you/own/vforge
+vforge --storage-root /another/path create scratch
+vforge create --storage-root /another/path scratch
+```
 
-The current image recipe includes Python, pip, Node.js and npm in the Fedora
-base image, so those versions are available directly on the host. In a Vforge
-environment, Fedora packages can install a separate Python or Node.js runtime;
-`pip` dependencies should normally live in a Python virtual environment, and
-`npm` dependencies in the project's `node_modules`. A user can choose host
-development, a project-configured environment, or a persistent named
-environment according to the project. Vforge is not a requirement for using
-these languages.
+The persistent setting is saved in `$XDG_CONFIG_HOME/veyra/vforge.toml` (or
+`~/.config/veyra/vforge.toml`). Storage uses ordinary free space on the selected
+filesystem; there is no preallocation or separate partition. Symlinked storage
+path components and roots not owned by the current user are rejected. Vforge
+does not elevate privileges. A requested hard size limit (`--size` or
+`[environment].size`) currently fails with an explicit unsupported-backend
+error: rootless FUSE uppers, Podman writable layers and copied snapshots cannot
+be reliably quota-accounted together on arbitrary ext4/XFS storage.
+Changing the selected root does not move existing data; pass the old root
+explicitly to continue using environments stored there. Project registry data
+is kept under the user's XDG state directory, so changing the common root does
+not hide project environments.
 
-## Isolation boundary
+## Project environments
 
-The manager should use Fedora's maintained rootless container runtime rather
-than implement a new container engine. Environments must not write to the host
-`/usr`, RPM database, kernel, init system, bootloader or A/B slots. Project and
-home directories should only be mounted where the user explicitly requests
-them. Removing a named environment removes that environment's state, not the
-project source tree. Containers share the host kernel; Vforge is a development
-environment boundary, not a virtual machine or a substitute for the OS update
-and recovery security model.
+Put `.vforge.toml` in the project root, then run `vforge up` or `vforge enter`
+from that directory. `vforge enter` with no name discovers the project config.
+The config remains part of the project; generated state is kept separately in
+`<project>/.vforge/`. Vforge adds `.vforge/` to the repository's local
+`.git/info/exclude` so generated state is not staged. The project source is
+indexed in the user's private XDG state directory so `list`, named `enter`,
+and `delete` can find it without making generated state part of the repository.
+The project directory is mounted at `/workspace` for integrated/trusted
+profiles; `.vforge/` is hidden
+inside the container with a private tmpfs and cannot be mounted by a custom
+mount declaration. `strict` does not mount the project directory.
 
-Vforge is separate from the host's Developer Mode. It remains the normal way
-to create a mutable development environment without changing Veyra's system
-files or disabling A/B updates.
+Example:
 
-The first implementation still needs a precise command contract for image
-selection, image upgrades, persistent storage, network access, project mounts
-and backup/restore. These examples describe the intended behavior; Vforge is
-still a design and no `vforge` command or runtime integration exists yet.
+```toml
+[environment]
+name = "backend"
+isolation = "integrated"
+
+[packages]
+system = ["python3", "nodejs", "git"]
+
+[permissions]
+network = "shared"
+gpu = false
+wayland = false
+audio = false
+system_bus = false
+
+[permissions.home]
+mode = "project-only"
+
+[[permissions.mounts]]
+source = "~/Documents/shared"
+target = "/workspace/shared"
+access = "read-only"
+```
+
+The parser rejects unknown keys, invalid package names, symlinked project
+roots/config/mount-source components, protected host paths, unsafe/duplicate
+container targets and mounts into the project state directory. Project
+permissions are printed and explicitly approved on a TTY; approval is stored
+outside the checkout and keyed to the permission digest. Expanding permissions
+requires fresh approval. An existing project environment is checkpointed before
+its configuration is applied. Project state can be removed with
+`vforge delete <name>`; that deletes `.vforge/` data but leaves source and
+`.vforge.toml` intact.
+
+## Integrated filesystem and OTA compatibility
+
+`integrated` and `trusted` use `fuse-overlayfs` with the current Veyra `/usr`
+and host RPM database as read-only lowers and per-environment upper/work dirs.
+Those uppers live under the named environment's data directory or the project
+`.vforge/` directory. The container receives the merged `/usr` and merged RPM
+database as writable mounts. Thus writes to those mounted system paths should
+go to that environment's upper, while the Veyra lower remains unchanged. The
+QEMU scenario checks the active Veyra `sysext-level` through the container,
+checks that a `/usr` write appears only in the private upper, and checks that a
+snapshot rollback restores that write.
+
+The compatibility identity includes the active dm-verity `roothash`, distro
+version, glibc/systemd RPM versions and Veyra sysext level. A changed root hash
+blocks `enter`/`start` until `vforge upgrade` is run. Upgrade makes a snapshot,
+temporarily connects the container to the bridge to run `dnf upgrade`, and
+restores the checkpoint if that operation fails.
+
+This is a deliberately bounded integrated slice, not the full lower-layer
+model in the master specification: only `/usr` and the RPM database use Veyra
+lowers. The container's Fedora 44 `/etc`, `/var`, `/bin`, `/lib` and other root
+paths are not a filtered view of Veyra. Host `/etc` is not exposed because it
+contains host secrets and mutable machine configuration. A filtered `/etc`
+generation-specific lower and a coherent whole-root Veyra runtime remain
+unimplemented; do not claim complete 6.1/6.2 integration until that boundary
+is designed and tested.
+
+Snapshots commit the container writable layer and copy the Veyra `/usr` and
+RPM database uppers. Rollback first saves a recovery checkpoint, restores the
+copy and recreates the container. On ordinary ext4/XFS these are space-using
+file copies, not filesystem CoW snapshots; they can be large and are not an
+atomic crash-consistent transaction across container metadata and both upper
+trees. A failed operation may need recovery from the retained checkpoint.
+
+## Verification status and limits
+
+The wrapper tests and real lifecycle script are guarded to run only inside
+QEMU/KVM with a Fedora 44 Veyra guest; the integration gate rejects Rawhide and
+checks the environment's `/etc/os-release` is Fedora 44. Fedora 44 is the
+current Veyra target, and these checks should change with an approved future
+base update. The integration script also requires a non-root user and
+read-only source checkout. Run `scripts/test-vforge-qemu.sh` from the
+disposable Veyra guest after its image has been built. The QEMU test exercises rootless create,
+enter/exec, an explicitly approved bridge-network `dnf install`, stop/start
+persistence, Veyra lower visibility, RPM database and `/usr` upper isolation,
+snapshot/rollback and deletion. The guest needs outbound network access to pull
+the Fedora 44 image and package. A source-level test pass alone does not prove
+the OverlayFS lifecycle or the Veyra-generation integration.
+
+Vforge also relies on Podman defaults for user namespaces, seccomp and SELinux
+policy. It does not yet audit every global Podman hook/configuration, expose
+full Veyra `/etc`, automatically discover missing libraries, or enforce a
+per-environment storage quota. These are explicit gaps; profiles and device
+grants are not a claim of VM-grade isolation.

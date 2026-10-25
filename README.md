@@ -18,8 +18,6 @@ The image includes `veyra-update` for listing, checking, staging and rebooting i
 
 `vpkg` has two package paths: signed `veyra-*` extension-wrapper RPMs from Veyra's `main` or `testing` channel, and ordinary application RPMs from Fedora/RPM Fusion or a local RPM file. Ordinary packages are solved and installed in a disposable DNF5 installroot seeded with the base RPM inventory; their additive `/usr` and `/opt` files become one persistent `vpkg-apps` system extension. Activation is a live sysext refresh with rollback on failure. Kernel, graphics-driver, init, bootloader, base-package replacements, file collisions, privileged setuid/setgid files, and payload outside `/usr` or `/opt` are rejected. Local RPMs must be signed by a key trusted by Fedora or RPM Fusion. Package configuration under `/etc` and third-party signing-key enrollment are not supported yet. CI exercises Fedora repository resolution, local signed RPM installation and removal, and kernel-package rejection inside the VM.
 
-App-layer requests and exact repository EVR pins are stored separately from each resolved generation. `vpkg prepare-for-base --base-root ROOT --roothash HASH --output DIR` resolves those requests against a candidate root without activating it; `DIR` must be an absent direct child of `/var/lib/veyra/vpkg/app-layers`, and the JSON result returns its absolute path as `generation` (or `null` for an empty request set). `vpkg bind-generation --roothash HASH --version VERSION --generation DIR|none` binds that prepared result to the exact `(roothash, IMAGE_VERSION)` pair and blocks package mutations until OTA calls `vpkg complete-pending --current` after blessing the exact target UKI. `vpkg sync` selects the app generation bound to both values; a mismatched pending boot does not clear the lock. OTA cancellation must remove the specific target trial UKI before calling `vpkg cancel-pending --roothash HASH --version VERSION`. RPM scriptlets and triggers are rejected from the transaction; RPM SYSUSERS actions are also rejected because vpkg has no host-side user/group migration mechanism.
-
 The first optional Veyra package is `veyra-shell-tools` (bash completion, fzf, jq and ripgrep). The packaging pipeline builds it as a version-matched system extension and wraps it in an RPM. Veyra package channels require both RPM and repository-metadata signatures. There is no production key or published repository yet, so Veyra package search and installation are unavailable until the signing key and repository hosting are provisioned. Fedora and RPM Fusion package discovery use their own configured sources. See [package repository details](packages/README.md).
 
 ## Build
@@ -43,14 +41,17 @@ The image is configured to offer KDE Plasma Setup on first boot so the user can 
 
 - The user signs into KDE Plasma and installs desktop apps from Discover.
 - Steam and Discord are ordinary desktop apps, not separate operating systems. Steam runs games with Proton; Discord receives Wayland screen sharing through KDE's portal and PipeWire.
-- Git, SSH, GCC, Clang, Python, Node.js and CMake are available in the native Fedora userspace. `vforge` is planned for both project-described environments and persistent, named development environments; it is optional, and projects can still be built directly on the host.
+- Git, SSH, GCC, Clang, Python, Node.js and CMake are available in the native Fedora userspace. `vforge` provides rootless named and project environments on Fedora 44, permission profiles, snapshots and rollback. Its integrated Veyra lower currently covers `/usr` and the RPM database only; see the implementation limits in [docs/vforge.md](docs/vforge.md).
 - System updates preserve personal files and install a complete new OS version beside the active one. A failed trial boot returns to the previous version.
 - Optional Veyra add-ons install as signed system extensions, while system packages go through A/B image updates.
 
 Those are product goals, not claims that this image already provides them.
 
-The `vforge` environment manager is a design goal and is not implemented yet. Its
-planned interface and isolation boundary are described in [the vforge design](docs/vforge.md).
+`vforge` supports project `.vforge.toml`, named and project storage, explicit
+mount permissions, isolation profiles, snapshots/rollback and Veyra runtime
+compatibility checks. The full filtered `/etc` lower, whole-root Veyra
+integration, quota enforcement and crash-atomic CoW snapshots remain
+unimplemented. See [the vforge implementation and limits](docs/vforge.md).
 
 ## Architectural direction
 
