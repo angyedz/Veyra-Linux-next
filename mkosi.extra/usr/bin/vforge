@@ -4,12 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import errno
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+import time
+import tomllib
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 
@@ -18,10 +28,846 @@ LABEL = "io.veyra.vforge"
 FEDORA_IMAGE = "registry.fedoraproject.org/fedora:44"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,54}$")
 NETWORKS = ("none", "bridge")
+PROFILES = ("strict", "integrated", "trusted")
+HOME_MODES = ("none", "project-only", "read-only", "read-write")
+TARGET_DENYLIST = ("/", "/proc", "/sys", "/dev", "/run", "/etc", "/usr", "/boot", "/var/lib")
+HOST_SOURCE_DENYLIST = ("/", "/root", "/etc", "/usr", "/boot", "/var/lib", "/proc", "/sys", "/dev")
+PROJECT_CONFIG = ".vforge.toml"
+STATE_VERSION = 1
+ACTIVE_STORAGE_ROOT: Path | None = None
 
 
 class VforgeError(Exception):
     pass
+
+
+def open_directory_no_symlinks(path: Path) -> int:
+    """Open an absolute directory by walking each component with O_NOFOLLOW."""
+    if not path.is_absolute():
+        raise VforgeError(f"directory path must be absolute: {path}")
+    descriptor = os.open(path.anchor, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for component in path.parts[1:]:
+            next_descriptor = os.open(
+                component,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except OSError as error:
+        os.close(descriptor)
+        raise VforgeError(f"cannot safely open directory {path}: {error}") from error
+
+
+def open_directory_create_no_symlinks(path: Path) -> int:
+    """Create missing directory components and open them without following symlinks."""
+    if not path.is_absolute():
+        raise VforgeError(f"directory path must be absolute: {path}")
+    descriptor = os.open(path.anchor, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for component in path.parts[1:]:
+            try:
+                os.mkdir(component, 0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            next_descriptor = os.open(
+                component,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except OSError as error:
+        os.close(descriptor)
+        raise VforgeError(f"cannot safely create/open directory {path}: {error}") from error
+
+
+def open_file_no_symlinks(directory: Path, filename: str, flags: int) -> int:
+    if not filename or filename in {".", ".."} or "/" in filename:
+        raise VforgeError("state file name must be a single path component")
+    directory_fd = open_directory_no_symlinks(directory)
+    try:
+        return os.open(filename, flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def ensure_private_directory(path: Path, *, chmod: bool = True) -> None:
+    if path.name in {"", ".", ".."}:
+        raise VforgeError(f"invalid Vforge state directory path: {path}")
+    try:
+        parent_fd = open_directory_create_no_symlinks(path.parent)
+        try:
+            try:
+                os.mkdir(path.name, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            fd = os.open(path.name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+        try:
+            info = os.fstat(fd)
+            mounted_view = os.path.ismount(path) and not chmod
+            if not stat.S_ISDIR(info.st_mode) or (info.st_uid != os.geteuid() and not mounted_view):
+                raise VforgeError(f"Vforge state directory must be owned by the current user: {path}")
+            if chmod:
+                os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+    except OSError as error:
+        raise VforgeError(f"cannot create or access Vforge state directory {path}: {error}") from error
+
+
+def state_directory() -> Path:
+    root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    if not root.is_absolute():
+        raise VforgeError("XDG_STATE_HOME must be an absolute path")
+    ensure_private_directory(root)
+    directory = root / "vforge"
+    ensure_private_directory(directory)
+    return directory
+
+
+def read_state(filename: str, default: object) -> object:
+    path = state_directory() / filename
+    try:
+        fd = open_file_no_symlinks(path.parent, path.name, os.O_RDONLY)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            os.close(fd)
+            raise VforgeError(f"refusing unsafe vforge state file: {path}")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            os.close(fd)
+            raise VforgeError(f"vforge state file permissions are too broad: {path}")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            return json.load(stream)
+    except FileNotFoundError:
+        return default
+    except (OSError, json.JSONDecodeError) as error:
+        raise VforgeError(f"could not read vforge state file {path}: {error}") from error
+
+
+def write_state(filename: str, data: object) -> None:
+    write_json_file(state_directory() / filename, data)
+
+
+def env_state() -> dict[str, object]:
+    data = read_store_state("environments.json", {"version": STATE_VERSION, "environments": {}})
+    if not isinstance(data, dict) or data.get("version") != STATE_VERSION or not isinstance(data.get("environments"), dict):
+        raise VforgeError("unsupported or malformed vforge environment state")
+    environments = dict(data["environments"])
+    project_index = read_state("project-environments.json", {"version": STATE_VERSION, "projects": {}})
+    if not isinstance(project_index, dict) or project_index.get("version") != STATE_VERSION or not isinstance(project_index.get("projects"), dict):
+        raise VforgeError("unsupported or malformed project environment index")
+    project_references: dict[str, str] = {}
+    for name, reference in project_index["projects"].items():
+        container_name(name)
+        if not isinstance(reference, dict) or not isinstance(reference.get("project"), str):
+            raise VforgeError(f"invalid project environment index entry: {name}")
+        project = canonical_project_root(Path(reference["project"]))
+        project_references[name] = str(project)
+        data_root = project_data_root(project, create=False)
+        try:
+            fd = open_file_no_symlinks(data_root, "environment.json", os.O_RDONLY)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                os.close(fd)
+                raise VforgeError(f"unsafe project Vforge state file for '{name}'")
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                environments[name] = json.load(stream)
+        except FileNotFoundError as error:
+            raise VforgeError(f"project Vforge data is missing for '{name}'; inspect {data_root}") from error
+        except (OSError, json.JSONDecodeError) as error:
+            raise VforgeError(f"could not read project Vforge data for '{name}': {error}") from error
+    for name, metadata in environments.items():
+        container_name(name)
+        if not isinstance(metadata, dict) or metadata.get("isolation") not in PROFILES:
+            raise VforgeError(f"invalid Vforge metadata for environment '{name}'")
+        if metadata.get("type") == "project":
+            project = canonical_project_root(Path(str(metadata.get("project", ""))))
+            if project_references.get(name) != str(project):
+                raise VforgeError(f"project environment '{name}' does not match its external state index")
+            data_root = project_data_root(project, create=False)
+            expected_root = str(data_root)
+            expected_podman = str(data_root / "containers")
+        elif metadata.get("type") == "named":
+            expected_root = str(common_store_root() / "environments" / name)
+            expected_podman = str(common_store_root() / "containers")
+        else:
+            raise VforgeError(f"invalid Vforge environment type for '{name}'")
+        if metadata.get("data_root") != expected_root or metadata.get("podman_root") != expected_podman:
+            raise VforgeError(f"environment '{name}' contains paths outside its Vforge storage root")
+    return environments
+
+
+def save_environment(name: str, metadata: dict[str, object]) -> None:
+    if metadata.get("type") == "project":
+        project = canonical_project_root(Path(str(metadata.get("project", ""))))
+        data_root = project_data_root(project)
+        if str(data_root) != metadata.get("data_root"):
+            raise VforgeError("project Vforge data path changed; refusing to write state elsewhere")
+        write_json_file(data_root / "environment.json", metadata)
+        data = read_state("project-environments.json", {"version": STATE_VERSION, "projects": {}})
+        if not isinstance(data, dict) or not isinstance(data.get("projects"), dict):
+            raise VforgeError("malformed project environment index")
+        data["projects"][name] = {"project": str(project)}
+        write_state("project-environments.json", data)
+        return
+    environments = env_state()
+    environments[name] = metadata
+    projects = read_state("project-environments.json", {"version": STATE_VERSION, "projects": {}})
+    if isinstance(projects, dict) and isinstance(projects.get("projects"), dict):
+        environments = {key: value for key, value in environments.items() if key not in projects["projects"]}
+    write_json_file(common_state_directory() / "environments.json", {"version": STATE_VERSION, "environments": environments})
+
+
+def remove_environment_state(name: str) -> None:
+    metadata = env_state().get(name)
+    if isinstance(metadata, dict) and metadata.get("type") == "project":
+        projects = read_state("project-environments.json", {"version": STATE_VERSION, "projects": {}})
+        if isinstance(projects, dict) and isinstance(projects.get("projects"), dict):
+            projects["projects"].pop(name, None)
+            write_state("project-environments.json", projects)
+        data_root = metadata.get("data_root")
+        if isinstance(data_root, str):
+            project = canonical_project_root(Path(str(metadata["project"])))
+            root = project_data_root(project, create=False)
+            if str(root) != data_root:
+                raise VforgeError("refusing to remove project Vforge data outside the project")
+            project_fd = open_directory_no_symlinks(project)
+            try:
+                state_fd = os.open(".vforge", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=project_fd)
+                try:
+                    info = os.fstat(state_fd)
+                    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                        raise VforgeError("refusing to remove project Vforge data not owned by the current user")
+                finally:
+                    os.close(state_fd)
+                shutil.rmtree(".vforge", dir_fd=project_fd)
+            finally:
+                os.close(project_fd)
+        return
+    environments = env_state()
+    environments.pop(name, None)
+    write_json_file(common_state_directory() / "environments.json", {"version": STATE_VERSION, "environments": environments})
+
+
+def stable_digest(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def storage_config_path() -> Path:
+    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return root / "veyra" / "vforge.toml"
+
+
+def reject_symlink_components(path: Path, label: str) -> None:
+    """Reject symlink traversal in a user-selected absolute storage path."""
+    if not path.is_absolute():
+        raise VforgeError(f"{label} must be an absolute path")
+    probe = Path(path.anchor)
+    for component in path.parts[1:]:
+        probe /= component
+        try:
+            if probe.is_symlink():
+                raise VforgeError(f"{label} contains a symlink: {probe}")
+        except OSError as error:
+            raise VforgeError(f"could not validate {label} component {probe}: {error}") from error
+
+
+def resolve_storage_root(override: str | None = None) -> Path:
+    config_path = storage_config_path()
+    configured: str | None = None
+    if override is None:
+        try:
+            reject_symlink_components(config_path, "vforge storage configuration")
+            if not config_path.parent.exists():
+                data = {}
+            else:
+                fd = open_file_no_symlinks(config_path.parent, config_path.name, os.O_RDONLY)
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                    os.close(fd)
+                    raise VforgeError("vforge storage configuration must be a private user-owned file")
+                with os.fdopen(fd, "rb") as stream:
+                    data = tomllib.load(stream)
+        except FileNotFoundError:
+            data = {}
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise VforgeError(f"could not read vforge storage configuration: {error}") from error
+        storage = data.get("storage", {}) if isinstance(data, dict) else {}
+        if not isinstance(storage, dict) or set(storage) - {"root"}:
+            raise VforgeError("invalid [storage] settings in vforge configuration")
+        configured = storage.get("root")
+        if configured is not None and not isinstance(configured, str):
+            raise VforgeError("vforge storage root must be a path string")
+    selected = override or configured
+    if selected is None:
+        selected = str(Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "vforge")
+    path = Path(os.path.expanduser(selected))
+    if not path.is_absolute():
+        raise VforgeError("Vforge storage root must be an absolute path")
+    reject_symlink_components(path, "Vforge storage root")
+    try:
+        if not path.name:
+            raise VforgeError("Vforge storage root cannot be the filesystem root")
+        parent_fd = open_directory_create_no_symlinks(path.parent)
+        try:
+            try:
+                os.mkdir(path.name, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            root_fd = os.open(path.name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+        try:
+            info = os.fstat(root_fd)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                raise VforgeError(f"Vforge storage root {path} must be a real directory owned by the current user; choose a user-writable path")
+            os.fchmod(root_fd, 0o700)
+        finally:
+            os.close(root_fd)
+    except PermissionError as error:
+        raise VforgeError(f"cannot create Vforge storage root {path}; choose a writable user-owned path (vforge will not elevate)") from error
+    except OSError as error:
+        raise VforgeError(f"cannot prepare Vforge storage root {path}: {error}") from error
+    return path.resolve(strict=True)
+
+
+def set_storage_root(path: str) -> Path:
+    root = resolve_storage_root(path)
+    config = storage_config_path()
+    config.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    reject_symlink_components(config.parent, "vforge config directory")
+    if config.parent.is_symlink() or config.parent.stat().st_uid != os.geteuid():
+        raise VforgeError("vforge config directory must be a real directory owned by the current user")
+    os.chmod(config.parent, 0o700)
+    fd, temporary = tempfile.mkstemp(prefix=".vforge-config-", dir=config.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write("[storage]\nroot = " + json.dumps(str(root)) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, config)
+    except OSError as error:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise VforgeError(f"could not save vforge storage configuration: {error}") from error
+    return root
+
+
+def common_store_root() -> Path:
+    global ACTIVE_STORAGE_ROOT
+    if ACTIVE_STORAGE_ROOT is None:
+        ACTIVE_STORAGE_ROOT = resolve_storage_root()
+    return ACTIVE_STORAGE_ROOT
+
+
+def common_state_directory() -> Path:
+    path = common_store_root() / "state"
+    ensure_private_directory(path)
+    return path
+
+
+def read_store_state(filename: str, default: object) -> object:
+    path = common_state_directory() / filename
+    try:
+        fd = open_file_no_symlinks(path.parent, path.name, os.O_RDONLY)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            os.close(fd)
+            raise VforgeError(f"refusing unsafe Vforge store state file: {path}")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            return json.load(stream)
+    except FileNotFoundError:
+        return default
+    except (OSError, json.JSONDecodeError) as error:
+        raise VforgeError(f"could not read Vforge store state {path}: {error}") from error
+
+
+def write_json_file(path: Path, data: object) -> None:
+    parent_fd = open_directory_no_symlinks(path.parent)
+    temporary = ".vforge-" + uuid.uuid4().hex
+    try:
+        parent_info = os.fstat(parent_fd)
+        if not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != os.geteuid():
+            raise VforgeError(f"refusing to write Vforge state under a directory not owned by the current user: {path.parent}")
+        os.fchmod(parent_fd, 0o700)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent_fd)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except OSError as error:
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except OSError:
+            pass
+        raise VforgeError(f"could not save Vforge state {path}: {error}") from error
+    finally:
+        os.close(parent_fd)
+
+
+def layer_paths(layer_id: str, data_root: Path | str | None = None) -> dict[str, Path]:
+    if not re.fullmatch(r"[a-f0-9]{32}", layer_id):
+        raise VforgeError("invalid Vforge layer identifier")
+    if data_root is None:
+        data_root = common_store_root() / "environments"
+    data_root = Path(data_root)
+    ensure_private_directory(data_root)
+    layers_root = data_root / "layers"
+    ensure_private_directory(layers_root)
+    root = layers_root / layer_id
+    ensure_private_directory(root)
+    paths = {
+        "upper": root / "usr-upper", "work": root / "usr-work", "merged": root / "usr-merged",
+        "rpmdb-upper": root / "rpmdb-upper", "rpmdb-work": root / "rpmdb-work", "rpmdb-merged": root / "rpmdb-merged",
+    }
+    for path in paths.values():
+        ensure_private_directory(path, chmod=not os.path.ismount(path))
+    return paths
+
+
+def start_overlay_mount(lower: Path, upper: Path, work: Path, merged: Path, label: str) -> Path:
+    if os.path.ismount(merged):
+        return merged
+    executable = shutil.which("fuse-overlayfs")
+    if executable is None:
+        raise VforgeError("fuse-overlayfs is required for integrated Vforge environments")
+    if any(":" in str(path) or "," in str(path) for path in (lower, upper, work, merged)):
+        raise VforgeError("Vforge state path cannot contain ':' or ',' when using the OverlayFS backend")
+    log = state_directory() / "fuse-overlayfs.log"
+    try:
+        with log.open("ab") as output:
+            os.chmod(log, 0o600)
+            process = subprocess.Popen(
+                [executable, "-f", "-o", f"lowerdir={lower},upperdir={upper},workdir={work}", str(merged)],
+                stdin=subprocess.DEVNULL, stdout=output, stderr=output, close_fds=True,
+            )
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if os.path.ismount(merged):
+                return merged
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=2)
+    except OSError as error:
+        raise VforgeError(f"could not start {label} OverlayFS: {error}") from error
+    detail = log.read_text(encoding="utf-8", errors="replace")[-1000:] if log.exists() else ""
+    raise VforgeError(f"fuse-overlayfs did not mount {label}" + (f": {detail.strip()}" if detail.strip() else ""))
+
+
+def host_rpmdb_path() -> Path:
+    try:
+        result = subprocess.run(["rpm", "--eval", "%{_dbpath}"], check=True, capture_output=True, text=True)
+        path = Path(result.stdout.strip()).resolve(strict=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise VforgeError(f"could not locate the Veyra RPM database: {error}") from error
+    if not path.is_dir() or not (str(path).startswith("/usr/") or str(path).startswith("/var/lib/rpm")):
+        raise VforgeError(f"unexpected Veyra RPM database path: {path}")
+    return path
+
+
+def ensure_veyra_overlay(layer_id: str, data_root: Path | str | None = None) -> dict[str, Path]:
+    paths = layer_paths(layer_id, data_root)
+    paths["usr"] = start_overlay_mount(Path("/usr"), paths["upper"], paths["work"], paths["merged"], "Veyra /usr")
+    try:
+        db_path = host_rpmdb_path()
+        paths["rpmdb"] = start_overlay_mount(
+            db_path, paths["rpmdb-upper"], paths["rpmdb-work"], paths["rpmdb-merged"], "Veyra RPM database",
+        )
+    except VforgeError:
+        unmount_veyra_overlay(layer_id)
+        raise
+    paths["rpmdb-target"] = db_path
+    return paths
+
+
+def unmount_veyra_overlay(layer_id: str, data_root: Path | str | None = None) -> None:
+    executable = shutil.which("fusermount3") or shutil.which("fusermount")
+    if executable is None:
+        raise VforgeError("fusermount is required to stop this integrated Vforge environment")
+    paths = layer_paths(layer_id, data_root)
+    for label in ("rpmdb-merged", "merged"):
+        merged = paths[label]
+        if not os.path.ismount(merged):
+            continue
+        result = subprocess.run([executable, "-u", str(merged)], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise VforgeError("could not unmount Veyra OverlayFS" + (f": {result.stderr.strip()}" if result.stderr.strip() else ""))
+
+
+def host_runtime_id() -> str:
+    identity: dict[str, str] = {}
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                if key in {"ID", "VERSION_ID"}:
+                    identity[key] = value.strip('"')
+        packages = subprocess.run(
+            ["rpm", "-q", "--qf", "%{NAME}=%{VERSION}-%{RELEASE};", "glibc", "systemd"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        abi = Path("/usr/share/veyra/sysext-level").read_text(encoding="utf-8").strip()
+        command_line = Path("/proc/cmdline").read_text(encoding="utf-8").split()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise VforgeError(f"could not determine the Veyra runtime compatibility identity: {error}") from error
+    root_hashes = [item.partition("=")[2] for item in command_line if item.startswith("roothash=")]
+    root_hash = root_hashes[-1] if root_hashes else ""
+    return runtime_digest(identity, packages, abi, root_hash)
+
+
+def runtime_digest(identity: dict[str, str], packages: str, abi: str, root_hash: str) -> str:
+    if not identity.get("ID") or not identity.get("VERSION_ID") or not packages or not abi or not re.fullmatch(r"[0-9a-fA-F]{64}", root_hash):
+        raise VforgeError("the Veyra runtime compatibility metadata is incomplete")
+    return stable_digest({"os": identity, "packages": packages, "abi": abi, "root_hash": root_hash.lower()})
+
+
+def require_keys(value: object, allowed: set[str], label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise VforgeError(f"{label} must be a table")
+    unknown = set(value) - allowed
+    if unknown:
+        raise VforgeError(f"unsupported {label} setting(s): {', '.join(sorted(unknown))}")
+    return value
+
+
+def validate_mount_for_launch(mount: dict[str, str], project: Path | None = None) -> None:
+    source_text = mount.get("source", "")
+    target = mount.get("target", "")
+    access = mount.get("access", "")
+    source = Path(source_text)
+    if not source.is_absolute() or access not in {"read-only", "read-write"}:
+        raise VforgeError("stored bind mount has invalid source or access mode")
+    project_root = canonical_project_root(project) if project is not None else None
+    reject_symlink_components(source, "bind mount source")
+    try:
+        resolved_source = source.resolve(strict=True)
+        info = resolved_source.lstat()
+    except OSError as error:
+        raise VforgeError(f"bind mount source is unavailable: {source}: {error}") from error
+    if str(resolved_source) != source_text or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+        raise VforgeError(f"bind mount source changed or is not a regular file/directory: {source}")
+    if info.st_uid not in {0, os.geteuid()}:
+        raise VforgeError(f"bind mount source must be owned by root or the current user: {source}")
+    if any(str(resolved_source) == denied or str(resolved_source).startswith(denied + "/") for denied in HOST_SOURCE_DENYLIST):
+        raise VforgeError(f"mounting protected host path is forbidden: {resolved_source}")
+    target_path = PurePosixPath(target)
+    project_workspace_mount = project_root is not None and str(resolved_source) == str(project_root) and target == "/workspace"
+    if (
+        not target.startswith("/") or str(target_path) != target or ".." in target_path.parts
+        or any(target == denied or target.startswith(denied + "/") for denied in TARGET_DENYLIST)
+        or (target == "/workspace" and not project_workspace_mount)
+        or target == "/workspace/.vforge"
+        or target.startswith("/workspace/.vforge/")
+        or "," in target or ":" in target or "\\" in target
+    ):
+        raise VforgeError(f"mount target is unsafe or protected: {target}")
+    if project_root is not None:
+        private_state = project_root / ".vforge"
+        if resolved_source == private_state or private_state in resolved_source.parents:
+            raise VforgeError("mounting project-local .vforge state is forbidden")
+        if target.startswith("/workspace/"):
+            probe = project_root
+            for component in target.removeprefix("/workspace/").split("/"):
+                if component == ".vforge":
+                    raise VforgeError("mount target cannot enter project-local .vforge state")
+                probe /= component
+                if probe.is_symlink():
+                    raise VforgeError(f"mount target follows a symlink inside the project: {probe}")
+
+
+def parse_project_config(project: Path) -> dict[str, object]:
+    project = canonical_project_root(project)
+    config_path = project / PROJECT_CONFIG
+    try:
+        expected = project.stat()
+        project_fd = open_directory_no_symlinks(project)
+        try:
+            opened_project = os.fstat(project_fd)
+            if (opened_project.st_dev, opened_project.st_ino) != (expected.st_dev, expected.st_ino):
+                raise VforgeError("project directory changed while opening its configuration")
+            fd = os.open(PROJECT_CONFIG, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=project_fd)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+                    raise VforgeError(f"{config_path} must be a regular file, not a symlink or special file")
+                raw = stream.read(1024 * 1024 + 1)
+        finally:
+            os.close(project_fd)
+    except FileNotFoundError as error:
+        raise VforgeError(f"no {PROJECT_CONFIG} found in {project}") from error
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise VforgeError(f"{config_path} must be a regular file, not a symlink or special file") from error
+        raise VforgeError(f"could not read {config_path}: {error}") from error
+    if len(raw) > 1024 * 1024:
+        raise VforgeError(f"{PROJECT_CONFIG} exceeds the 1 MiB size limit")
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise VforgeError(f"invalid {PROJECT_CONFIG}: {error}") from error
+    require_keys(document, {"environment", "packages", "permissions"}, "root")
+    environment = require_keys(document.get("environment", {}), {"name", "isolation", "size"}, "[environment]")
+    name = environment.get("name")
+    if not isinstance(name, str):
+        raise VforgeError("[environment].name is required")
+    container_name(name)
+    isolation = environment.get("isolation", "integrated")
+    if not isinstance(isolation, str) or isolation not in PROFILES:
+        raise VforgeError(f"[environment].isolation must be one of: {', '.join(PROFILES)}")
+    size = environment.get("size")
+    if size is not None and (not isinstance(size, str) or not re.fullmatch(r"[1-9][0-9]*(?:B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)", size)):
+        raise VforgeError("[environment].size must be a positive size such as '20GiB'")
+
+    packages_table = require_keys(document.get("packages", {}), {"system"}, "[packages]")
+    packages = packages_table.get("system", [])
+    if not isinstance(packages, list) or any(
+        not isinstance(package, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.:-]{0,127}", package)
+        for package in packages
+    ):
+        raise VforgeError("[packages].system must be a list of package names")
+
+    permissions = require_keys(
+        document.get("permissions", {}),
+        {"network", "gpu", "wayland", "audio", "system_bus", "home", "mounts"},
+        "[permissions]",
+    )
+    network = permissions.get("network", "none")
+    if not isinstance(network, str) or network not in {"none", "shared"}:
+        raise VforgeError("[permissions].network must be 'none' or 'shared'")
+    flags: dict[str, bool] = {}
+    for key in ("gpu", "wayland", "audio", "system_bus"):
+        value = permissions.get(key, False)
+        if not isinstance(value, bool):
+            raise VforgeError(f"[permissions].{key} must be true or false")
+        flags[key] = value
+    home = require_keys(permissions.get("home", {}), {"mode"}, "[permissions.home]")
+    home_mode = home.get("mode", "none" if isolation == "strict" else "project-only")
+    if not isinstance(home_mode, str) or home_mode not in HOME_MODES:
+        raise VforgeError(f"[permissions.home].mode must be one of: {', '.join(HOME_MODES)}")
+
+    mounts_input = permissions.get("mounts", [])
+    if not isinstance(mounts_input, list):
+        raise VforgeError("[permissions].mounts must be an array of tables")
+    mounts: list[dict[str, str]] = []
+    used_targets: set[str] = set()
+    for index, value in enumerate(mounts_input):
+        mount = require_keys(value, {"source", "target", "access"}, f"[[permissions.mounts]] #{index + 1}")
+        source = mount.get("source")
+        target = mount.get("target")
+        access = mount.get("access")
+        if not all(isinstance(item, str) for item in (source, target, access)):
+            raise VforgeError("each mount requires string source, target and access fields")
+        source_path = Path(os.path.expandvars(os.path.expanduser(source)))
+        if not source_path.is_absolute():
+            raise VforgeError(f"mount source must be an absolute path: {source}")
+        probe = Path(source_path.anchor)
+        for component in source_path.parts[1:]:
+            probe = probe / component
+            try:
+                if probe.is_symlink():
+                    raise VforgeError(f"mount source path contains a symlink: {probe}")
+            except OSError as error:
+                raise VforgeError(f"could not validate mount source path {probe}: {error}") from error
+        try:
+            resolved_source = source_path.resolve(strict=True)
+            source_info = resolved_source.lstat()
+        except OSError as error:
+            raise VforgeError(f"mount source does not exist or cannot be resolved: {source}: {error}") from error
+        if not (stat.S_ISDIR(source_info.st_mode) or stat.S_ISREG(source_info.st_mode)):
+            raise VforgeError(f"mount source must be a regular file or directory: {source}")
+        if source_info.st_uid not in {0, os.geteuid()}:
+            raise VforgeError(f"mount source must be owned by root or the current user: {source}")
+        if any(str(resolved_source) == denied or str(resolved_source).startswith(denied + "/") for denied in HOST_SOURCE_DENYLIST):
+            raise VforgeError(f"mounting protected host path is forbidden: {resolved_source}")
+        if ":" in str(resolved_source) or "," in str(resolved_source):
+            raise VforgeError("mount sources containing ':' or ',' are not supported by Podman's bind syntax")
+        if not target.startswith("/") or "," in target or ":" in target or "\\" in target:
+            raise VforgeError(f"mount target must be a safe absolute container path: {target}")
+        target_path = PurePosixPath(target)
+        if str(target_path) != target or ".." in target_path.parts or any(
+            target == denied or target.startswith(denied + "/") for denied in TARGET_DENYLIST
+        ) or target == "/workspace" or target == "/workspace/.vforge" or target.startswith("/workspace/.vforge/"):
+            raise VforgeError(f"mount target is unsafe or protected: {target}")
+        if target in used_targets:
+            raise VforgeError(f"duplicate mount target: {target}")
+        used_targets.add(target)
+        if not isinstance(access, str) or access not in {"read-only", "read-write"}:
+            raise VforgeError("mount access must be 'read-only' or 'read-write'")
+        project_state = (project / ".vforge").resolve(strict=False)
+        if resolved_source == project_state or project_state in resolved_source.parents:
+            raise VforgeError("mounting project-local .vforge state is forbidden")
+        item = {"source": str(resolved_source), "target": target, "access": access}
+        validate_mount_for_launch(item, project)
+        mounts.append(item)
+
+    if isolation == "strict" and (any(flags.values()) or home_mode != "none" or mounts):
+        raise VforgeError("strict isolation forbids host resources, home access and custom mounts")
+    if isolation != "trusted" and any(flags.values()):
+        raise VforgeError("GPU, Wayland, audio and user D-Bus access require isolation = 'trusted'")
+
+    permission_model = {
+        "isolation": isolation,
+        "network": network,
+        **flags,
+        "home": home_mode,
+        "mounts": mounts,
+        "project": str(project),
+    }
+    return {
+        "name": name,
+        "isolation": isolation,
+        "size": size,
+        "packages": packages,
+        "permissions": permission_model,
+        "config_digest": stable_digest(document),
+        "permission_digest": stable_digest(permission_model),
+    }
+
+
+def approve_project(config: dict[str, object], project: Path) -> None:
+    permissions = config["permissions"]
+    approvals = read_state("approvals.json", {"version": STATE_VERSION, "projects": {}})
+    if not isinstance(approvals, dict) or approvals.get("version") != STATE_VERSION or not isinstance(approvals.get("projects"), dict):
+        raise VforgeError("unsupported or malformed vforge approval state")
+    key = str(project)
+    existing = approvals["projects"].get(key)
+    if isinstance(existing, dict) and existing.get("permission_digest") == config["permission_digest"]:
+        return
+    if not sys.stdin.isatty():
+        raise VforgeError("project permissions need approval in an interactive terminal; run 'vforge up' in a terminal")
+    print(f"Project {project} requests these vforge permissions:")
+    print(json.dumps(permissions, indent=2, sort_keys=True))
+    answer = input("Approve these permissions for this exact project permission set? [y/N] ").strip().lower()
+    if answer not in {"y", "yes"}:
+        raise VforgeError("project permissions were not approved")
+    approvals["projects"][key] = {"permission_digest": config["permission_digest"]}
+    write_state("approvals.json", approvals)
+
+
+def project_data_root(project: Path, *, create: bool = True) -> Path:
+    project = canonical_project_root(project)
+    data_root = project / ".vforge"
+    try:
+        expected = project.stat()
+        project_fd = open_directory_no_symlinks(project)
+        try:
+            opened_project = os.fstat(project_fd)
+            if (opened_project.st_dev, opened_project.st_ino) != (expected.st_dev, expected.st_ino):
+                raise VforgeError("project directory changed while opening its state path")
+            try:
+                state_fd = os.open(".vforge", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=project_fd)
+            except FileNotFoundError:
+                if not create:
+                    return data_root
+                os.mkdir(".vforge", 0o700, dir_fd=project_fd)
+                state_fd = os.open(".vforge", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=project_fd)
+            try:
+                info = os.fstat(state_fd)
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                    raise VforgeError(f"project state path {data_root} must be a real directory owned by the current user")
+                os.fchmod(state_fd, 0o700)
+            finally:
+                os.close(state_fd)
+        finally:
+            os.close(project_fd)
+    except PermissionError as error:
+        raise VforgeError(f"cannot create or open project state at {data_root}; choose a writable project directory") from error
+    except OSError as error:
+        raise VforgeError(f"project state path is unsafe or unavailable at {data_root}: {error}") from error
+    return data_root
+
+
+def read_project_environment(project: Path, data_root: Path) -> dict[str, object] | None:
+    try:
+        fd = open_file_no_symlinks(data_root, "environment.json", os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                raise VforgeError(f"unsafe project Vforge state file for {project}")
+            value = json.load(stream)
+    except json.JSONDecodeError as error:
+        raise VforgeError(f"invalid project Vforge state for {project}: {error}") from error
+    except OSError as error:
+        raise VforgeError(f"could not read project Vforge state for {project}: {error}") from error
+    if not isinstance(value, dict):
+        raise VforgeError(f"invalid project Vforge state for {project}")
+    return value
+
+
+def canonical_project_root(project: Path) -> Path:
+    unresolved = Path(os.path.abspath(project))
+    reject_symlink_components(unresolved, "project root")
+    try:
+        canonical = unresolved.resolve(strict=True)
+        info = canonical.stat()
+    except OSError as error:
+        raise VforgeError(f"project root cannot be resolved: {error}") from error
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise VforgeError("project root must be a real directory owned by the current user")
+    return canonical
+
+
+def ignore_project_state(project: Path) -> None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+            check=True, capture_output=True, text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return
+    exclude = Path(result.stdout.strip())
+    try:
+        parent_fd = open_directory_no_symlinks(exclude.parent)
+        try:
+            parent_info = os.fstat(parent_fd)
+            if not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != os.geteuid():
+                raise VforgeError("Git info directory must be owned by the current user")
+            try:
+                fd = os.open(exclude.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+            except FileNotFoundError:
+                content = ""
+            else:
+                with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+                        raise VforgeError("Git info/exclude must be a user-owned regular file")
+                    content = stream.read()
+            if ".vforge/" not in content.splitlines():
+                fd = os.open(
+                    exclude.name,
+                    os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+                with os.fdopen(fd, "a", encoding="utf-8") as stream:
+                    if content and not content.endswith("\n"):
+                        stream.write("\n")
+                    stream.write("# vforge project-local environment state\n.vforge/\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+        finally:
+            os.close(parent_fd)
+    except OSError as error:
+        raise VforgeError(f"could not keep project-local Vforge state out of Git status: {error}") from error
 
 
 def container_name(name: str) -> str:
@@ -33,7 +879,31 @@ def container_name(name: str) -> str:
     return CONTAINER_PREFIX + name
 
 
-def podman(args: Sequence[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+def podman_store_for(args: Sequence[str]) -> Path:
+    environments = env_state()
+    values = [str(argument) for argument in args]
+    for name in sorted(environments, key=len, reverse=True):
+        identifiers = (container_name(name), f"localhost/vforge-snapshot:{name}-")
+        if any(value == identifiers[0] or value.startswith(identifiers[0] + "-") or value.startswith(identifiers[1]) for value in values):
+            metadata = environments[name]
+            if isinstance(metadata, dict) and metadata.get("type") == "project":
+                project = canonical_project_root(Path(str(metadata.get("project", ""))))
+                data_root = project_data_root(project, create=False)
+                expected = data_root / "containers"
+                if str(data_root) != metadata.get("data_root") or str(expected) != metadata.get("podman_root"):
+                    raise VforgeError(f"project environment '{name}' has an unsafe Podman store path")
+                return expected
+            if isinstance(metadata, dict) and metadata.get("type") == "named":
+                expected = common_store_root() / "containers"
+                if metadata.get("podman_root") != str(expected):
+                    raise VforgeError(f"named environment '{name}' has an unsafe Podman store path")
+                return expected
+    return common_store_root() / "containers"
+
+
+def podman(
+    args: Sequence[str], *, capture: bool = False, check: bool = True, root: Path | str | None = None
+) -> subprocess.CompletedProcess[str]:
     executable = shutil.which("podman")
     if executable is None:
         raise VforgeError("Podman is not installed; install the Veyra image's container tools first")
@@ -45,8 +915,14 @@ def podman(args: Sequence[str], *, capture: bool = False, check: bool = True) ->
         env.pop(key, None)
 
     try:
+        graphroot = Path(root) if root is not None else podman_store_for(args)
+        ensure_private_directory(graphroot)
+        runroot_parent = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/vforge-{os.getuid()}")) / "vforge"
+        ensure_private_directory(runroot_parent)
+        runroot = runroot_parent / hashlib.sha256(str(graphroot).encode()).hexdigest()[:16]
+        ensure_private_directory(runroot)
         result = subprocess.run(
-            [executable, "--remote=false", *args],
+            [executable, "--remote=false", "--root", str(graphroot), "--runroot", str(runroot), *args],
             check=False,
             env=env,
             text=True,
@@ -70,8 +946,8 @@ def require_rootless_user() -> None:
         raise VforgeError("vforge runs rootless; run it as your normal user, without sudo")
 
 
-def exists(name: str) -> bool:
-    result = podman(["container", "exists", name], capture=True, check=False)
+def exists(name: str, root: Path | str | None = None) -> bool:
+    result = podman(["container", "exists", name], capture=True, check=False, root=root)
     if result.returncode == 0:
         return True
     if result.returncode == 1:
@@ -112,49 +988,616 @@ def state(metadata: dict[str, object]) -> str:
 
 def ensure_running(name: str) -> str:
     podman_name, metadata = require_environment(name)
-    if state(metadata) != "running":
+    recorded = env_state().get(name)
+    if not isinstance(recorded, dict):
+        raise VforgeError(f"environment '{name}' has no vforge runtime metadata; recreate it with vforge")
+    if recorded.get("isolation") != "strict" and recorded.get("host_runtime") != host_runtime_id():
+        raise VforgeError(f"environment '{name}' was created for a different Veyra runtime; run 'vforge upgrade {name}'")
+    running = state(metadata) == "running"
+    if recorded.get("isolation") != "strict":
+        layer_id = recorded.get("layer_id")
+        if not isinstance(layer_id, str):
+            raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer; recreate it with vforge")
+        active_paths = layer_paths(layer_id, recorded.get("data_root"))
+        if running and not (os.path.ismount(active_paths["merged"]) and os.path.ismount(active_paths["rpmdb-merged"])):
+            raise VforgeError(f"environment '{name}' is running without its Veyra OverlayFS mount; stop and start it")
+        if not running:
+            ensure_veyra_overlay(layer_id, recorded.get("data_root"))
+    if not running:
         podman(["container", "start", podman_name])
     return podman_name
 
 
-def create(name: str, network: str) -> None:
+def create_container(
+    name: str,
+    network: str,
+    *,
+    layer_id: str | None = None,
+    data_root: Path | str | None = None,
+    podman_root: Path | str | None = None,
+    isolation: str = "integrated",
+    mounts: list[dict[str, str]] | None = None,
+    resources: dict[str, object] | None = None,
+    image: str = FEDORA_IMAGE,
+    extra_labels: dict[str, str] | None = None,
+) -> None:
     podman_name = container_name(name)
-    if exists(podman_name):
+    if exists(podman_name, podman_root):
         raise VforgeError(f"environment '{name}' already exists")
+    resource_model = resources or {}
+    command = [
+        "container", "create", "--pull=missing", "--name", podman_name,
+        "--hostname", name, "--label", f"{LABEL}=1",
+        "--label", f"io.veyra.vforge.isolation={isolation}",
+        "--network", network, "--init", "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+    ]
+    for key, value in (extra_labels or {}).items():
+        command.extend(("--label", f"io.veyra.vforge.{key}={value}"))
+    all_mounts = list(mounts or [])
+    project_root_value = resource_model.get("project")
+    project_root = canonical_project_root(Path(project_root_value)) if isinstance(project_root_value, str) else None
+    if project_root is not None:
+        validate_mount_for_launch({"source": str(project_root), "target": "/workspace", "access": "read-write"}, project_root)
+    for mount in all_mounts:
+        validate_mount_for_launch(mount, project_root)
+    if isolation != "strict":
+        if layer_id is None:
+            raise VforgeError("integrated environments require a persistent Veyra system layer")
+        overlay_mounts = ensure_veyra_overlay(layer_id, data_root)
+        all_mounts.append({"source": str(overlay_mounts["usr"]), "target": "/usr", "access": "read-write"})
+        all_mounts.append({"source": str(overlay_mounts["rpmdb"]), "target": str(overlay_mounts["rpmdb-target"]), "access": "read-write"})
+    home_mode = resource_model.get("home", "none")
+    if home_mode in {"read-only", "read-write"}:
+        all_mounts.append({
+            "source": str(Path.home().resolve()),
+            "target": "/home/host",
+            "access": "read-only" if home_mode == "read-only" else "read-write",
+        })
+    for mount in all_mounts:
+        if ":" in mount["source"] or "," in mount["source"] or "," in mount["target"] or ":" in mount["target"]:
+            raise VforgeError("bind mount paths containing ':' or ',' are not supported")
+        access = ":ro" if mount["access"] == "read-only" else ":rw"
+        command.extend(("--volume", f"{mount['source']}:{mount['target']}{access}"))
+    if resource_model.get("project") and isolation != "strict":
+        command.extend(("--tmpfs", "/workspace/.vforge"))
+    if resource_model.get("gpu"):
+        devices = sorted(path for path in Path("/dev/dri").glob("*") if path.is_char_device())
+        if not devices:
+            raise VforgeError("GPU access was approved, but /dev/dri is unavailable")
+        command.append("--group-add=keep-groups")
+        for device in devices:
+            command.extend(("--device", str(device)))
+    runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    if resource_model.get("wayland"):
+        display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+        socket = Path(display) if Path(display).is_absolute() else runtime_dir / display
+        reject_symlink_components(socket, "Wayland socket path")
+        if socket.parent.resolve() != runtime_dir.resolve() or not socket.is_socket():
+            raise VforgeError(f"Wayland socket is unavailable: {socket}")
+        command.extend(("--volume", f"{socket}:/run/vforge/wayland.sock:rw", "--env", "WAYLAND_DISPLAY=/run/vforge/wayland.sock"))
+    if resource_model.get("audio"):
+        socket = runtime_dir / "pipewire-0"
+        reject_symlink_components(socket, "PipeWire socket path")
+        if not socket.is_socket():
+            raise VforgeError(f"PipeWire socket is unavailable: {socket}")
+        command.extend(("--volume", f"{socket}:/run/vforge/pipewire-0:rw", "--env", "PIPEWIRE_REMOTE=unix:/run/vforge/pipewire-0"))
+    if resource_model.get("system_bus"):
+        address = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+        match = re.fullmatch(r"unix:path=([^,]+)(?:,.*)?", address)
+        if not match:
+            raise VforgeError("user D-Bus access requires a unix:path session bus address")
+        try:
+            socket = Path(match.group(1)).resolve(strict=True)
+        except OSError as error:
+            raise VforgeError(f"user D-Bus socket is unavailable: {error}") from error
+        expected_runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")).resolve()
+        if socket.parent != expected_runtime or socket.name != "bus":
+            raise VforgeError("only the current user's session D-Bus socket may be exposed")
+        if not socket.is_socket():
+            raise VforgeError("user D-Bus session address is not a Unix socket")
+        command.extend(("--volume", f"{socket}:/run/vforge/user-bus.sock:rw", "--env", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/vforge/user-bus.sock"))
+    command.extend((image, "/usr/bin/sleep", "infinity"))
+    podman(command, root=podman_root)
+    print(f"Created '{name}' from {image} (isolation: {isolation}, network: {network}).")
 
-    podman(
-        [
-            "container",
-            "create",
-            "--pull=missing",
-            "--name",
-            podman_name,
-            "--hostname",
-            name,
-            "--label",
-            f"{LABEL}=1",
-            "--network",
-            network,
-            "--init",
-            FEDORA_IMAGE,
-            "/usr/bin/sleep",
-            "infinity",
-        ]
-    )
-    print(f"Created '{name}' from {FEDORA_IMAGE} (network: {network}).")
+
+def create(
+    name: str, network: str, isolation: str = "integrated", home_mode: str = "none",
+    gpu: bool = False, wayland: bool = False, audio: bool = False, user_bus: bool = False,
+    size: str | None = None,
+) -> None:
+    if size is not None:
+        if not re.fullmatch(r"[1-9][0-9]*(?:B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)", size):
+            raise VforgeError("--size must be a positive size such as '20GiB'")
+        raise VforgeError("hard per-environment size limits are unsupported with the current rootless OverlayFS and snapshot backend")
+    if isolation not in PROFILES or home_mode not in HOME_MODES:
+        raise VforgeError("invalid isolation profile or Home permission")
+    if home_mode == "project-only":
+        raise VforgeError("--home project-only is available only for project environments")
+    resources: dict[str, object] = {
+        "home": home_mode, "gpu": gpu, "wayland": wayland,
+        "audio": audio, "system_bus": user_bus,
+    }
+    if isolation == "strict" and (home_mode != "none" or gpu or wayland or audio or user_bus):
+        raise VforgeError("strict isolation cannot grant Home, GPU, Wayland, audio or user D-Bus access")
+    if isolation != "trusted" and (gpu or wayland or audio or user_bus):
+        raise VforgeError("GPU, Wayland, audio and user D-Bus access require --isolation trusted")
+    if home_mode != "none" or any((gpu, wayland, audio, user_bus)) or network != "none":
+        if not sys.stdin.isatty():
+            raise VforgeError("requested host permissions need interactive approval")
+        print(f"Named environment '{name}' requests these host permissions: {json.dumps(resources, sort_keys=True)}; network={network}.")
+        if input("Approve? [y/N] ").strip().lower() not in {"y", "yes"}:
+            raise VforgeError("requested permissions were not approved")
+    runtime_id = host_runtime_id()
+    podman_root = common_store_root() / "containers"
+    if exists(container_name(name), podman_root):
+        raise VforgeError(f"environment '{name}' already exists")
+    environments_root = common_store_root() / "environments"
+    ensure_private_directory(environments_root)
+    data_root = environments_root / name
+    ensure_private_directory(data_root)
+    layer_id = uuid.uuid4().hex if isolation != "strict" else None
+    metadata = {
+        "type": "named", "isolation": isolation, "network": network,
+        "image": FEDORA_IMAGE, "permissions": resources,
+        "mounts": [], "host_runtime": runtime_id, "layer_id": layer_id, "data_root": str(data_root),
+        "podman_root": str(podman_root),
+    }
+    save_environment(name, metadata)
+    try:
+        create_container(name, network, isolation=isolation, layer_id=layer_id, data_root=data_root,
+                         podman_root=metadata["podman_root"], resources=resources)
+    except Exception:
+        remove_environment_state(name)
+        shutil.rmtree(data_root, ignore_errors=True)
+        raise
     print("Use 'vforge enter " + name + "' to start a shell; install packages with dnf, without sudo.")
 
 
-def list_environments() -> None:
-    result = podman(
-        ["container", "ls", "--all", f"--filter=label={LABEL}=1", "--format=json"], capture=True
-    )
+def project_up(project: Path) -> None:
+    project = canonical_project_root(project)
+    project_stat = project.stat()
+    project_identity = (project_stat.st_dev, project_stat.st_ino)
+    project_data_root(project, create=False)
+    config = parse_project_config(project)
+    if config["size"] is not None:
+        raise VforgeError("hard per-environment size limits are unsupported with the current rootless OverlayFS and snapshot backend")
+    approve_project(config, project)
+    after_approval = project.stat()
+    if (after_approval.st_dev, after_approval.st_ino) != project_identity:
+        raise VforgeError("project directory changed during permission approval; run 'vforge up' again")
+    data_root = project_data_root(project)
+    ignore_project_state(project)
+    name = str(config["name"])
+    permissions = config["permissions"]
+    network = "bridge" if permissions["network"] == "shared" else "none"
+    mounts = list(permissions["mounts"])
+    if config["isolation"] != "strict":
+        mounts.insert(0, {"source": str(project), "target": "/workspace", "access": "read-write"})
+    if config["packages"] and network == "none":
+        raise VforgeError("project packages need network = 'shared' so Fedora can resolve and install them")
+    state = env_state().get(name)
+    if state is None:
+        local_state = read_project_environment(project, data_root)
+        if local_state is not None:
+            if local_state.get("type") != "project" or local_state.get("project") != str(project) or local_state.get("data_root") != str(data_root):
+                raise VforgeError("project-local Vforge state does not match this project; inspect .vforge/environment.json")
+            save_environment(name, local_state)
+            state = local_state
+    if isinstance(state, dict) and (state.get("type") != "project" or state.get("project") != str(project)):
+        raise VforgeError(f"environment name '{name}' is already used by another Vforge environment")
+    existing = exists(container_name(name), data_root / "containers")
+    metadata = {
+        "type": "project", "project": str(project), "config_digest": config["config_digest"],
+        "permission_digest": config["permission_digest"], "permissions": permissions,
+        "packages": config["packages"], "mounts": mounts, "network": network,
+        "image": FEDORA_IMAGE, "isolation": config["isolation"], "host_runtime": host_runtime_id(),
+    }
+    metadata["data_root"] = str(data_root)
+    metadata["podman_root"] = str(data_root / "containers")
+    if config["isolation"] != "strict":
+        data_root.joinpath("layers").mkdir(mode=0o700, exist_ok=True)
+    metadata["layer_id"] = uuid.uuid4().hex if config["isolation"] != "strict" else None
+    if existing:
+        if not isinstance(state, dict) or state.get("type") != "project" or state.get("project") != str(project):
+            raise VforgeError(f"environment '{name}' exists outside this project; refusing to reuse it")
+        if config["isolation"] != "strict" and state.get("isolation") != "strict" and isinstance(state.get("layer_id"), str):
+            metadata["layer_id"] = state["layer_id"]
+        if state.get("config_digest") == config["config_digest"]:
+            ensure_running(name)
+        else:
+            checkpoint = make_snapshot(name, "pre-config-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
+            replace_project_environment(name, checkpoint, metadata, config)
+    else:
+        labels = {"type": "project", "permission": str(config["permission_digest"])}
+        create_container(
+            name, network, layer_id=metadata["layer_id"], isolation=str(config["isolation"]), mounts=mounts,
+            data_root=data_root, podman_root=metadata["podman_root"], resources=permissions, extra_labels=labels,
+        )
+        save_environment(name, metadata)
+        podman(["container", "start", container_name(name)])
+    packages = config["packages"]
+    if packages:
+        podman(["container", "exec", container_name(name), "dnf", "install", "-y", *packages])
+    print(f"Project environment '{name}' is ready at /workspace.")
+
+
+def replace_project_environment(name: str, checkpoint: str, metadata: dict[str, object], config: dict[str, object]) -> None:
+    podman_name, current = require_environment(name)
+    old_metadata = env_state().get(name)
+    if not isinstance(old_metadata, dict):
+        raise VforgeError("cannot safely reconfigure an environment without its vforge metadata")
+    checkpoint_image = snapshot_image(name, checkpoint)
+    suffix = uuid.uuid4().hex[:6]
+    backup_name = f"{CONTAINER_PREFIX}{name[:40]}-cfg-{suffix}"
+    was_running = state(current) == "running"
+    if was_running:
+        podman(["container", "stop", "--time", "10", podman_name])
+    podman(["container", "rename", podman_name, backup_name])
     try:
-        containers = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError as error:
-        raise VforgeError("Podman returned invalid container list metadata") from error
-    if not isinstance(containers, list):
-        raise VforgeError("Podman returned an unexpected container list")
+        permissions = config["permissions"]
+        new_network = "bridge" if permissions["network"] == "shared" else "none"
+        labels = {"type": "project", "permission": str(config["permission_digest"])}
+        create_container(
+            name, new_network, layer_id=metadata.get("layer_id"), isolation=str(config["isolation"]),
+            data_root=metadata.get("data_root"), podman_root=metadata.get("podman_root"), mounts=metadata["mounts"], resources=permissions,
+            image=checkpoint_image, extra_labels=labels,
+        )
+        podman(["container", "start", podman_name])
+        save_environment(name, metadata)
+        podman(["container", "rm", backup_name])
+        old_layer = old_metadata.get("layer_id")
+        new_layer = metadata.get("layer_id")
+        if isinstance(old_layer, str) and old_layer != new_layer:
+            try:
+                unmount_veyra_overlay(old_layer, old_metadata.get("data_root"))
+                layer_root = Path(str(old_metadata.get("data_root", ""))) / "layers" / old_layer
+                expected_parent = (Path(str(old_metadata.get("data_root", ""))) / "layers").resolve(strict=True)
+                if not layer_root.is_symlink() and layer_root.resolve(strict=True).parent == expected_parent:
+                    shutil.rmtree(layer_root)
+            except (OSError, VforgeError):
+                pass
+    except Exception:
+        if exists(podman_name):
+            podman(["container", "rm", "--force", podman_name], check=False)
+        if exists(backup_name):
+            podman(["container", "rename", backup_name, podman_name], check=False)
+            if was_running:
+                podman(["container", "start", podman_name], check=False)
+            save_environment(name, old_metadata)
+        old_layer = old_metadata.get("layer_id")
+        new_layer = metadata.get("layer_id")
+        if isinstance(new_layer, str) and new_layer != old_layer:
+            try:
+                unmount_veyra_overlay(new_layer, metadata.get("data_root"))
+                new_root = Path(str(metadata.get("data_root", ""))) / "layers" / new_layer
+                if not new_root.is_symlink():
+                    shutil.rmtree(new_root, ignore_errors=True)
+            except VforgeError:
+                pass
+        # The checkpoint image remains listed even when the reconfiguration is
+        # rolled back, so the user's pre-change state can be restored later.
+        raise
+
+
+def snapshots_state() -> dict[str, object]:
+    data = read_store_state("snapshots.json", {"version": STATE_VERSION, "snapshots": {}})
+    if not isinstance(data, dict) or data.get("version") != STATE_VERSION or not isinstance(data.get("snapshots"), dict):
+        raise VforgeError("unsupported or malformed vforge snapshot state")
+    snapshots = dict(data["snapshots"])
+    for name, metadata in env_state().items():
+        if not isinstance(metadata, dict) or metadata.get("type") != "project":
+            continue
+        data_root = Path(str(metadata.get("data_root", "")))
+        path = data_root / "snapshots.json"
+        try:
+            if not path.exists():
+                snapshots[name] = []
+                continue
+            fd = open_file_no_symlinks(path.parent, path.name, os.O_RDONLY)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                os.close(fd)
+                raise VforgeError(f"unsafe project snapshot state for '{name}'")
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                local = json.load(stream)
+        except (OSError, json.JSONDecodeError) as error:
+            raise VforgeError(f"could not read project snapshots for '{name}': {error}") from error
+        if not isinstance(local, dict) or local.get("version") != STATE_VERSION or not isinstance(local.get("snapshots"), list):
+            raise VforgeError(f"malformed project snapshot state for '{name}'")
+        snapshots[name] = local["snapshots"]
+    return snapshots
+
+
+def named_snapshots_state() -> dict[str, object]:
+    data = read_store_state("snapshots.json", {"version": STATE_VERSION, "snapshots": {}})
+    if not isinstance(data, dict) or data.get("version") != STATE_VERSION or not isinstance(data.get("snapshots"), dict):
+        raise VforgeError("unsupported or malformed Vforge snapshot state")
+    return data["snapshots"]
+
+
+def save_snapshots(name: str, entries: list[object]) -> None:
+    metadata = env_state().get(name)
+    if isinstance(metadata, dict) and metadata.get("type") == "project":
+        data_root = project_data_root(Path(str(metadata.get("project", ""))), create=False)
+        if str(data_root) != metadata.get("data_root"):
+            raise VforgeError("project snapshot path does not match its canonical .vforge directory")
+        write_json_file(data_root / "snapshots.json", {"version": STATE_VERSION, "snapshots": entries})
+        return
+    snapshots = named_snapshots_state()
+    snapshots[name] = entries
+    write_json_file(common_state_directory() / "snapshots.json", {"version": STATE_VERSION, "snapshots": snapshots})
+
+
+def remove_snapshots(name: str) -> None:
+    metadata = env_state().get(name)
+    if isinstance(metadata, dict) and metadata.get("type") == "project":
+        path = Path(str(metadata.get("data_root", ""))) / "snapshots.json"
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            raise VforgeError(f"could not remove project snapshot index: {error}") from error
+        return
+    snapshots = named_snapshots_state()
+    snapshots.pop(name, None)
+    write_json_file(common_state_directory() / "snapshots.json", {"version": STATE_VERSION, "snapshots": snapshots})
+
+
+def snapshot_image(name: str, snapshot: str) -> str:
+    container_name(name)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,54}", snapshot):
+        raise VforgeError("snapshot names must use lowercase letters, digits, '.', '_' or '-' (up to 55 characters)")
+    return f"localhost/vforge-snapshot:{name}-{snapshot}"
+
+
+def make_snapshot(name: str, label: str | None = None) -> str:
+    podman_name, container_metadata = require_environment(name)
+    metadata = env_state().get(name)
+    if not isinstance(metadata, dict):
+        raise VforgeError(f"environment '{name}' has no local vforge metadata")
+    snapshot = label or (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6])
+    image = snapshot_image(name, snapshot)
+    snapshots = snapshots_state()
+    entries = snapshots.get(name, [])
+    if not isinstance(entries, list):
+        raise VforgeError("malformed snapshot index")
+    if any(isinstance(entry, dict) and entry.get("name") == snapshot for entry in entries):
+        raise VforgeError(f"snapshot '{snapshot}' already exists for '{name}'")
+    was_running = state(container_metadata) == "running"
+    layer_copy: str | None = None
+    layer_copy_path: Path | None = None
+    layer_copy_created = False
+    layer_id = metadata.get("layer_id")
+    try:
+        if was_running:
+            podman(["container", "stop", "--time", "10", podman_name])
+        podman(["container", "commit", "--pause=true", podman_name, image])
+        if metadata.get("isolation") != "strict":
+            if not isinstance(layer_id, str):
+                raise VforgeError("integrated environment has no Veyra OverlayFS upper layer")
+            paths = layer_paths(layer_id, metadata.get("data_root"))
+            snapshots_root = Path(str(metadata.get("data_root"))) / "snapshots"
+            ensure_private_directory(snapshots_root)
+            environment_snapshots = snapshots_root / name
+            ensure_private_directory(environment_snapshots)
+            layer_copy_path = environment_snapshots / snapshot
+            layer_copy_path.mkdir(mode=0o700)
+            layer_copy_created = True
+            shutil.copytree(paths["upper"], layer_copy_path / "usr-upper", symlinks=True, copy_function=shutil.copy2)
+            shutil.copytree(paths["rpmdb-upper"], layer_copy_path / "rpmdb-upper", symlinks=True, copy_function=shutil.copy2)
+            layer_copy = str(layer_copy_path)
+        entries.append({
+            "name": snapshot, "image": image, "upper": layer_copy,
+            "host_runtime": host_runtime_id(), "environment": copy.deepcopy(metadata),
+            "created": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        if layer_copy_created and layer_copy_path is not None:
+            shutil.rmtree(layer_copy_path, ignore_errors=True)
+        raise
+    finally:
+        if was_running:
+            if metadata.get("isolation") != "strict" and isinstance(layer_id, str):
+                ensure_veyra_overlay(layer_id, metadata.get("data_root"))
+            podman(["container", "start", podman_name])
+    save_snapshots(name, entries)
+    print(f"Saved snapshot '{snapshot}' for '{name}'.")
+    return snapshot
+
+
+def stored_container_options(metadata: dict[str, object]) -> tuple[str, str, list[dict[str, str]], dict[str, object]]:
+    image = metadata.get("image", FEDORA_IMAGE)
+    network = metadata.get("network", "none")
+    mounts = metadata.get("mounts", [])
+    permissions = metadata.get("permissions", {"home": "none"})
+    isolation = metadata.get("isolation", "integrated")
+    if (
+        not isinstance(image, str) or not isinstance(network, str) or network not in NETWORKS
+        or not isinstance(mounts, list) or not isinstance(permissions, dict)
+        or not isinstance(isolation, str) or isolation not in PROFILES
+    ):
+        raise VforgeError("stored environment settings are invalid; refusing to recreate it")
+    if any(not isinstance(mount, dict) or not all(isinstance(mount.get(key), str) for key in ("source", "target", "access")) for mount in mounts):
+        raise VforgeError("stored mount settings are invalid; refusing to recreate the environment")
+    return image, network, mounts, permissions
+
+
+def restore_upper_layer(layer_id: str, data_root: object, source: object) -> None:
+    if source is None:
+        return
+    if not isinstance(source, str):
+        raise VforgeError("snapshot's Veyra upper-layer metadata is invalid")
+    if not isinstance(data_root, str):
+        raise VforgeError("environment has no valid Vforge data root")
+    snapshots_root = Path(data_root) / "snapshots"
+    source_path = Path(source)
+    try:
+        reject_symlink_components(snapshots_root, "snapshot storage directory")
+        reject_symlink_components(source_path, "snapshot upper-layer path")
+        snapshots_root = snapshots_root.resolve(strict=True)
+        resolved = source_path.resolve(strict=True)
+        resolved.relative_to(snapshots_root)
+    except (OSError, ValueError) as error:
+        raise VforgeError("snapshot upper layer is missing or outside vforge's snapshot store") from error
+    if not resolved.is_dir() or resolved.is_symlink() or source_path.is_symlink():
+        raise VforgeError("snapshot upper layer is not a real directory")
+    for child in (resolved / "usr-upper", resolved / "rpmdb-upper"):
+        if child.is_symlink() or not child.is_dir():
+            raise VforgeError("snapshot upper-layer content is missing or unsafe")
+    paths = layer_paths(layer_id, data_root)
+    upper = paths["upper"]
+    rpmdb_upper = paths["rpmdb-upper"]
+    shutil.rmtree(upper)
+    shutil.copytree(resolved / "usr-upper", upper, symlinks=True, copy_function=shutil.copy2)
+    shutil.rmtree(rpmdb_upper)
+    shutil.copytree(resolved / "rpmdb-upper", rpmdb_upper, symlinks=True, copy_function=shutil.copy2)
+
+
+def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
+    podman_name, _ = require_environment(name)
+    metadata = env_state().get(name)
+    if not isinstance(metadata, dict):
+        raise VforgeError(f"environment '{name}' has no local vforge metadata")
+    entries = snapshots_state().get(name, [])
+    selected = next((entry for entry in entries if isinstance(entry, dict) and entry.get("name") == snapshot), None) if isinstance(entries, list) else None
+    if not isinstance(selected, dict) or not isinstance(selected.get("image"), str):
+        raise VforgeError(f"snapshot '{snapshot}' does not exist for '{name}'")
+    snapshot_metadata = selected.get("environment", metadata)
+    if not isinstance(snapshot_metadata, dict):
+        raise VforgeError("snapshot environment metadata is invalid")
+    stored_container_options(snapshot_metadata)
+    if confirm:
+        if not sys.stdin.isatty():
+            raise VforgeError("rollback requires interactive confirmation")
+        answer = input(f"Replace '{name}' with snapshot '{snapshot}'? Current environment state will be saved first. [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Rollback cancelled.")
+            return
+
+    checkpoint = make_snapshot(
+        name,
+        "rollback-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6],
+    )
+    checkpoint_image = snapshot_image(name, checkpoint)
+    _, network, mounts, permissions = stored_container_options(snapshot_metadata)
+    old_layer_id = metadata.get("layer_id")
+    target_layer_id = snapshot_metadata.get("layer_id")
+    target_isolation = str(snapshot_metadata.get("isolation", "integrated"))
+    backup_name = f"{CONTAINER_PREFIX}{name[:40]}-rollback-{uuid.uuid4().hex[:6]}"
+    if exists(backup_name):
+        raise VforgeError(f"temporary rollback container already exists: {backup_name}")
+    was_running = state(inspect(podman_name)) == "running"
+    try:
+        if was_running:
+            podman(["container", "stop", "--time", "10", podman_name])
+        if metadata.get("isolation") != "strict" and isinstance(old_layer_id, str):
+            unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
+        if target_isolation != "strict":
+            if not isinstance(target_layer_id, str):
+                raise VforgeError("integrated environment has no Veyra OverlayFS layer")
+            if target_layer_id != old_layer_id:
+                unmount_veyra_overlay(target_layer_id, snapshot_metadata.get("data_root"))
+            restore_upper_layer(target_layer_id, snapshot_metadata.get("data_root"), selected.get("upper"))
+            ensure_veyra_overlay(target_layer_id, snapshot_metadata.get("data_root"))
+        podman(["container", "rename", podman_name, backup_name])
+        create_container(
+            name, network, layer_id=target_layer_id if isinstance(target_layer_id, str) else None,
+            data_root=snapshot_metadata.get("data_root"), podman_root=snapshot_metadata.get("podman_root"),
+            isolation=target_isolation, mounts=mounts, resources=permissions, image=selected["image"],
+        )
+        snapshot_runtime = selected.get("host_runtime")
+        runtime_compatible = target_isolation == "strict" or snapshot_runtime == host_runtime_id()
+        if was_running and runtime_compatible:
+            podman(["container", "start", podman_name])
+        restored_metadata = copy.deepcopy(snapshot_metadata)
+        restored_metadata["image"] = selected["image"]
+        save_environment(name, restored_metadata)
+        podman(["container", "rm", backup_name])
+        if isinstance(old_layer_id, str) and old_layer_id != target_layer_id:
+            try:
+                unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
+                old_root = Path(str(metadata.get("data_root", ""))) / "layers" / old_layer_id
+                layers_root = Path(str(metadata.get("data_root", ""))) / "layers"
+                if not old_root.is_symlink() and old_root.resolve(strict=False).parent == layers_root.resolve(strict=False):
+                    shutil.rmtree(old_root, ignore_errors=True)
+            except (OSError, VforgeError):
+                pass
+        if not runtime_compatible:
+            print(f"Restored '{name}' from snapshot '{snapshot}', but its Veyra runtime differs; run 'vforge upgrade {name}' before entering it.")
+        else:
+            print(f"Restored '{name}' from snapshot '{snapshot}'.")
+    except Exception:
+        if exists(podman_name):
+            podman(["container", "rm", "--force", podman_name], check=False)
+        if exists(backup_name):
+            podman(["container", "rename", backup_name, podman_name], check=False)
+            if metadata.get("isolation") != "strict" and isinstance(old_layer_id, str):
+                unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
+                checkpoint_entry = next((item for item in snapshots_state().get(name, []) if isinstance(item, dict) and item.get("name") == checkpoint), None)
+                restore_upper_layer(old_layer_id, metadata.get("data_root"), checkpoint_entry.get("upper") if isinstance(checkpoint_entry, dict) else None)
+                ensure_veyra_overlay(old_layer_id, metadata.get("data_root"))
+            if was_running:
+                podman(["container", "start", podman_name], check=False)
+            save_environment(name, metadata)
+        try:
+            if not exists(podman_name):
+                create_container(name, network, layer_id=metadata.get("layer_id"), data_root=metadata.get("data_root"), podman_root=metadata.get("podman_root"), isolation=str(metadata.get("isolation", "integrated")), mounts=mounts, resources=permissions, image=checkpoint_image)
+        except Exception:
+            print(f"Recovery failed; checkpoint remains available as {checkpoint_image}.", file=sys.stderr)
+        raise
+
+
+def upgrade(name: str) -> None:
+    podman_name, container_metadata = require_environment(name)
+    metadata = env_state().get(name)
+    if not isinstance(metadata, dict):
+        raise VforgeError(f"environment '{name}' has no local vforge metadata")
+    if state(container_metadata) != "running":
+        if metadata.get("isolation") != "strict":
+            layer_id = metadata.get("layer_id")
+            if not isinstance(layer_id, str):
+                raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer")
+            ensure_veyra_overlay(layer_id, metadata.get("data_root"))
+        podman(["container", "start", podman_name])
+    checkpoint = make_snapshot(name, "pre-upgrade-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6])
+    network = metadata.get("network", "none")
+    connected = network != "bridge"
+    if connected:
+        podman(["network", "connect", "bridge", podman_name])
+    try:
+        podman(["container", "exec", podman_name, "dnf", "upgrade", "-y"])
+        metadata["host_runtime"] = host_runtime_id()
+        save_environment(name, metadata)
+        print(f"Upgraded '{name}'. Snapshot '{checkpoint}' is available for rollback.")
+    except VforgeError:
+        print(f"Upgrade failed. Restoring pre-upgrade snapshot '{checkpoint}'.", file=sys.stderr)
+        rollback_to(name, checkpoint, confirm=False)
+        raise
+    finally:
+        if connected:
+            podman(["network", "disconnect", "bridge", podman_name], check=False)
+
+
+def list_environments() -> None:
+    graphroots = {common_store_root() / "containers"}
+    for metadata in env_state().values():
+        if isinstance(metadata, dict) and isinstance(metadata.get("podman_root"), str):
+            graphroots.add(Path(metadata["podman_root"]))
+    containers: list[dict[str, object]] = []
+    for graphroot in sorted(graphroots):
+        result = podman(
+            ["container", "ls", "--all", f"--filter=label={LABEL}=1", "--format=json"],
+            capture=True,
+            root=graphroot,
+        )
+        try:
+            entries = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as error:
+            raise VforgeError("Podman returned invalid container list metadata") from error
+        if not isinstance(entries, list):
+            raise VforgeError("Podman returned an unexpected container list")
+        containers.extend(item for item in entries if isinstance(item, dict))
 
     rows: list[tuple[str, str, str]] = []
     for item in containers:
@@ -182,7 +1625,12 @@ def list_environments() -> None:
         print(f"{name:<{name_width}}  {status:<{state_width}}  {image}")
 
 
-def enter(name: str) -> int:
+def enter(name: str | None) -> int:
+    if name is None:
+        project = canonical_project_root(Path.cwd())
+        config = parse_project_config(project)
+        project_up(project)
+        name = str(config["name"])
     podman_name = ensure_running(name)
     args = ["container", "exec"]
     if sys.stdin.isatty() and sys.stdout.isatty():
@@ -207,9 +1655,19 @@ def execute(name: str, command: Sequence[str]) -> int:
 
 def start(name: str) -> None:
     podman_name, metadata = require_environment(name)
+    recorded = env_state().get(name)
+    if not isinstance(recorded, dict):
+        raise VforgeError(f"environment '{name}' has no vforge runtime metadata; recreate it with vforge")
+    if recorded.get("isolation") != "strict" and recorded.get("host_runtime") != host_runtime_id():
+        raise VforgeError(f"environment '{name}' was created for a different Veyra runtime; run 'vforge upgrade {name}'")
     if state(metadata) == "running":
         print(f"Environment '{name}' is already running.")
         return
+    if recorded.get("isolation") != "strict":
+        layer_id = recorded.get("layer_id")
+        if not isinstance(layer_id, str):
+            raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer")
+        ensure_veyra_overlay(layer_id, recorded.get("data_root"))
     podman(["container", "start", podman_name])
     print(f"Started '{name}'.")
 
@@ -217,18 +1675,35 @@ def start(name: str) -> None:
 def stop(name: str) -> None:
     podman_name, metadata = require_environment(name)
     if state(metadata) != "running":
+        recorded = env_state().get(name)
+        if isinstance(recorded, dict) and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
+            unmount_veyra_overlay(recorded["layer_id"], recorded.get("data_root"))
         print(f"Environment '{name}' is already stopped.")
         return
     podman(["container", "stop", "--time", "10", podman_name])
+    recorded = env_state().get(name)
+    if isinstance(recorded, dict) and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
+        unmount_veyra_overlay(recorded["layer_id"], recorded.get("data_root"))
     print(f"Stopped '{name}'.")
 
 
 def rename(old_name: str, new_name: str) -> None:
     old_container, _ = require_environment(old_name)
+    metadata = env_state().get(old_name)
+    if isinstance(metadata, dict) and metadata.get("type") == "project":
+        raise VforgeError("project environment names are declared in .vforge.toml and cannot be renamed separately")
     new_container = container_name(new_name)
     if exists(new_container):
         raise VforgeError(f"environment '{new_name}' already exists")
     podman(["container", "rename", old_container, new_container])
+    environments = read_store_state("environments.json", {"version": STATE_VERSION, "environments": {}})["environments"]
+    if old_name in environments:
+        environments[new_name] = environments.pop(old_name)
+        write_json_file(common_state_directory() / "environments.json", {"version": STATE_VERSION, "environments": environments})
+    snapshots = named_snapshots_state()
+    if old_name in snapshots:
+        snapshots[new_name] = snapshots.pop(old_name)
+        write_json_file(common_state_directory() / "snapshots.json", {"version": STATE_VERSION, "snapshots": snapshots})
     print(f"Renamed '{old_name}' to '{new_name}'.")
 
 
@@ -244,7 +1719,20 @@ def delete(name: str) -> None:
         return
     if state(metadata) == "running":
         podman(["container", "stop", "--time", "10", podman_name])
+    recorded = env_state().get(name)
+    if isinstance(recorded, dict) and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
+        unmount_veyra_overlay(recorded["layer_id"], recorded.get("data_root"))
     podman(["container", "rm", podman_name])
+    snapshots = snapshots_state().get(name, [])
+    if isinstance(snapshots, list):
+        for snapshot in snapshots:
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("image"), str):
+                podman(["image", "rm", snapshot["image"]], check=False)
+    remove_snapshots(name)
+    data_root = recorded.get("data_root") if isinstance(recorded, dict) else None
+    remove_environment_state(name)
+    if isinstance(recorded, dict) and recorded.get("type") != "project" and isinstance(data_root, str):
+        shutil.rmtree(data_root, ignore_errors=True)
     print(f"Deleted '{name}'.")
 
 
@@ -254,16 +1742,41 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage persistent rootless development environments.",
         epilog="Environments have no host mounts by default. Network is disabled unless enabled at creation.",
     )
+    parser.add_argument("--storage-root", help="override the common named-environment storage root for this command")
     subparsers = parser.add_subparsers(dest="action", required=True)
 
     create_parser = subparsers.add_parser("create", help="create a persistent Fedora 44 environment")
     create_parser.add_argument("name")
     create_parser.add_argument("--network", choices=NETWORKS, default="none")
+    create_parser.add_argument("--isolation", choices=PROFILES, default="integrated")
+    create_parser.add_argument("--home", choices=HOME_MODES, default="none")
+    create_parser.add_argument("--gpu", action="store_true")
+    create_parser.add_argument("--wayland", action="store_true")
+    create_parser.add_argument("--audio", action="store_true")
+    create_parser.add_argument("--user-bus", action="store_true", help="grant access to the user D-Bus session socket")
+    create_parser.add_argument("--size", help="request a per-environment storage cap")
+    create_parser.add_argument("--storage-root", dest="storage_root_command", help="override the common named-environment storage root")
 
     subparsers.add_parser("list", help="list vforge environments")
     for action in ("enter", "start", "stop", "delete"):
         action_parser = subparsers.add_parser(action, help=f"{action} a named environment")
-        action_parser.add_argument("name")
+        action_parser.add_argument("name", nargs="?" if action == "enter" else None)
+
+    subparsers.add_parser("up", help="create or update the current project's configured environment")
+    snapshot_parser = subparsers.add_parser("snapshot", help="save the current environment state")
+    snapshot_parser.add_argument("name")
+    snapshot_parser.add_argument("snapshot", nargs="?")
+    rollback_parser = subparsers.add_parser("rollback", help="restore a saved environment snapshot")
+    rollback_parser.add_argument("name")
+    rollback_parser.add_argument("snapshot", nargs="?")
+    upgrade_parser = subparsers.add_parser("upgrade", help="upgrade packages in an environment and save a rollback point")
+    upgrade_parser.add_argument("name")
+
+    config_parser = subparsers.add_parser("config", help="manage persistent Vforge configuration")
+    config_subparsers = config_parser.add_subparsers(dest="config_action", required=True)
+    config_subparsers.add_parser("show", help="show the configured common storage root")
+    storage_config = config_subparsers.add_parser("storage-root", help="set the common named-environment storage root")
+    storage_config.add_argument("path")
 
     exec_parser = subparsers.add_parser("exec", help="run a command inside an environment")
     exec_parser.add_argument("name")
@@ -279,8 +1792,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         require_rootless_user()
+        global ACTIVE_STORAGE_ROOT
+        override = getattr(args, "storage_root_command", None) or args.storage_root
+        if args.action == "config":
+            if args.config_action == "show":
+                selected = resolve_storage_root(override)
+                ACTIVE_STORAGE_ROOT = selected
+                print(selected)
+                return 0
+            selected = set_storage_root(args.path)
+            ACTIVE_STORAGE_ROOT = selected
+            print(f"Vforge common storage root set to {selected}.")
+            return 0
+        ACTIVE_STORAGE_ROOT = resolve_storage_root(override)
         if args.action == "create":
-            create(args.name, args.network)
+            create(args.name, args.network, args.isolation, args.home, args.gpu, args.wayland, args.audio, args.user_bus, args.size)
             return 0
         if args.action == "list":
             list_environments()
@@ -300,6 +1826,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.action == "delete":
             delete(args.name)
+            return 0
+        if args.action == "up":
+            project_up(Path.cwd())
+            return 0
+        if args.action == "snapshot":
+            make_snapshot(args.name, args.snapshot)
+            return 0
+        if args.action == "rollback":
+            snapshots = snapshots_state().get(args.name, [])
+            if not args.snapshot:
+                if not isinstance(snapshots, list) or not snapshots:
+                    raise VforgeError(f"no snapshots are available for '{args.name}'")
+                args.snapshot = snapshots[-1].get("name") if isinstance(snapshots[-1], dict) else None
+            if not args.snapshot:
+                raise VforgeError("snapshot index is malformed")
+            rollback_to(args.name, args.snapshot)
+            return 0
+        if args.action == "upgrade":
+            upgrade(args.name)
             return 0
         raise VforgeError(f"unsupported command: {args.action}")
     except VforgeError as error:
