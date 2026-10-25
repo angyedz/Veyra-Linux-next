@@ -275,12 +275,12 @@ jobs:
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
             flatpak libdnf5 python3-libdnf5 gcc git cmake python3 nodejs22
-          test "$(rpm -E '%{fedora}')" = 44
-          grep -Fxq 'ID=fedora' /usr/lib/os-release
-          grep -Fxq 'VERSION_ID=44' /usr/lib/os-release
-          test "$(rpm -q --qf '%{RELEASE}\n' libdnf5 python3-libdnf5 | grep -Ec '\.fc44$')" -eq 2
-          if rpm -qa --qf '%{NAME} %{RELEASE}\n' | grep -Eiq 'fc46|rawhide'; then
-            echo 'Fedora46/Rawhide RPM detected in the Fedora44 image' >&2
+          test "$(rpm -E "%{fedora}")" = 44
+          grep -Fxq "ID=fedora" /usr/lib/os-release
+          grep -Fxq "VERSION_ID=44" /usr/lib/os-release
+          test "$(rpm -q --qf "%{RELEASE}\\n" libdnf5 python3-libdnf5 | grep -Ec "\\.fc44$")" -eq 2
+          if rpm -qa --qf "%{NAME} %{RELEASE}\\n" | grep -Eiq "fc46|rawhide"; then
+            echo "Fedora46/Rawhide RPM detected in the Fedora44 image" >&2
             exit 1
           fi
           for package in dnf5 dnf5-plugins; do
