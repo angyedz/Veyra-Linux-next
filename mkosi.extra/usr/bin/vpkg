@@ -167,8 +167,13 @@ def inspect_extension_rpms(
     return rpms
 
 
-def download_for_inspection(action: str, packages: list[str] | None = None) -> bool:
-    channel = selected_channel()
+def download_for_inspection(
+    action: str,
+    packages: list[str] | None = None,
+    *,
+    channel: str | None = None,
+) -> bool:
+    channel = channel or selected_channel()
     with tempfile.TemporaryDirectory(prefix="veyra-vpkg-") as temporary:
         directory = Path(temporary)
         common = dnf_prefix(channel)
@@ -306,17 +311,24 @@ def with_lock(action) -> None:
 
 def set_channel(channel: str) -> None:
     require_root()
-    CHANNEL_FILE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=CHANNEL_FILE.parent, delete=False
-    ) as temporary:
-        temporary.write(f"{channel}\n")
-        temporary.flush()
-        os.fsync(temporary.fileno())
-        temporary_path = Path(temporary.name)
-    temporary_path.chmod(0o644)
-    os.replace(temporary_path, CHANNEL_FILE)
-    print(f"Veyra package channel set to {channel}.")
+
+    def change() -> None:
+        if selected_channel() == channel:
+            print(f"Veyra package channel: {channel}")
+            return
+        CHANNEL_FILE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=CHANNEL_FILE.parent, delete=False
+        ) as temporary:
+            temporary.write(f"{channel}\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        temporary_path.chmod(0o644)
+        os.replace(temporary_path, CHANNEL_FILE)
+        print(f"Veyra package channel set to {channel}.")
+
+    with_lock(change)
 
 
 def install(packages: list[str]) -> None:
@@ -324,11 +336,12 @@ def install(packages: list[str]) -> None:
     validate_package_specs(packages)
 
     def transaction() -> None:
-        if not download_for_inspection("install", packages):
+        channel = selected_channel()
+        if not download_for_inspection("install", packages, channel=channel):
             print("The requested Veyra packages are already installed.")
             return
         previous_id = latest_history_id()
-        dnf(["install", "--from-repo=" + repo_id(), *packages])
+        dnf(["install", "--from-repo=" + repo_id(channel), *packages], channel=channel)
         refresh_extensions_or_undo(previous_id)
 
     with_lock(transaction)
@@ -353,13 +366,14 @@ def upgrade() -> None:
     require_root()
 
     def transaction() -> None:
-        if not download_for_inspection("upgrade"):
+        channel = selected_channel()
+        if not download_for_inspection("upgrade", channel=channel):
             print("Veyra packages are already up to date in this channel.")
             return
         previous_id = latest_history_id()
         dnf(
             ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
-            channel=selected_channel(),
+            channel=channel,
         )
         refresh_extensions_or_undo(previous_id)
 
@@ -408,10 +422,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.command == "channel":
             if arguments.name:
-                if arguments.name != selected_channel():
-                    set_channel(arguments.name)
-                else:
-                    print(f"Veyra package channel: {arguments.name}")
+                set_channel(arguments.name)
             else:
                 print(f"Veyra package channel: {selected_channel()}")
         elif arguments.command == "repos":

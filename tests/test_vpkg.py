@@ -44,6 +44,39 @@ class VpkgPolicyTests(unittest.TestCase):
                 self.assertIn("--repo=veyra-testing", vpkg.dnf_prefix())
                 self.assertIn("--repo=veyra-main,veyra-testing", vpkg.dnf_prefix("both"))
 
+    def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            channel_file = Path(temporary) / "veyra/vpkg/channel"
+            with (
+                patch.object(vpkg, "require_root"),
+                patch.object(vpkg, "CHANNEL_FILE", channel_file),
+                patch.object(vpkg, "with_lock", side_effect=lambda action: action()) as lock,
+            ):
+                vpkg.set_channel("testing")
+
+            lock.assert_called_once()
+            self.assertEqual(channel_file.read_text(encoding="utf-8"), "testing\n")
+
+    def test_install_uses_one_channel_snapshot_for_preflight_and_commit(self) -> None:
+        for channel in ("main", "testing"):
+            with self.subTest(channel=channel):
+                with (
+                    patch.object(vpkg, "require_root"),
+                    patch.object(vpkg, "selected_channel", return_value=channel),
+                    patch.object(vpkg, "download_for_inspection", return_value=True) as inspect,
+                    patch.object(vpkg, "latest_history_id", return_value=7),
+                    patch.object(vpkg, "dnf") as dnf,
+                    patch.object(vpkg, "refresh_extensions_or_undo"),
+                    patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+                ):
+                    vpkg.install(["veyra-shell-tools"])
+
+                inspect.assert_called_once_with("install", ["veyra-shell-tools"], channel=channel)
+                dnf.assert_called_once_with(
+                    ["install", f"--from-repo={vpkg.CHANNELS[channel]}", "veyra-shell-tools"],
+                    channel=channel,
+                )
+
     def test_upgrade_transaction_uses_same_channel_as_preflight_download(self) -> None:
         for channel in ("main", "testing"):
             with self.subTest(channel=channel):
@@ -58,7 +91,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 ):
                     vpkg.upgrade()
 
-                inspect.assert_called_once_with("upgrade")
+                inspect.assert_called_once_with("upgrade", channel=channel)
                 dnf.assert_called_once_with(
                     ["upgrade", "--installed-from-repo=veyra-main,veyra-testing"],
                     channel=channel,
