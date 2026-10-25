@@ -143,6 +143,32 @@ createrepo_c --database --update "$testing_repo"
 gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
   --output "$testing_repo/repodata/repomd.xml.asc" \
   "$testing_repo/repodata/repomd.xml"
+dnf_ci=(
+  dnf5
+  "--installroot=$install_root"
+  --use-host-config
+  --releasever=44
+  --setopt=system_state_dir=/var/lib/veyra/vpkg/state
+  --setopt=transaction_history_dir=/var/lib/veyra/vpkg/history
+  --setopt=persistdir=/var/lib/veyra/vpkg/persist
+  --setopt=system_cachedir=/var/cache/veyra/vpkg
+  --setopt=keepcache=True
+  --setopt=install_weak_deps=False
+  --repo=veyra-testing
+  --refresh
+)
+available_versions="$("${dnf_ci[@]}" repoquery --available --queryformat '%{version}' veyra-shell-tools)"
+printf 'Available testing versions: %s\n' "${available_versions//$'\n'/, }"
+if ! grep -Fxq '0.2.0' <<<"$available_versions"; then
+  echo "The signed testing repository does not expose veyra-shell-tools 0.2.0." >&2
+  exit 1
+fi
+upgrade_versions="$("${dnf_ci[@]}" repoquery --upgrades --queryformat '%{version}' veyra-shell-tools)"
+printf 'DNF5 upgrade candidates: %s\n' "${upgrade_versions//$'\n'/, }"
+if ! grep -Fxq '0.2.0' <<<"$upgrade_versions"; then
+  echo "DNF5 does not consider veyra-shell-tools 0.2.0 an upgrade candidate." >&2
+  exit 1
+fi
 PATH="$shim:$PATH" "$vpkg" upgrade
 installed_version="$(rpm --root "$install_root" -q --qf '%{VERSION}' veyra-shell-tools)"
 if [[ "$installed_version" != "0.2.0" ]]; then
