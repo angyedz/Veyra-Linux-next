@@ -157,6 +157,7 @@ dnf_ci=(
   --repo=veyra-testing
   --refresh
 )
+"${dnf_ci[@]}" clean metadata
 available_versions="$("${dnf_ci[@]}" repoquery --available --queryformat '%{version}' veyra-shell-tools)"
 printf 'Available testing versions: %s\n' "${available_versions//$'\n'/, }"
 if ! grep -Fxq '0.2.0' <<<"$available_versions"; then

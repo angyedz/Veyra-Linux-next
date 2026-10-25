@@ -64,7 +64,7 @@ class VpkgPolicyTests(unittest.TestCase):
                     channel=channel,
                 )
 
-    def test_upgrade_preflight_refreshes_repository_metadata(self) -> None:
+    def test_upgrade_preflight_invalidates_and_refreshes_repository_metadata(self) -> None:
         with (
             patch.object(vpkg, "selected_channel", return_value="testing"),
             patch.object(vpkg, "run") as run,
@@ -72,9 +72,10 @@ class VpkgPolicyTests(unittest.TestCase):
         ):
             self.assertFalse(vpkg.download_for_inspection("upgrade"))
 
-        command = run.call_args.args[0]
-        self.assertIn("--refresh", command)
-        self.assertLess(command.index("--refresh"), command.index("upgrade"))
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0][-2:], ["clean", "metadata"])
+        self.assertIn("--refresh", commands[1])
+        self.assertLess(commands[1].index("--refresh"), commands[1].index("upgrade"))
 
     def test_extension_rpm_policy_allows_only_var_extension_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
