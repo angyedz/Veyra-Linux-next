@@ -108,6 +108,16 @@ class VforgeCommandTests(unittest.TestCase):
         runtime.assert_not_called()
         podman.assert_not_called()
 
+    def test_named_home_permission_requires_interactive_consent(self) -> None:
+        with patch.object(vforge.sys.stdin, "isatty", return_value=False), \
+             patch.object(vforge, "host_runtime_id") as runtime, \
+             patch.object(vforge, "podman") as podman:
+            with self.assertRaisesRegex(vforge.VforgeError, "interactive approval"):
+                vforge.create("backend", "none", home_mode="read-only")
+
+        runtime.assert_not_called()
+        podman.assert_not_called()
+
     def test_home_permissions_map_only_the_selected_host_home_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary) / "home"
