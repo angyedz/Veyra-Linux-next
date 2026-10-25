@@ -48,15 +48,22 @@ These checks protect different stages. A signed manifest alone does not authenti
 
 The base image carries the coherent kernel, graphics stack, KDE session, display manager, audio and portal services. Discover and Flatpak provide desktop applications independently of the base OS. The user can install Steam and Discord through the app catalog without launching another distribution. Proton and Wayland sharing still require real application and hardware tests.
 
-The default image includes common native development tools. Additional per-project environments may use Toolbx or other containers as optional conveniences; everyday coding must work directly in the host account.
+The default image includes common native development tools. The planned `vforge`
+tool will support two optional workflows: project-local environments described
+by a configuration file, and persistent named environments that users can
+create, enter, modify, and remove independently of a project. The project-local
+configuration makes an environment reproducible; a named environment keeps its
+own installed tools and state between sessions. Neither workflow is mandatory:
+everyday coding must still work directly in the host account. See
+[`vforge` design](vforge.md). The manager is not implemented yet.
 
 ## Persistent state — initial layout configured
 
 The image recipe keeps `/etc`, `/var` and `/home` on writable partitions outside both root slots. The custom initrd mounts `/etc` and `/var` before switch-root; systemd discovers the home partition by its GPT type. This prevents ordinary root replacement from erasing those trees. It does not yet solve schema changes in `/var` or `/etc`: a rollback can run an older OS against state written by a newer one, so update releases need compatibility checks and migrations before this is safe for daily use.
 
-## User-selected kernels — not implemented
+## Kernel scope
 
-The current A/B image contains Fedora's default kernel, and `vpkg` cannot install a custom one. Edits to a root slot are discarded when an update replaces that slot. A UKI copied separately to the EFI partition is outside Veyra's update and compatibility checks, so it is not a supported persistence mechanism. A future kernel package transaction must save the user's kernel selection and compose the kernel, modules, initramfs, UKI, root and verity data into the inactive slot as one candidate. A failed resolution or boot assessment must preserve the previous slot and the user's selection. The updater must never silently reset a custom selection to Fedora's default.
+The A/B image carries Veyra's selected Fedora kernel. Installing a custom kernel is outside the current product scope; `vpkg` does not provide this operation, and A/B updates replace the kernel with the version in the new image. A standalone UKI copied to EFI is unmanaged and may no longer match the system's modules.
 
 ## Recovery and developer use — not implemented
 

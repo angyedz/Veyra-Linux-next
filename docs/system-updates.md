@@ -25,24 +25,14 @@ installed Veyra extensions activated. A trial UKI is marked good only when
 those targets succeed; repeated failed boots fall back to the previously
 working UKI.
 
-## User-selected kernels
+## Kernel scope
 
 The current image ships the Fedora kernel. `vpkg` does not install kernels,
-and a kernel change is not yet a supported package operation. A change made
-directly inside a root slot is replaced when that slot is refreshed by an A/B
-update. A separately copied UKI on the EFI partition might remain as a file,
-but Veyra does not manage or validate it, and its kernel modules may no longer
-match the updated system.
-
-The supported design must treat a user-selected kernel as persistent update
-input, not as an edit to the running slot. An update must prepare the selected
-kernel, its modules, initramfs, UKI, root image and verity data together in the
-inactive slot. The updater must keep the current slot bootable until the new
-slot passes the normal boot assessment. If the selected kernel cannot be
-resolved or the candidate fails validation, the update must leave the selected
-kernel and the known-good slot intact; it must not silently replace the
-selection with Fedora's default kernel. This workflow is a requirement, not an
-implemented feature.
+and custom kernel installation is outside the current product scope. The
+kernel shipped by Veyra is part of each A/B system image, so an update replaces
+it with the kernel in the new image. A separately copied UKI on the EFI
+partition might remain as a file, but Veyra does not manage or validate it, and
+its kernel modules may no longer match the updated system.
 
 CI exercises that path with a disposable disk image. It signs a temporary
 manifest, creates a fresh dm-verity tree for the built EROFS root, applies the

@@ -41,11 +41,14 @@ The image is configured to offer KDE Plasma Setup on first boot so the user can 
 
 - The user signs into KDE Plasma and installs desktop apps from Discover.
 - Steam and Discord are ordinary desktop apps, not separate operating systems. Steam runs games with Proton; Discord receives Wayland screen sharing through KDE's portal and PipeWire.
-- Git, SSH, GCC, Clang, Python, Node.js and CMake run directly in the native Fedora userspace. Project files live in the user's home directory. Toolbx/container use stays optional.
+- Git, SSH, GCC, Clang, Python, Node.js and CMake are available in the native Fedora userspace. `vforge` is planned for both project-described environments and persistent, named development environments; it is optional, and projects can still be built directly on the host.
 - System updates preserve personal files and install a complete new OS version beside the active one. A failed trial boot returns to the previous version.
 - Optional Veyra add-ons install as signed system extensions, while system packages go through A/B image updates.
 
 Those are product goals, not claims that this image already provides them.
+
+The `vforge` environment manager is a design goal and is not implemented yet. Its
+planned interface and isolation boundary are described in [the vforge design](docs/vforge.md).
 
 ## Architectural direction
 
