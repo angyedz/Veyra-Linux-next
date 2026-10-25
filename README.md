@@ -16,7 +16,15 @@ The image includes `veyra-update` for listing, checking, staging and rebooting i
 
 ## Optional RPM packages
 
-`vpkg` has two package paths: signed `veyra-*` extension-wrapper RPMs from Veyra's `main` or `testing` channel, and ordinary application RPMs from Fedora/RPM Fusion or a local RPM file. Ordinary packages are solved and installed in a disposable DNF5 installroot seeded with the base RPM inventory; their additive `/usr` and `/opt` files become one persistent `vpkg-apps` system extension. Activation is a live sysext refresh with rollback on failure. Kernel, graphics-driver, init, bootloader, base-package replacements, file collisions, privileged setuid/setgid files, and payload outside `/usr` or `/opt` are rejected. Local RPMs must be signed by a key trusted by Fedora or RPM Fusion. Package configuration under `/etc` and third-party signing-key enrollment are not supported yet. CI exercises Fedora repository resolution, local signed RPM installation and removal, and kernel-package rejection inside the VM.
+`vpkg` has two package paths: signed `veyra-*` extension-wrapper RPMs from Veyra's `main` or `testing` channel, and ordinary application RPMs from Fedora/RPM Fusion or a local RPM file. It uses libdnf5's Python API; the runtime image does not install the DNF5 CLI. Ordinary packages are solved and installed in a disposable installroot seeded with the base RPM inventory; their additive `/usr` and `/opt` files become a persistent `vpkg-apps` system extension. Live additive transactions refresh sysext with rollback on failure, while `vpkg stage install` can select an app generation after reboot and `vpkg rollback` restores the previous generation. Kernel, graphics-driver, init, bootloader, base-package replacements, file collisions, privileged setuid/setgid files, and payload outside `/usr` or `/opt` are rejected. Local RPMs must be signed by a key trusted by Fedora or RPM Fusion. Package configuration under `/etc` and third-party signing-key enrollment are not supported yet. The signed transaction and staged rollback QEMU scenarios are authored but still await a clean Fedora 44 run.
+
+Veyra package RPMs are resolved from versioned GitHub Releases, not raw GitHub
+channel URLs. Stable selects the highest `rpm-vX.Y.Z` release; testing selects
+the highest `rpm-vX.Y.Z-testing` prerelease. Before libdnf5 receives the local
+repository path, vpkg checks the release's detached archive SHA256, rejects
+unsafe archive entries, and verifies the `repomd.xml` signature against the
+image-pinned Veyra RPM key. The Fedora and RPM Fusion repositories remain
+official/independent remote sources.
 
 The first optional Veyra package is `veyra-shell-tools` (bash completion, fzf, jq and ripgrep). The packaging pipeline builds it as a version-matched system extension and wraps it in an RPM. Veyra package channels require both RPM and repository-metadata signatures. There is no production key or published repository yet, so Veyra package search and installation are unavailable until the signing key and repository hosting are provisioned. Fedora and RPM Fusion package discovery use their own configured sources. See [package repository details](packages/README.md).
 
