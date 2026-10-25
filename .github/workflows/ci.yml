@@ -92,7 +92,12 @@ jobs:
           testing_repo=build/site/packages/testing/x86_64
           cp build/broken/RPMS/*.rpm "$testing_repo/"
           createrepo_c --database --update "$testing_repo"
-          for channel in main testing; do
+          testing_initial=build/site/packages/testing-initial/x86_64
+          mkdir -p "$testing_initial"
+          cp build/rpms/veyra-shell-tools-0.1.0-*.rpm "$testing_initial/"
+          cp build/broken/RPMS/*.rpm "$testing_initial/"
+          createrepo_c --database "$testing_initial"
+          for channel in main testing testing-initial; do
             metadata="build/site/packages/$channel/x86_64/repodata/repomd.xml"
             gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
               --output "$metadata.asc" "$metadata"

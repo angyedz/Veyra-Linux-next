@@ -52,8 +52,9 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
         raise RuntimeError(f"Missing Veyra disk image: {image}")
     if not (repository / "RPM-GPG-KEY-VEYRA").is_file():
         raise RuntimeError(f"The signed vpkg fixture is missing its public key: {repository}")
-    if not (repository / "packages/testing/x86_64/repodata/repomd.xml.asc").is_file():
-        raise RuntimeError("The vpkg fixture must contain signed testing metadata.")
+    for repo in ("testing-initial", "testing"):
+        if not (repository / f"packages/{repo}/x86_64/repodata/repomd.xml.asc").is_file():
+            raise RuntimeError(f"The vpkg fixture must contain signed {repo} metadata.")
 
     partitions = partition_layout(image)
     with tempfile.TemporaryDirectory(prefix="veyra-vpkg-image-setup-") as temporary:
@@ -96,7 +97,7 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             test_repo.write_text(
                 "[veyra-testing]\n"
                 "name=Veyra testing disposable VM test\n"
-                "baseurl=file:///var/lib/veyra/vpkg-ci-repo/packages/testing/$basearch/\n"
+                "baseurl=file:///var/lib/veyra/vpkg-ci-repo/packages/testing-initial/$basearch/\n"
                 "enabled=0\n"
                 "gpgcheck=1\n"
                 "repo_gpgcheck=1\n"

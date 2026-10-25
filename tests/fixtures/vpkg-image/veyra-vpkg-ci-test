@@ -37,6 +37,9 @@ command -v jq >/dev/null
 systemd-sysext status | grep -Fq veyra-shell-tools
 echo "Veyra vpkg VM test: signed install activated through systemd-sysext"
 
+# The initial signed repository has only v0.1.0. Switch to the separately
+# signed upgrade snapshot so the next vpkg operation must install v0.2.0.
+sed -i 's#packages/testing-initial/#packages/testing/#' /etc/yum.repos.d/veyra-testing.repo
 vpkg upgrade
 upgraded="$(rpm --root "$root" -q --qf '%{VERSION}' veyra-shell-tools)"
 test "$upgraded" = "0.2.0"
