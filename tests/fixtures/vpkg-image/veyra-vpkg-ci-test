@@ -56,6 +56,9 @@ repo_key_hash="${repo_key_hash%% *}"
 image_key_hash="$(sha256sum /usr/share/veyra/RPM-GPG-KEY-VEYRA)"
 image_key_hash="${image_key_hash%% *}"
 test "$repo_key_hash" = "$image_key_hash"
+# Trust the disposable fixture key only in this VM's RPM database. vpkg copies
+# that database into its isolated installroot before resolving app packages.
+rpm --import "$repo/RPM-GPG-KEY-VEYRA"
 rpm --root "$root" --initdb
 rpm --root "$root" --import /usr/share/veyra/RPM-GPG-KEY-VEYRA
 
@@ -141,6 +144,35 @@ if command -v htop >/dev/null 2>&1; then
     exit 1
 fi
 echo "Veyra vpkg VM test: signed local RPM installed and removed transactionally"
+
+scriptlet_rpm="$(find "$repo/local-upstream/x86_64" -maxdepth 1 \
+    -name 'vpkg-scriptlet-fixture-*.rpm' -print -quit)"
+test -s "$scriptlet_rpm"
+post_marker=/var/lib/veyra/vpkg-ci-scriptlet-post-ran
+trigger_marker=/var/lib/veyra/vpkg-ci-scriptlet-trigger-ran
+rm -f "$post_marker" "$trigger_marker"
+failure_log=/var/lib/veyra/vpkg-ci-scriptlet-install.log
+if vpkg install "$scriptlet_rpm" >"$failure_log" 2>&1; then
+    cat "$failure_log"
+    echo "vpkg unexpectedly accepted an RPM declaring scriptlets and triggers." >&2
+    exit 1
+fi
+cat "$failure_log"
+grep -Fq "REJECT: package vpkg-scriptlet-fixture declares RPM scriptlets or triggers" "$failure_log"
+if [[ -e "$post_marker" || -e "$trigger_marker" ]]; then
+    echo "vpkg executed an RPM scriptlet or trigger while rejecting its package." >&2
+    exit 1
+fi
+if rpm --root "$root" -q vpkg-scriptlet-fixture >/dev/null 2>&1; then
+    echo "vpkg left the rejected scriptlet fixture installed in its package database." >&2
+    exit 1
+fi
+if vpkg list | grep -Fq "vpkg-scriptlet-fixture:"; then
+    echo "vpkg recorded the rejected scriptlet fixture in the app layer." >&2
+    exit 1
+fi
+assert_extension_active veyra-shell-tools
+echo "Veyra vpkg VM test: scriptlet and trigger package rejected without running either hook"
 
 protected_kernel="$(rpm -q --qf '%{NEVRA}' kernel-core)"
 if vpkg install kernel-core >/var/lib/veyra/vpkg-ci-protected-package.log 2>&1; then
