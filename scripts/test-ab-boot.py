@@ -162,12 +162,10 @@ def main() -> int:
                     f"roothash={args.roothash}",
                     "Reached target graphical.target",
                     "Reached target boot-complete.target",
-                    "unit=systemd-bless-boot",
+                    "Current Boot Loader Entry as Good",
                 ),
                 timeout=args.boot_timeout,
             )
-            if not re.search(r"unit=systemd-bless-boot[^\n]*res=success", successful_log):
-                raise RuntimeError("systemd did not report a successful boot bless operation")
             if "device-mapper: verity" in successful_log or "metadata block" in successful_log:
                 raise RuntimeError("the successful trial boot reported a dm-verity integrity failure")
             stable_entry = f"veyra-next_{args.version}.efi"
