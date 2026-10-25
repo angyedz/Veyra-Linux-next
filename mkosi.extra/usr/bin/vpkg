@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -194,6 +195,25 @@ def inspect_extension_rpms(
                 f"{expected_payload[0]}. System files must be delivered by an A/B OS update."
             )
 
+        modes = run(
+            [
+                "rpm", "-qp", "--queryformat",
+                "[%{FILEMODES:perms}\\t%{FILENAMES}\\n]", str(rpm),
+            ],
+            capture=True,
+        ).stdout.splitlines()
+        file_modes: dict[str, str] = {}
+        for entry in modes:
+            mode, separator, path = entry.partition("\t")
+            if not separator or not mode or not path:
+                raise VpkgError(f"Could not read RPM file types in {rpm.name}.")
+            file_modes[path] = mode
+        if file_modes.get(expected_payload[0]) != "-rw-r--r--":
+            raise VpkgError(
+                f"Refusing {name}: the extension image must be a regular, non-executable "
+                "0644 file; symbolic links and special files are not allowed."
+            )
+
         for option in ("--scripts", "--triggers", "--filetriggers"):
             result = run(["rpm", "-qp", option, str(rpm)], capture=True)
             if result.stdout.strip():
@@ -288,8 +308,19 @@ def sync_extension_links() -> None:
         if payload != [expected]:
             raise VpkgError(f"Installed package {name} violates the Veyra extension RPM policy.")
         target = VPKG_ROOT / expected.lstrip("/")
-        if not target.is_file():
+        try:
+            target_info = target.lstat()
+        except FileNotFoundError:
             raise VpkgError(f"The installed extension image is missing: {target}")
+        if (
+            not stat.S_ISREG(target_info.st_mode)
+            or stat.S_ISUID & target_info.st_mode
+            or stat.S_ISGID & target_info.st_mode
+            or target_info.st_size == 0
+        ):
+            raise VpkgError(
+                f"The installed extension image must be a non-empty regular file: {target}"
+            )
         desired[SYSTEM_EXTENSION_LINK_DIR / f"{name}.raw"] = target
 
     for link in SYSTEM_EXTENSION_LINK_DIR.glob("veyra-*.raw"):

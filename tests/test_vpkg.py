@@ -119,6 +119,14 @@ class VpkgPolicyTests(unittest.TestCase):
                 subprocess.CompletedProcess(
                     [], 0, "/var\n/var/lib\n/var/lib/extensions\n/var/lib/extensions/veyra-shell-tools.raw\n", ""
                 ),
+                subprocess.CompletedProcess(
+                    [], 0,
+                    "drwxr-xr-xr-x\t/var\n"
+                    "drwxr-xr-xr-x\t/var/lib\n"
+                    "drwxr-xr-xr-x\t/var/lib/extensions\n"
+                    "-rw-r--r--\t/var/lib/extensions/veyra-shell-tools.raw\n",
+                    "",
+                ),
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
@@ -129,6 +137,23 @@ class VpkgPolicyTests(unittest.TestCase):
             ]
             with patch.object(vpkg, "run", side_effect=responses):
                 self.assertEqual(vpkg.inspect_extension_rpms(Path(temporary)), [rpm_file])
+
+    def test_extension_rpm_policy_rejects_symlink_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            rpm_file = Path(temporary) / "veyra-bad.rpm"
+            rpm_file.touch()
+            responses = [
+                subprocess.CompletedProcess([], 0, "veyra-bad", ""),
+                subprocess.CompletedProcess(
+                    [], 0, "/var/lib/extensions/veyra-bad.raw\n", ""
+                ),
+                subprocess.CompletedProcess(
+                    [], 0, "lrwxrwxrwx\t/var/lib/extensions/veyra-bad.raw\n", ""
+                ),
+            ]
+            with patch.object(vpkg, "run", side_effect=responses):
+                with self.assertRaisesRegex(vpkg.VpkgError, "regular, non-executable"):
+                    vpkg.inspect_extension_rpms(Path(temporary))
 
     def test_extension_rpm_policy_rejects_system_file_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -149,6 +174,9 @@ class VpkgPolicyTests(unittest.TestCase):
             responses = [
                 subprocess.CompletedProcess([], 0, "veyra-bad", ""),
                 subprocess.CompletedProcess([], 0, "/var/lib/extensions/veyra-bad.raw\n", ""),
+                subprocess.CompletedProcess(
+                    [], 0, "-rw-r--r--\t/var/lib/extensions/veyra-bad.raw\n", ""
+                ),
                 subprocess.CompletedProcess([], 0, "postinstall scriptlet", ""),
             ]
             with patch.object(vpkg, "run", side_effect=responses):
@@ -162,6 +190,9 @@ class VpkgPolicyTests(unittest.TestCase):
             responses = [
                 subprocess.CompletedProcess([], 0, "veyra-bad", ""),
                 subprocess.CompletedProcess([], 0, "/var/lib/extensions/veyra-bad.raw\n", ""),
+                subprocess.CompletedProcess(
+                    [], 0, "-rw-r--r--\t/var/lib/extensions/veyra-bad.raw\n", ""
+                ),
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
                 subprocess.CompletedProcess([], 0, "", ""),
@@ -177,7 +208,7 @@ class VpkgPolicyTests(unittest.TestCase):
             host_extensions = Path(temporary) / "etc-extensions"
             package_image = root / "var/lib/extensions/veyra-shell-tools.raw"
             package_image.parent.mkdir(parents=True)
-            package_image.touch()
+            package_image.write_bytes(b"extension image")
             with (
                 patch.object(vpkg, "VPKG_ROOT", root),
                 patch.object(vpkg, "SYSTEM_EXTENSION_LINK_DIR", host_extensions),
@@ -198,6 +229,33 @@ class VpkgPolicyTests(unittest.TestCase):
             link = host_extensions / "veyra-shell-tools.raw"
             self.assertTrue(link.is_symlink())
             self.assertEqual(link.resolve(), package_image.resolve())
+
+    def test_sync_rejects_symlinked_extension_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            host_extensions = Path(temporary) / "etc-extensions"
+            package_image = root / "var/lib/extensions/veyra-shell-tools.raw"
+            package_image.parent.mkdir(parents=True)
+            package_image.symlink_to("/etc/passwd")
+            with (
+                patch.object(vpkg, "VPKG_ROOT", root),
+                patch.object(vpkg, "SYSTEM_EXTENSION_LINK_DIR", host_extensions),
+                patch.object(
+                    vpkg,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, "veyra-shell-tools\n", ""),
+                        subprocess.CompletedProcess(
+                            [], 0,
+                            "/var\n/var/lib\n/var/lib/extensions\n"
+                            "/var/lib/extensions/veyra-shell-tools.raw\n",
+                            "",
+                        ),
+                    ],
+                ),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "non-empty regular file"):
+                    vpkg.sync_extension_links()
 
     def test_sync_removes_stale_vpkg_link_after_package_removal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
