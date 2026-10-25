@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -12,7 +13,18 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 ROOT_VERITY_TYPE = "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
-EXPECTED_FEDORA_RELEASE = "44"
+
+def configured_fedora_release() -> str:
+    section = ""
+    for line in (ROOT / "mkosi.conf").read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif section == "Distribution" and line.startswith("Release="):
+            release = line.partition("=")[2]
+            if release.isdigit():
+                return release
+    raise ValueError("mkosi.conf must set a numeric Fedora target Release")
 
 
 def os_release_fields(content: str) -> dict[str, str]:
@@ -71,6 +83,7 @@ def uki_os_release(path: pathlib.Path) -> dict[str, str]:
 
 
 def validate_fedora_release(image: pathlib.Path) -> None:
+    expected_release = configured_fedora_release()
     osrelease_file = image.with_name(f"{image.stem}.osrelease")
     uki_file = image.with_name(f"{image.stem}.efi")
     manifest_file = image.with_name(f"{image.stem}.manifest")
@@ -81,9 +94,9 @@ def validate_fedora_release(image: pathlib.Path) -> None:
     root_release = os_release_fields(osrelease_file.read_text(encoding="utf-8"))
     uki_release = uki_os_release(uki_file)
     for label, fields in (("root", root_release), ("UKI", uki_release)):
-        if fields.get("ID") != "fedora" or fields.get("VERSION_ID") != EXPECTED_FEDORA_RELEASE:
+        if fields.get("ID") != "fedora" or fields.get("VERSION_ID") != expected_release:
             raise ValueError(
-                f"{label} artifact must identify Fedora {EXPECTED_FEDORA_RELEASE}; "
+                f"{label} artifact must identify Fedora {expected_release}; "
                 f"found ID={fields.get('ID')!r}, VERSION_ID={fields.get('VERSION_ID')!r}"
             )
     for key in ("IMAGE_ID", "IMAGE_VERSION"):
@@ -107,14 +120,29 @@ def validate_fedora_release(image: pathlib.Path) -> None:
         raise ValueError("package manifest is missing Fedora base RPMs: " + ", ".join(missing))
 
     fedora_version = str(by_name["fedora-release"].get("version", ""))
-    if not fedora_version.startswith(f"{EXPECTED_FEDORA_RELEASE}-"):
+    if not fedora_version.startswith(f"{expected_release}-"):
         raise ValueError(
-            f"fedora-release RPM must be version {EXPECTED_FEDORA_RELEASE}; found {fedora_version!r}"
+            f"fedora-release RPM must be version {expected_release}; found {fedora_version!r}"
         )
+    for package in packages:
+        if not isinstance(package, dict):
+            continue
+        name = str(package.get("name", "<unknown>"))
+        version = str(package.get("version", ""))
+        if "rawhide" in f"{name} {version}".lower():
+            raise ValueError(f"Rawhide package in Fedora {expected_release} manifest: {name} {version}")
+        foreign_release = re.search(r"\.fc(\d+)(?:\.|$)", version)
+        if foreign_release and int(foreign_release.group(1)) > int(expected_release):
+            raise ValueError(
+                f"RPM release from a newer Fedora appears in the manifest: {name} {version}"
+            )
+
     for name in ("systemd", "systemd-udev", "kernel-core"):
         version = str(by_name[name].get("version", ""))
-        if not version.endswith(".fc44"):
-            raise ValueError(f"{name} RPM must come from Fedora 44; found {version!r}")
+        if not version.endswith(f".fc{expected_release}"):
+            raise ValueError(
+                f"{name} RPM must come from Fedora {expected_release}; found {version!r}"
+            )
 
 
 def main() -> int:
@@ -208,7 +236,10 @@ def main() -> int:
         print("active root/verity partition UUIDs do not encode the generated dm-verity root hash", file=sys.stderr)
         return 1
 
-    print(f"Veyra A/B image layout and Fedora 44 root/UKI/RPM identity are valid in {image}")
+    print(
+        f"Veyra A/B image layout and Fedora {configured_fedora_release()} "
+        f"root/UKI/RPM identity are valid in {image}"
+    )
     return 0
 
 

@@ -38,6 +38,28 @@ def main() -> int:
     build = section_values(config, "Build")
     runtime = section_values(config, "Runtime")
 
+    build_environment_gate = ROOT / "scripts/check-build-environment.sh"
+    python_build_environment_gate = ROOT / "scripts/check-build-environment.py"
+    mkosi_wrapper = ROOT / "scripts/mkosi.sh"
+    if not build_environment_gate.is_file() or not python_build_environment_gate.is_file():
+        return fail("mkosi must have build-container and Fedora-repository gates")
+    wrapper_content = mkosi_wrapper.read_text(encoding="utf-8")
+    for expected in ("check-build-environment.sh", "check-build-environment.py"):
+        if expected not in wrapper_content:
+            return fail(f"mkosi.sh must run the {expected} gate before build and shell operations")
+
+    pinned_fedora_container = (
+        "registry.fedoraproject.org/fedora@sha256:"
+        "2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608"
+    )
+    for workflow in ("ci.yml", "release.yml"):
+        workflow_path = ROOT / ".github/workflows" / workflow
+        workflow_content = workflow_path.read_text(encoding="utf-8")
+        if pinned_fedora_container not in workflow_content:
+            return fail(f"{workflow} must compose images in the pinned Fedora container")
+        if "bash scripts/check-build-environment.sh" not in workflow_content:
+            return fail(f"{workflow} must gate the Fedora repositories before installing build tools")
+
     for expected in (
         "Distribution=fedora",
         "Release=44",

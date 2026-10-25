@@ -14,21 +14,21 @@ jobs:
   build-and-release:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
+      - name: Verify the pinned Fedora 44 build container before using DNF
+        run: bash scripts/check-build-environment.sh
 
       - name: Install image and signing dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
-            debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl \
-            python3 qemu-system-x86 squashfs-tools systemd-container \
-            systemd-ukify xz-utils zstd
+          dnf5 install --assumeyes \
+            btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs erofs-utils \
+            fdisk gh gnupg2 kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
+            cryptsetup sudo systemd-container systemd-ukify uv xz zstd
+      - name: Gate the build container and Fedora 44 repositories
+        run: python3 scripts/check-build-environment.py
 
       - name: Embed the pinned Veyra RPM repository key
         env:

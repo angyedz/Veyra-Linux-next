@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Fail closed unless mkosi runs in an isolated, target-matched Fedora container."""
+
+from __future__ import annotations
+
+import configparser
+import os
+import pathlib
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+class BuildEnvironmentError(RuntimeError):
+    pass
+
+
+def key_values(path: pathlib.Path) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            fields[key] = value.strip().strip('"')
+    return fields
+
+
+def target_release(config: pathlib.Path) -> str:
+    section = ""
+    for line in config.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif section == "Distribution" and line.startswith("Release="):
+            release = line.partition("=")[2]
+            if not release.isdigit():
+                break
+            return release
+    raise BuildEnvironmentError("mkosi.conf must declare a numeric Fedora target Release")
+
+
+def enabled_repo_ids(repo_directory: pathlib.Path) -> dict[str, tuple[str, dict[str, str]]]:
+    repos: dict[str, tuple[str, dict[str, str]]] = {}
+    for path in sorted(repo_directory.glob("*.repo")):
+        parser = configparser.ConfigParser(interpolation=None, strict=True)
+        try:
+            parser.read(path, encoding="utf-8")
+        except configparser.Error as error:
+            raise BuildEnvironmentError(f"invalid DNF repository file {path}: {error}") from error
+        for name in parser.sections():
+            values = dict(parser.items(name))
+            if values.get("enabled", "1").strip() == "1":
+                if name in repos:
+                    raise BuildEnvironmentError(f"duplicate enabled repository ID: {name}")
+                repos[name] = (str(path), values)
+    return repos
+
+
+def validate_environment(
+    *,
+    osrelease_path: pathlib.Path,
+    repo_directory: pathlib.Path,
+    mkosi_config: pathlib.Path,
+    enabled_repo_listing: str,
+    mountinfo: str,
+    in_container: bool,
+) -> None:
+    if not in_container:
+        raise BuildEnvironmentError("image composition must run inside an isolated Fedora container")
+
+    release = target_release(mkosi_config)
+    osrelease = key_values(osrelease_path)
+    if osrelease.get("ID") != "fedora" or osrelease.get("VERSION_ID") != release:
+        raise BuildEnvironmentError(
+            f"build container must be Fedora {release}; found "
+            f"ID={osrelease.get('ID')!r}, VERSION_ID={osrelease.get('VERSION_ID')!r}"
+        )
+
+    expected = {
+        "fedora": f"https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch",
+        "updates": "https://mirrors.fedoraproject.org/metalink?repo=updates-released-f$releasever&arch=$basearch",
+        "fedora-cisco-openh264": f"https://mirrors.fedoraproject.org/metalink?repo=fedora-cisco-openh264-$releasever&arch=$basearch",
+    }
+    configured = enabled_repo_ids(repo_directory)
+    listed = {
+        line.split()[0]
+        for line in enabled_repo_listing.splitlines()[1:]
+        if line.split()
+    }
+    if set(configured) != set(expected) or listed != set(expected):
+        raise BuildEnvironmentError(
+            "enabled repos must be only official Fedora repos for the current target "
+            f"(fedora, updates); config={sorted(configured)!r}, dnf={sorted(listed)!r}"
+        )
+    for repo, expected_url in expected.items():
+        values = configured[repo][1]
+        urls = [values.get(key, "").strip() for key in ("metalink", "mirrorlist", "baseurl")]
+        if urls.count(expected_url) != 1 or sum(bool(url) for url in urls) != 1:
+            raise BuildEnvironmentError(
+                f"Fedora repository URL for {repo} must be exactly {expected_url!r}; found {urls!r}"
+            )
+
+    home = pathlib.Path(os.environ.get("HOME", "/root")).resolve()
+    protected = {
+        pathlib.Path("/etc/dnf"),
+        pathlib.Path("/etc/yum.repos.d"),
+        pathlib.Path("/var/cache/dnf"),
+        pathlib.Path("/var/cache/libdnf5"),
+        pathlib.Path("/var/lib/dnf"),
+        pathlib.Path("/var/lib/libdnf5"),
+        pathlib.Path("/root/.cache"),
+        home / ".cache",
+    }
+    for line in mountinfo.splitlines():
+        fields = line.partition(" - ")[0].split()
+        if len(fields) < 5:
+            continue
+        mountpoint = pathlib.Path(fields[4].replace("\\040", " ")).resolve()
+        if mountpoint != pathlib.Path("/") and (
+            any(part in {"cache", ".cache", "dnf", "libdnf5", "mkosi"} for part in mountpoint.parts)
+            or any(
+            mountpoint == path or mountpoint in path.parents or path in mountpoint.parents
+            for path in protected
+            )
+        ):
+            raise BuildEnvironmentError(f"host DNF/cache mount detected at {mountpoint}")
+
+
+def main() -> int:
+    in_container = pathlib.Path("/.dockerenv").exists() or pathlib.Path("/run/.containerenv").exists()
+    try:
+        listing = subprocess.check_output(
+            ["dnf5", "repo", "list", "--enabled", "--quiet"], text=True
+        )
+        validate_environment(
+            osrelease_path=pathlib.Path("/etc/os-release"),
+            repo_directory=pathlib.Path("/etc/yum.repos.d"),
+            mkosi_config=ROOT / "mkosi.conf",
+            enabled_repo_listing=listing,
+            mountinfo=pathlib.Path("/proc/self/mountinfo").read_text(encoding="utf-8"),
+            in_container=in_container,
+        )
+    except (OSError, subprocess.CalledProcessError, BuildEnvironmentError) as error:
+        print(f"mkosi build environment gate failed: {error}", file=sys.stderr)
+        return 1
+    print(f"Isolated Fedora {target_release(ROOT / 'mkosi.conf')} build environment is valid")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

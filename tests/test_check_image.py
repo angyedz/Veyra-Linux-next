@@ -80,7 +80,27 @@ class FedoraReleaseGateTests(unittest.TestCase):
     def test_rejects_rawhide_core_rpm_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             image = self.make_artifacts(Path(temporary), systemd="262.1-1.fc46")
-            with self.assertRaisesRegex(ValueError, "systemd RPM must come from Fedora 44"):
+            with self.assertRaisesRegex(ValueError, "newer Fedora appears"):
+                check_image.validate_fedora_release(image)
+
+    def test_rejects_any_newer_fedora_rpm_in_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = self.make_artifacts(Path(temporary))
+            manifest = image.with_name("veyra-next.manifest")
+            content = json.loads(manifest.read_text(encoding="utf-8"))
+            content["packages"].append({"name": "some-library", "version": "1.0-1.fc46"})
+            manifest.write_text(json.dumps(content), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "newer Fedora appears"):
+                check_image.validate_fedora_release(image)
+
+    def test_rejects_rawhide_reference_in_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = self.make_artifacts(Path(temporary))
+            manifest = image.with_name("veyra-next.manifest")
+            content = json.loads(manifest.read_text(encoding="utf-8"))
+            content["packages"].append({"name": "rawhide-only-package", "version": "1.0-1.fc44"})
+            manifest.write_text(json.dumps(content), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Rawhide package"):
                 check_image.validate_fedora_release(image)
 
 

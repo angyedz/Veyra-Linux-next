@@ -11,10 +11,12 @@ permissions:
 jobs:
   vpkg-image-fixture:
     runs-on: ubuntu-24.04
-    container: fedora:44
+    container: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Verify the pinned Fedora 44 build container before using DNF
+        run: bash scripts/check-build-environment.sh
       - name: Install package build and signing tools
         run: dnf5 install --assumeyes createrepo_c cpio dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
       - name: Build two versions of the Veyra extension RPM
@@ -195,6 +197,7 @@ jobs:
   build:
     needs: vpkg-image-fixture
     runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -202,16 +205,16 @@ jobs:
         with:
           name: veyra-vpkg-image-fixture
           path: build/vpkg-site
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
+      - name: Verify the pinned Fedora 44 build container before using DNF
+        run: bash scripts/check-build-environment.sh
       - name: Install image builder dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
-            debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
-            cryptsetup-bin ovmf systemd-container systemd-ukify xz-utils zstd
+          dnf5 install --assumeyes \
+            btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs erofs-utils \
+            fdisk gnupg2 kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
+            cryptsetup sudo systemd-container systemd-ukify uv xz zstd
+      - name: Gate the build container and Fedora 44 repositories
+        run: python3 scripts/check-build-environment.py
       - name: Check image configuration
         run: python3 scripts/smoke.py
       - name: Add the CI-only vpkg boot test to this disposable image
