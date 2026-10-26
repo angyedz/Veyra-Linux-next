@@ -21,6 +21,7 @@ class BuildEnvironmentGateTests(unittest.TestCase):
     def validate(self, *, repos: dict[str, str], listing: str, osrelease: str = "ID=fedora\nVERSION_ID=44\n",
                  mounts: str = "", in_container: bool = True, host_runner: bool = False,
                  host_dnf_available: bool = False,
+                 host_dnf_ubuntu_owned: bool = False,
                  mkosi_config: str | None = None) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -41,6 +42,7 @@ class BuildEnvironmentGateTests(unittest.TestCase):
                 in_container=in_container,
                 host_runner=host_runner,
                 host_dnf_available=host_dnf_available,
+                host_dnf_ubuntu_owned=host_dnf_ubuntu_owned,
             )
 
     def fedora_repos(self) -> dict[str, str]:
@@ -161,22 +163,38 @@ class BuildEnvironmentGateTests(unittest.TestCase):
                 osrelease="ID=ubuntu\nVERSION_ID=24.04\n",
                 in_container=False,
                 host_runner=True,
+                host_dnf_available=True,
+                host_dnf_ubuntu_owned=True,
             )
 
     def test_rejects_ubuntu_runner_with_host_dnf_repositories(self) -> None:
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux"}):
-            with self.assertRaisesRegex(gate.BuildEnvironmentError, "must not use host DNF"):
+            with self.assertRaisesRegex(gate.BuildEnvironmentError, "host DNF must not have"):
                 self.validate(
                     repos={"host.repo": "[host]\nbaseurl=https://example.invalid\nenabled=1\n"},
                     listing="repo id repo name\nhost Host repo\n",
                     osrelease="ID=ubuntu\nVERSION_ID=24.04\n",
                     in_container=False,
                     host_runner=True,
+                    host_dnf_available=True,
+                    host_dnf_ubuntu_owned=True,
                 )
 
-    def test_rejects_ubuntu_runner_with_host_dnf_binary(self) -> None:
+    def test_rejects_ubuntu_runner_without_host_dnf(self) -> None:
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux"}):
-            with self.assertRaisesRegex(gate.BuildEnvironmentError, "must not use host DNF"):
+            with self.assertRaisesRegex(gate.BuildEnvironmentError, "require Ubuntu-packaged"):
+                self.validate(
+                    repos={},
+                    listing="repo id repo name\n",
+                    osrelease="ID=ubuntu\nVERSION_ID=24.04\n",
+                    in_container=False,
+                    host_runner=True,
+                    host_dnf_ubuntu_owned=True,
+                )
+
+    def test_rejects_non_ubuntu_host_dnf(self) -> None:
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux"}):
+            with self.assertRaisesRegex(gate.BuildEnvironmentError, "require Ubuntu-packaged"):
                 self.validate(
                     repos={},
                     listing="repo id repo name\n",

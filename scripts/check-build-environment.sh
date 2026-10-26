@@ -42,11 +42,12 @@ if [[ "${VEYRA_MKOSI_RUNNER:-}" == github-ubuntu-24.04 ]]; then
     echo "The build runner must be Ubuntu 24.04." >&2
     exit 1
   }
-  ! command -v dnf5 >/dev/null 2>&1 || {
-    echo "The Ubuntu build runner must not use a host DNF installation." >&2
+  [[ "$(command -v dnf || true)" == /usr/bin/dnf ]] && dpkg-query -S /usr/bin/dnf 2>/dev/null | grep -Eq '^dnf:[[:space:]]+/usr/bin/dnf$' || {
+    echo "The host DNF frontend must be the Ubuntu-packaged /usr/bin/dnf." >&2
     exit 1
   }
-  if [[ -d /etc/yum.repos.d ]] && find /etc/yum.repos.d -maxdepth 1 -type f -name '*.repo' -print -quit | grep -q .; then
+  if { [[ -d /etc/yum.repos.d ]] && find /etc/yum.repos.d -maxdepth 1 -type f -name '*.repo' -print -quit | grep -q .; } || \
+     { [[ -d /etc/dnf/repos.d ]] && find /etc/dnf/repos.d -maxdepth 1 -type f -name '*.repo' -print -quit | grep -q .; }; then
     echo "The Ubuntu build runner must not configure host DNF repositories." >&2
     exit 1
   fi

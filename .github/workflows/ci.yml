@@ -206,13 +206,6 @@ jobs:
         with:
           name: veyra-vpkg-image-fixture
           path: build/vpkg-site
-      - name: Gate the Ubuntu runner and Fedora 44 mkosi tools tree
-        run: bash scripts/check-build-environment.sh
-      - name: Verify the Ubuntu runner and pinned Fedora 44 tools tree
-        run: python3 scripts/check-build-environment.py
-      - name: Verify native mkosi build capability on the ephemeral runner VM
-        run: |
-          sudo python3 -c 'import pathlib, sys; caps = int(next(line.split()[1] for line in pathlib.Path("/proc/self/status").read_text().splitlines() if line.startswith("CapEff:")), 16); available = bool(caps & (1 << 21)); print(f"CAP_SYS_ADMIN available to the ephemeral runner root: {available}"); sys.exit(0 if available else 1)'
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -220,10 +213,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
-            btrfs-progs ca-certificates cpio curl cryptsetup-bin dosfstools e2fsprogs \
+            btrfs-progs ca-certificates cpio curl cryptsetup-bin dnf dosfstools e2fsprogs \
             erofs-utils fdisk git gnupg kmod mtools openssl ovmf python3 \
             qemu-system-x86 squashfs-tools sudo systemd-container systemd-ukify \
             xz-utils zstd
+      - name: Gate the Ubuntu runner and Fedora 44 mkosi tools tree
+        run: bash scripts/check-build-environment.sh
+      - name: Verify Ubuntu DNF isolation and pinned Fedora 44 tools tree
+        run: sudo --preserve-env=VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS python3 scripts/check-build-environment.py
+      - name: Verify native mkosi build capability on the ephemeral runner VM
+        run: |
+          sudo python3 -c 'import pathlib, sys; caps = int(next(line.split()[1] for line in pathlib.Path("/proc/self/status").read_text().splitlines() if line.startswith("CapEff:")), 16); available = bool(caps & (1 << 21)); print(f"CAP_SYS_ADMIN available to the ephemeral runner root: {available}"); sys.exit(0 if available else 1)'
       - name: Check image configuration
         run: python3 scripts/smoke.py
       - name: Add the CI-only vpkg boot test to this disposable image

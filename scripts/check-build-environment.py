@@ -96,6 +96,7 @@ def validate_environment(
     in_container: bool,
     host_runner: bool = False,
     host_dnf_available: bool = False,
+    host_dnf_ubuntu_owned: bool = False,
 ) -> None:
     if not in_container and not host_runner:
         raise BuildEnvironmentError("image composition must run inside an isolated Fedora container")
@@ -126,8 +127,11 @@ def validate_environment(
             for line in enabled_repo_listing.splitlines()[1:]
             if line.split()
         }
-        if configured or listed or host_dnf_available:
-            raise BuildEnvironmentError("Ubuntu host builds must not use host DNF or DNF repositories")
+        repo_files = list(repo_directory.glob("*.repo"))
+        if not host_dnf_available or not host_dnf_ubuntu_owned:
+            raise BuildEnvironmentError("Ubuntu host builds require Ubuntu-packaged /usr/bin/dnf")
+        if configured or listed or repo_files:
+            raise BuildEnvironmentError("Ubuntu host DNF must not have host repositories or repo files")
     elif osrelease.get("ID") != "fedora" or osrelease.get("VERSION_ID") != release:
         raise BuildEnvironmentError(
             f"build container must be Fedora {release}; found "
@@ -193,9 +197,20 @@ def main() -> int:
     in_container = pathlib.Path("/.dockerenv").exists() or pathlib.Path("/run/.containerenv").exists()
     host_runner = os.environ.get("VEYRA_MKOSI_RUNNER") == "github-ubuntu-24.04"
     try:
-        listing = "repo id repo name\n" if host_runner else subprocess.check_output(
-            ["dnf5", "repo", "list", "--enabled", "--quiet"], text=True
-        )
+        if host_runner:
+            listing = subprocess.check_output(
+                ["dnf", "repolist", "--enabled", "--quiet", "--cacheonly"], text=True
+            )
+            dnf_path = pathlib.Path(shutil.which("dnf") or "").resolve()
+            owner = subprocess.check_output(["dpkg-query", "-S", str(dnf_path)], text=True)
+            dnf_ubuntu_owned = dnf_path == pathlib.Path("/usr/bin/dnf") and any(
+                line.startswith("dnf: /usr/bin/dnf") for line in owner.splitlines()
+            )
+        else:
+            listing = subprocess.check_output(
+                ["dnf5", "repo", "list", "--enabled", "--quiet"], text=True
+            )
+            dnf_ubuntu_owned = False
         validate_environment(
             osrelease_path=pathlib.Path("/etc/os-release"),
             repo_directory=pathlib.Path("/etc/yum.repos.d"),
@@ -204,7 +219,8 @@ def main() -> int:
             mountinfo=pathlib.Path("/proc/self/mountinfo").read_text(encoding="utf-8"),
             in_container=in_container,
             host_runner=host_runner,
-            host_dnf_available=host_runner and shutil.which("dnf5") is not None,
+            host_dnf_available=host_runner and shutil.which("dnf") is not None,
+            host_dnf_ubuntu_owned=host_runner and dnf_ubuntu_owned,
         )
     except (OSError, subprocess.CalledProcessError, BuildEnvironmentError) as error:
         print(f"mkosi build environment gate failed: {error}", file=sys.stderr)
