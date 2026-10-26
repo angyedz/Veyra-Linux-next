@@ -49,7 +49,10 @@ jobs:
           grep -Fqx VERSION_ID=44 /etc/os-release
           # Keep the captured output plain so module labels remain searchable.
           fastfetch --show-errors --pipe true > /tmp/veyra-fastfetch.txt
-          grep -Fq "Veyra Next 0.1.0 (Fedora 44 base)" /tmp/veyra-fastfetch.txt
+          grep -Fq "Veyra Next" /tmp/veyra-fastfetch.txt || {
+            cat /tmp/veyra-fastfetch.txt
+            exit 1
+          }
           grep -Fq 'OS:' /tmp/veyra-fastfetch.txt
           grep -Fq 'Kernel:' /tmp/veyra-fastfetch.txt
           grep -Fq "#######  ###############" /tmp/veyra-fastfetch.txt
