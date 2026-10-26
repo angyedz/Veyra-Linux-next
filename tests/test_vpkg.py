@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 from importlib.machinery import SourceFileLoader
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -54,10 +56,70 @@ class VpkgSystemGenerationContractTests(unittest.TestCase):
         parsed = vpkg.build_parser().parse_args(["system", "install", "htop"])
         self.assertEqual((parsed.command, parsed.system_command, parsed.packages),
                          ("system", "install", ["htop"]))
+        self.assertFalse(parsed.assume_yes)
+        parsed = vpkg.build_parser().parse_args(["system", "install", "htop", "--yes"])
+        self.assertTrue(parsed.assume_yes)
+        parsed = vpkg.build_parser().parse_args(["system", "remove", "htop", "--yes"])
+        self.assertTrue(parsed.assume_yes)
+        parsed = vpkg.build_parser().parse_args(["system", "upgrade", "--yes"])
+        self.assertTrue(parsed.assume_yes)
         parsed = vpkg.build_parser().parse_args(["system", "upgrade"])
         self.assertEqual(parsed.system_command, "upgrade")
         with self.assertRaises(SystemExit):
             vpkg.build_parser().parse_args(["system", "upgrade", "htop"])
+
+    def test_system_generation_prints_warning_and_requires_tty_approval(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(vpkg.sys, "stdin", io.StringIO()),
+            patch("builtins.input") as prompt,
+            contextlib.redirect_stdout(output),
+        ):
+            with self.assertRaisesRegex(vpkg.VpkgError, "interactive approval"):
+                vpkg.confirm_system_generation(["htop"])
+        prompt.assert_not_called()
+        self.assertIn("System package modifications", output.getvalue())
+        self.assertIn("OTA compatibility", output.getvalue())
+        self.assertIn("Affected packages: htop", output.getvalue())
+        self.assertIn("vforge", output.getvalue())
+
+    def test_system_generation_decline_cancels_before_candidate_activation(self) -> None:
+        class TTY:
+            def isatty(self) -> bool:
+                return True
+
+        output = io.StringIO()
+        with (
+            patch.object(vpkg.sys, "stdin", TTY()),
+            patch("builtins.input", return_value="n"),
+            contextlib.redirect_stdout(output),
+        ):
+            with self.assertRaisesRegex(vpkg.VpkgError, "cancelled"):
+                vpkg.confirm_system_generation(["htop"])
+        self.assertIn("reboot is required", output.getvalue())
+
+    def test_system_generation_accepts_interactive_approval(self) -> None:
+        class TTY:
+            def isatty(self) -> bool:
+                return True
+
+        with (
+            patch.object(vpkg.sys, "stdin", TTY()),
+            patch("builtins.input", return_value="y") as prompt,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            vpkg.confirm_system_generation(["htop"])
+        prompt.assert_called_once()
+
+    def test_system_generation_yes_flag_prints_warning_without_prompt(self) -> None:
+        output = io.StringIO()
+        with (
+            patch("builtins.input") as prompt,
+            contextlib.redirect_stdout(output),
+        ):
+            vpkg.confirm_system_generation(["htop"], assume_yes=True)
+        prompt.assert_not_called()
+        self.assertIn("System package modifications", output.getvalue())
 
     def test_system_mutation_stops_at_shared_ota_lock_before_resolution(self) -> None:
         with (
@@ -66,10 +128,12 @@ class VpkgSystemGenerationContractTests(unittest.TestCase):
             patch.object(vpkg, "require_no_pending_update", side_effect=vpkg.VpkgError("OTA pending")),
             patch.object(vpkg, "validate_user_package_name"),
             patch.object(vpkg, "running_deployment_roothash") as identity,
+            patch.object(vpkg, "confirm_system_generation") as confirm,
         ):
             with self.assertRaisesRegex(vpkg.VpkgError, "OTA pending"):
                 vpkg.stage_system_generation("install", ["htop"])
         identity.assert_not_called()
+        confirm.assert_not_called()
 
     def test_ota_candidate_preparation_rejects_system_trial_before_solving(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

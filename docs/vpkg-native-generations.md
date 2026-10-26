@@ -113,8 +113,13 @@ libdnf5 transaction in candidate `/usr` and `/etc` overlays, uses a separate
 generation-owned RPM database, rejects package hooks and unsafe payloads, and
 shares the existing OTA transaction lock. The initrd selects the candidate,
 mounts generation overlays before `switch-root`, and falls back or commits it
-after the Veyra boot-health checks. Source tests cover the state transitions
-and policy helpers.
+after the Veyra boot-health checks. Before sealing a candidate,
+`vpkg system install/remove/upgrade` prints the affected package names and asks
+for interactive confirmation. A non-interactive caller must pass `--yes`; this
+only confirms the reboot-required operation and does not bypass protected
+package, signature, or transaction-policy checks. The previous generation
+remains selected until the rebooted candidate passes boot-health checks. Source
+tests cover the confirmation behavior, state transitions, and policy helpers.
 
 This remains an implementation prototype, not a supported package workflow.
 The CI and release gates verify the generated initrd contains the executable

@@ -1316,7 +1316,37 @@ def system_rpmdb_digest(rpmdb: Path) -> str:
     return digest.hexdigest()
 
 
-def stage_system_generation(action: str, specifications: list[str]) -> None:
+def confirm_system_generation(
+    changed_packages: list[str],
+    *,
+    assume_yes: bool = False,
+) -> None:
+    package_summary = ", ".join(sorted(changed_packages))
+    print(
+        "WARNING: System package modifications detected.\n"
+        "Modifying system packages may affect system stability and OTA compatibility.\n"
+        f"Affected packages: {package_summary}.\n"
+        "For development tools, consider using vforge.\n"
+        "The previous generation will be kept for rollback; a reboot is required to activate this change."
+    )
+    if assume_yes:
+        return
+    if not sys.stdin.isatty():
+        raise VpkgError("System package changes need interactive approval; pass --yes to confirm explicitly.")
+    try:
+        answer = input("Continue? [y/N]: ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer not in {"y", "yes"}:
+        raise VpkgError("System package changes cancelled; no candidate generation was activated.")
+
+
+def stage_system_generation(
+    action: str,
+    specifications: list[str],
+    *,
+    assume_yes: bool = False,
+) -> None:
     require_root()
     if action not in {"install", "remove", "upgrade"}:
         raise VpkgError("Unsupported system-generation action.")
@@ -1431,6 +1461,7 @@ def stage_system_generation(action: str, specifications: list[str]) -> None:
             # failed unmount can never leave a bootable half-finished trial.
             unmount_system_transaction_root(mounts)
             mounts = ()
+            confirm_system_generation(changed, assume_yes=assume_yes)
             run([
                 sys.executable, str(helper), "--sysroot", "/", "--seal-trial",
                 "--roothash", roothash, "--image-version", version,
@@ -3432,11 +3463,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     system = commands.add_parser("system", help="stage a Fedora system package generation for reboot activation")
     system_commands = system.add_subparsers(dest="system_command", required=True)
-    system_install = system_commands.add_parser("install", help="stage a Fedora package in a new system generation")
-    system_install.add_argument("packages", nargs="+")
-    system_remove = system_commands.add_parser("remove", help="stage removal of explicitly requested system packages")
-    system_remove.add_argument("packages", nargs="+")
-    system_upgrade = system_commands.add_parser("upgrade", help="stage a Fedora system package upgrade")
+    for action, help_text, package_count in (
+        ("install", "stage a Fedora package in a new system generation", "+"),
+        ("remove", "stage removal of explicitly requested system packages", "+"),
+        ("upgrade", "stage Fedora system package updates", None),
+    ):
+        system_action = system_commands.add_parser(action, help=help_text)
+        if package_count:
+            system_action.add_argument("packages", nargs=package_count)
+        system_action.add_argument("--yes", dest="assume_yes", action="store_true",
+                                   help="confirm the reboot-required system generation")
     system_commands.add_parser("rollback", help="select the previous native system generation")
 
     commands.add_parser("upgrade", help="upgrade installed Veyra extensions and app-layer packages")
@@ -3499,7 +3535,11 @@ def main(argv: list[str] | None = None) -> int:
             if arguments.system_command == "rollback":
                 rollback_system_generation()
             else:
-                stage_system_generation(arguments.system_command, getattr(arguments, "packages", []))
+                stage_system_generation(
+                    arguments.system_command,
+                    getattr(arguments, "packages", []),
+                    assume_yes=arguments.assume_yes,
+                )
         elif arguments.command == "upgrade":
             upgrade()
         elif arguments.command == "rollback":
