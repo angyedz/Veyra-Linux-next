@@ -245,11 +245,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
-            btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
+            btrfs-progs ca-certificates cpio curl dnf dosfstools e2fsprogs \
             debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
             cryptsetup-bin ovmf systemd-container systemd-ukify xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
+      - name: Gate Ubuntu DNF and Fedora 44 tools tree
+        env:
+          VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
+        run: bash scripts/check-build-environment.sh
+      - name: Verify isolated Ubuntu DNF configuration
+        env:
+          VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
+        run: sudo --preserve-env=VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS python3 scripts/check-build-environment.py
       - name: Add the CI-only vpkg boot test to this disposable image
         run: |
           sudo install -D -m 0644 build/vpkg-site/RPM-GPG-KEY-VEYRA \
