@@ -1,0 +1,42 @@
+name: OTA chunk transport prototype
+on:
+  pull_request:
+    paths:
+      - 'scripts/ota_chunks.py'
+      - 'scripts/benchmark_ota.py'
+      - 'scripts/ota_fetch.py'
+      - 'scripts/veyra-release.py'
+      - 'tests/test_ota_chunks.py'
+      - 'tests/test_ota_benchmark.py'
+      - 'tests/test_ota_fetch.py'
+      - 'tests/test_release_builder.py'
+      - 'tests/test_ota_manifest_validation.py'
+      - 'docs/OTA-DELTA-TRANSPORT.md'
+      - '.github/workflows/ota-chunks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ota_chunks.py'
+      - 'scripts/benchmark_ota.py'
+      - 'scripts/ota_fetch.py'
+      - 'scripts/veyra-release.py'
+      - 'tests/test_ota_chunks.py'
+      - 'tests/test_ota_benchmark.py'
+      - 'tests/test_ota_fetch.py'
+      - 'tests/test_release_builder.py'
+      - 'tests/test_ota_manifest_validation.py'
+      - 'docs/OTA-DELTA-TRANSPORT.md'
+      - '.github/workflows/ota-chunks.yml'
+permissions:
+  contents: read
+jobs:
+  offline-roundtrip:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -p 'test_ota_chunks.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_ota_benchmark.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_ota_manifest_validation.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_ota_fetch.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_release_builder.py' -v
+
