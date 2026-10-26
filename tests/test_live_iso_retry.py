@@ -38,6 +38,11 @@ n=0
 if [[ -f "$MOCK_COUNT" ]]; then n="$(cat "$MOCK_COUNT")"; fi
 n=$((n + 1))
 echo "$n" > "$MOCK_COUNT"
+if [[ "$MOCK_FAIL_MODE" = "first-console-network" && "$n" = 1 ]]; then
+  echo "Failed to download packages: curl error from mirror" >&2
+  echo "Image creation failed" > "$log"
+  exit 1
+fi
 if [[ "$MOCK_FAIL_MODE" = "first-network" && "$n" = 1 ]] || [[ "$MOCK_FAIL_MODE" = "always-network" ]]; then
   echo "Failed to download the following packages: Failed to download packages." > "$log"
   exit 1
@@ -89,6 +94,13 @@ printf '%s\\n' '-b images/eltorito.img -e images/efiboot.img'
         self.assertTrue((self.root / "build/iso-attempt-logs/livemedia-attempt-1.log").is_file())
         self.assertTrue((self.root / "build/live-iso/veyra-next-prototype-live.iso").is_file())
         self.assertTrue((self.root / "build/live-iso/veyra-next-prototype-live.iso.sha256").is_file())
+
+    def test_console_only_failure_is_detected_and_preserved(self):
+        result = self.run_builder("first-console-network")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.counter.read_text().strip(), "2")
+        console = self.root / "build/iso-attempt-logs/livemedia-attempt-1-console.log"
+        self.assertIn("curl error", console.read_text())
 
     def test_unrelated_iso_failure_does_not_retry(self):
         result = self.run_builder("other")
