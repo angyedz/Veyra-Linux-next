@@ -99,6 +99,8 @@ def main() -> int:
     live_kickstart = (ROOT / "installer/veyra-live.ks.in").read_text(encoding="utf-8")
     if "dracut-live" not in live_kickstart:
         return fail("the Live ISO Kickstart must include dracut-live for Lorax image composition")
+    if "url --url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/" not in live_kickstart:
+        return fail("the Fedora 44 Live ISO Kickstart must declare the network RPM source required by Lorax")
 
     for expected in (
         "Distribution=fedora",
