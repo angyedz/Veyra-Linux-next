@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Manage persistent, rootless Fedora development environments with Podman."""
+"""Manage persistent, rootless Veyra development environments with Podman."""
 
 from __future__ import annotations
 
@@ -2221,7 +2221,7 @@ def recover_pending_snapshot_transactions() -> None:
 
 def recover_rollback_transaction(name: str, current_metadata: dict[str, object]) -> None:
     """Recover an interrupted rollback to its already-committed pre-rollback checkpoint."""
-    base_identity_from_environment(current_metadata)
+    current_base_identity = base_identity_from_environment(current_metadata)
     data_root_text = current_metadata.get("data_root")
     if not isinstance(data_root_text, str):
         raise VforgeError("rollback transaction has no valid Vforge data root")
@@ -2247,6 +2247,13 @@ def recover_rollback_transaction(name: str, current_metadata: dict[str, object])
         or not re.fullmatch(re.escape(f"{CONTAINER_PREFIX}{name[:40]}-rollback-") + r"[a-f0-9]{6}", backup_name)
     ):
         raise VforgeError(f"Vforge rollback transaction for '{name}' is malformed")
+    checkpoint_base_identity = base_identity_from_environment(checkpoint_metadata)
+    if (
+        checkpoint_metadata.get("root_id") != current_metadata.get("root_id")
+        or checkpoint_base_identity["base_digest"] != current_base_identity["base_digest"]
+        or checkpoint_base_identity["image_version"] != current_base_identity["image_version"]
+    ):
+        raise VforgeError("rollback checkpoint identity does not match the current Veyra environment")
     expected_root = current_metadata.get("podman_root")
     graphroot = checkpoint_metadata.get("podman_root")
     layer_id = checkpoint_metadata.get("layer_id")
@@ -2281,7 +2288,7 @@ def recover_rollback_transaction(name: str, current_metadata: dict[str, object])
         layer_stack=restored.get("layer_stack", []), data_root=data_root,
         podman_root=graphroot, isolation=str(restored.get("isolation", "integrated")),
         mounts=mounts, resources=permissions, image=checkpoint_image,
-        root_id=str(restored.get("root_id", "")), base_identity=base_identity_from_environment(restored),
+        root_id=str(restored.get("root_id", "")), base_identity=checkpoint_base_identity,
     )
     save_environment(name, restored)
     if was_running:

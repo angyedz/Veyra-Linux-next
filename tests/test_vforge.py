@@ -127,6 +127,36 @@ class VforgeCommandTests(unittest.TestCase):
         with patch.object(vforge.subprocess, "run", side_effect=OSError("missing findmnt")):
             self.assertFalse(vforge.archive_is_on_read_only_mount(Path("/tmp/base.tar")))
 
+    def test_rollback_recovery_rejects_a_different_veyra_base_before_podman_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = {
+                "root_mode": "veyra-oci", "image_id": "veyra-next", "image_version": "0.1.0",
+                "base_digest": "a" * 64,
+                "base_image": "localhost/veyra-vforge-base:" + "a" * 64,
+                "image": "localhost/veyra-vforge-base:" + "a" * 64,
+                "root_id": "b" * 32, "data_root": str(root), "podman_root": str(root / "containers"),
+            }
+            checkpoint = {
+                **current,
+                "base_digest": "c" * 64,
+                "base_image": "localhost/veyra-vforge-base:" + "c" * 64,
+                "image": "localhost/vforge-snapshot:backend-checkpoint",
+            }
+            checkpoint_name = "recovery-checkpoint"
+            checkpoint_image = vforge.snapshot_image("backend", checkpoint_name)
+            checkpoint["image"] = checkpoint_image
+            vforge.write_json_file(root / ".rollback-transaction.json", {
+                "version": vforge.STATE_VERSION, "kind": "rollback", "name": "backend",
+                "data_root": str(root), "checkpoint": checkpoint_name,
+                "checkpoint_image": checkpoint_image, "checkpoint_metadata": checkpoint,
+                "was_running": False, "backup_name": "vforge-backend-rollback-012345",
+            })
+            with patch.object(vforge, "podman") as podman:
+                with self.assertRaisesRegex(vforge.VforgeError, "checkpoint identity does not match"):
+                    vforge.recover_rollback_transaction("backend", current)
+            podman.assert_not_called()
+
     def test_create_uses_fixed_image_and_network_none_without_mounts(self) -> None:
         with patch.object(vforge, "exists", return_value=False), \
              patch.object(vforge, "require_imported_veyra_base", return_value=self.BASE_IDENTITY), \
