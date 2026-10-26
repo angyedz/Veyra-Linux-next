@@ -64,11 +64,10 @@ repo_key_hash="${repo_key_hash%% *}"
 image_key_hash="$(sha256sum /usr/share/veyra/RPM-GPG-KEY-VEYRA)"
 image_key_hash="${image_key_hash%% *}"
 test "$repo_key_hash" = "$image_key_hash"
-# Trust the disposable fixture key only in this VM's RPM database. vpkg copies
-# that database into its isolated installroot before resolving app packages.
-rpm --import "$repo/RPM-GPG-KEY-VEYRA"
+# Keep the disposable fixture key in the writable test installroot database;
+# the base image RPM database under /usr is immutable.
 rpm --root "$root" --initdb
-rpm --root "$root" --import /usr/share/veyra/RPM-GPG-KEY-VEYRA
+rpm --root "$root" --import "$repo/RPM-GPG-KEY-VEYRA"
 
 vpkg channel main
 if vpkg list --available | grep -Fq veyra-shell-tools; then
