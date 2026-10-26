@@ -51,8 +51,10 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
         raise ValueError("invalid asset name")
     if not 0 < size <= MAX_ASSET_SIZE:
         raise ValueError("invalid asset size")
-    if not base_url.startswith("https://"):
-        raise ValueError("HTTPS required")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(base_url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("clean HTTPS base URL required")
     if cache.is_symlink():
         raise ValueError("symlink cache directory forbidden")
     cache.mkdir(parents=True, exist_ok=True, mode=0o700)
