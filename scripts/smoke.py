@@ -64,8 +64,13 @@ def main() -> int:
     ):
         if expected not in content:
             return fail(f"{config.name} must contain {expected!r} in [Content]")
-    if "ToolsTree=yes" not in build:
-        return fail(f"{config.name} must build through mkosi's isolated tools tree")
+    for expected in (
+        "ToolsTree=yes",
+        "ToolsTreeDistribution=fedora",
+        "ToolsTreeRelease=44",
+    ):
+        if expected not in build:
+            return fail(f"{config.name} must contain {expected!r} in [Build]")
     if "Firmware=uefi" not in runtime:
         return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
     if "KernelCommandLine=systemd.unit=graphical.target" not in content:
