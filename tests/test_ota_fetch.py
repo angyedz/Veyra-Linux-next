@@ -48,6 +48,22 @@ class FetchTests(unittest.TestCase):
             self.assertEqual(fetch.fetch_asset("https://example.invalid/releases", self.cache, self.name, self.size), "cached")
             self.assertEqual(request.call_count, 1)
 
+    def test_complete_partial_is_promoted_without_network(self):
+        self.cache.mkdir()
+        (self.cache / (self.name + ".part")).write_bytes(self.payload)
+        with patch.object(fetch.urllib.request, "urlopen") as request:
+            self.assertEqual(fetch.fetch_asset("https://example.invalid", self.cache, self.name, self.size), "cached")
+            request.assert_not_called()
+        self.assertEqual((self.cache / self.name).read_bytes(), self.payload)
+        self.assertFalse((self.cache / (self.name + ".part")).exists())
+
+    def test_corrupt_complete_partial_restarts(self):
+        self.cache.mkdir()
+        (self.cache / (self.name + ".part")).write_bytes(b"X" * self.size)
+        with patch.object(fetch.urllib.request, "urlopen", return_value=Response(self.payload)) as request:
+            self.assertEqual(fetch.fetch_asset("https://example.invalid", self.cache, self.name, self.size), "downloaded")
+            self.assertIsNone(request.call_args.args[0].get_header("Range"))
+
     def test_resume_range(self):
         self.cache.mkdir()
         cut = len(self.payload) // 2
