@@ -1119,8 +1119,14 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("command", nargs=argparse.REMAINDER)
     subparsers.add_parser("list", help="list named environments")
     subparsers.add_parser("up", help="create or open the current project's environment")
-    for action in ("install", "remove", "search", "info"):
-        package = subparsers.add_parser(action, help=f"run vpkg {action} inside a Vforge environment")
+    package_help = {
+        "install": "install packages in a Vforge environment",
+        "remove": "remove packages from a Vforge environment",
+        "search": "search for packages from a Vforge environment",
+        "info": "show package details in a Vforge environment",
+    }
+    for action, help_text in package_help.items():
+        package = subparsers.add_parser(action, help=help_text)
         package.add_argument("packages", nargs="+")
         package.add_argument("--environment", help="target a named environment; defaults to the current project")
     snapshot = subparsers.add_parser("snapshot", help="save the current environment state")
