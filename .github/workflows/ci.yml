@@ -226,6 +226,8 @@ jobs:
           sudo python3 -c 'import pathlib, sys; caps = int(next(line.split()[1] for line in pathlib.Path("/proc/self/status").read_text().splitlines() if line.startswith("CapEff:")), 16); available = bool(caps & (1 << 21)); print(f"CAP_SYS_ADMIN available to the ephemeral runner root: {available}"); sys.exit(0 if available else 1)'
       - name: Check image configuration
         run: python3 scripts/smoke.py
+      - name: Test Recovery source and image installation contract
+        run: python3 -m unittest discover -s tests -p 'test_recovery*.py' -v
       - name: Add the CI-only vpkg boot test to this disposable image
         run: |
           sudo install -D -m 0644 build/vpkg-site/RPM-GPG-KEY-VEYRA \
@@ -250,6 +252,12 @@ jobs:
           test -s mkosi.output/veyra-next.raw
           test -s mkosi.output/veyra-next.manifest
           test -s "mkosi.output/veyra-next_${version}.efi"
+          mapfile -t recovery_ukis < <(find mkosi.output -maxdepth 1 -type f -name 'veyra-recovery*.efi' -print)
+          if ((${#recovery_ukis[@]} != 1)); then
+            echo "Expected exactly one Recovery UKI, found ${#recovery_ukis[@]}" >&2
+            exit 1
+          fi
+          test -s "${recovery_ukis[0]}"
           python3 scripts/check-image.py mkosi.output/veyra-next.raw
           sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c '
           grep -Fxq VERSION_ID=44 /usr/lib/os-release
