@@ -4,15 +4,19 @@ on:
   pull_request:
     paths:
       - 'mkosi.extra/usr/share/color-schemes/**'
-      - 'mkosi.extra/etc/xdg/kdeglobals'
-      - 'tests/test_glacier_theme.py'
+      - 'mkosi.extra/usr/share/plasma/**'
+      - 'mkosi.extra/etc/xdg/**'
+      - 'mkosi.extra/usr/bin/veyra-theme'
+      - 'tests/test_glacier*.py'
       - '.github/workflows/glacier-theme.yml'
   push:
     branches: [main]
     paths:
       - 'mkosi.extra/usr/share/color-schemes/**'
-      - 'mkosi.extra/etc/xdg/kdeglobals'
-      - 'tests/test_glacier_theme.py'
+      - 'mkosi.extra/usr/share/plasma/**'
+      - 'mkosi.extra/etc/xdg/**'
+      - 'mkosi.extra/usr/bin/veyra-theme'
+      - 'tests/test_glacier*.py'
 
 permissions:
   contents: read
@@ -22,5 +26,5 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest discover -s tests -p 'test_glacier_theme.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_glacier*.py' -v
       - run: python3 scripts/smoke.py
