@@ -46,5 +46,7 @@ jobs:
           '
       - name: Check that mkosi produced a disk image
         run: test -s mkosi.output/veyra-next.raw
+      - name: Transfer the disposable image to the QEMU runner user
+        run: sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw
       - name: Boot Fedora 44 with a virtual GPU and verify v-dri
         run: python3 scripts/test-vdri-qemu.py mkosi.output/veyra-next.raw --timeout 600
