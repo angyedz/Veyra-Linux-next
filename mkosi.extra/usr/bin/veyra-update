@@ -10,6 +10,8 @@ SYSTEM_TRANSFER_DIRS=(
 )
 VPKG_LAYER_DIR=/var/lib/veyra/vpkg/app-layers
 VPKG_PENDING_FILE=/var/lib/veyra/vpkg/pending.json
+GRUB_OTA_HELPER=/usr/lib/veyra/grub_ota.py
+BIOS_BOOT_DIR=/boot
 
 valid_version() {
     [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]
@@ -103,10 +105,26 @@ uki_matches() {
     [[ "${identity%%$'\n'*}" == "$2" && "${identity##*$'\n'}" == "$3" ]]
 }
 
+uefi_firmware() {
+    [[ -d /sys/firmware/efi ]]
+}
+
+current_boot_identity() {
+    local stub identity
+    if uefi_firmware; then
+        stub="$(bootctl --print-stub-path 2>/dev/null)" || return 1
+        [[ -f "$stub" && ! -L "$stub" ]] || return 1
+        uki_identity "$stub"
+    else
+        python3 "$GRUB_OTA_HELPER" identity
+    fi
+}
+
 install_update() {
-    local version="$1" work root_definitions uki_definitions
+    local version="$1" work root_definitions boot_definitions boot_mode
     local root_device verity_device root_uuid verity_uuid roothash=""
-    local candidate_root candidate_dir result_json result_status generation parsed_json trial_uki binding_created=false
+    local candidate_root candidate_dir result_json result_status generation parsed_json trial_uki current_identity
+    local current_version current_hash kernel_asset initrd_asset binding_created=false
     local -a parsed=()
 
     valid_version "$version" || {
@@ -121,18 +139,35 @@ install_update() {
         fi
         return 1
     fi
-    for trial_uki in "/boot/EFI/Linux/veyra-next_${version}.efi" "/boot/EFI/Linux/veyra-next_${version}+"*.efi; do
-        if [[ -e "$trial_uki" || -L "$trial_uki" ]]; then
-            echo "A UKI for Veyra $version already exists; refusing to replace another deployment identity." >&2
+    if uefi_firmware; then
+        boot_mode=uefi
+        for trial_uki in "/boot/EFI/Linux/veyra-next_${version}.efi" "/boot/EFI/Linux/veyra-next_${version}+"*.efi; do
+            if [[ -e "$trial_uki" || -L "$trial_uki" ]]; then
+                echo "A UKI for Veyra $version already exists; refusing to replace another deployment identity." >&2
+                return 1
+            fi
+        done
+    else
+        boot_mode=bios
+        kernel_asset="/boot/VEYRA/veyra-next_${version}.vmlinuz"
+        initrd_asset="/boot/VEYRA/veyra-next_${version}.initrd"
+        if [[ -e "$kernel_asset" || -L "$kernel_asset" || -e "$initrd_asset" || -L "$initrd_asset" ]]; then
+            echo "BIOS boot assets for Veyra $version already exist; refusing to replace another deployment identity." >&2
             return 1
         fi
-    done
+        if ! current_identity="$(current_boot_identity)"; then
+            echo "Could not identify the running BIOS deployment; refusing to stage an update." >&2
+            return 1
+        fi
+        current_version="${current_identity%%$'\n'*}"
+        current_hash="${current_identity##*$'\n'}"
+    fi
 
     work="$(mktemp -d /run/veyra-update.XXXXXX)"
     candidate_root="$work/root"
     root_definitions="$work/root-transfer"
-    uki_definitions="$work/uki-transfer"
-    mkdir -m 0700 "$candidate_root" "$root_definitions" "$uki_definitions"
+    boot_definitions="$work/boot-transfer"
+    mkdir -m 0700 "$candidate_root" "$root_definitions" "$boot_definitions"
     cleanup_update_work() {
         trap - RETURN
         if mountpoint -q "$candidate_root"; then
@@ -145,11 +180,10 @@ install_update() {
     }
     trap cleanup_update_work RETURN
 
-    # systemd 259 has no download-only acquire verb. Stage only the immutable
-    # root and its verity tree first; without the UKI there is no boot trial.
+    # Stage only the immutable root and verity tree before vpkg preflight. The
+    # final boot resource is published only after the candidate base is ready.
     copy_effective_transfer 10-root-verity.transfer "$root_definitions"
     copy_effective_transfer 20-root.transfer "$root_definitions"
-    copy_effective_transfer 99-uki.transfer "$uki_definitions"
     "$SYSUPDATE" --no-pager --definitions="$root_definitions" update "$version"
 
     root_device="$(findfs "PARTLABEL=veyra-next_${version}")"
@@ -178,7 +212,7 @@ install_update() {
         --roothash "$roothash" \
         --output "$candidate_dir")"; then
         printf '%s\n' "$result_json" >&2
-        echo "vpkg preflight did not approve the staged base; no trial UKI was installed." >&2
+        echo "vpkg preflight did not approve the staged base; no trial boot entry was installed." >&2
         return 1
     fi
 
@@ -193,14 +227,14 @@ if generation is not None and not isinstance(generation, str):
 print(value["status"])
 print(generation or "none")
 ' <<<"$result_json")"; then
-        echo "vpkg preflight returned an invalid result; no trial UKI was installed." >&2
+        echo "vpkg preflight returned an invalid result; no trial boot entry was installed." >&2
         return 1
     fi
     mapfile -t parsed <<<"$parsed_json"
     result_status="${parsed[0]:-}"
     generation="${parsed[1]:-}"
     [[ "$result_status" == ready ]] || {
-        echo "vpkg did not approve the staged base; no trial UKI was installed." >&2
+        echo "vpkg did not approve the staged base; no trial boot entry was installed." >&2
         return 1
     }
     if [[ "$generation" != none && "$generation" != "$candidate_dir" ]]; then
@@ -209,28 +243,61 @@ print(generation or "none")
     fi
 
     # Binding the candidate and setting the shared mutation lock are one vpkg
-    # transaction. The UKI remains the final published update resource.
+    # transaction. The boot resource and firmware selection are committed last.
     vpkg bind-generation \
         --roothash "$roothash" \
         --version "$version" \
         --generation "$generation"
     binding_created=true
-    if ! "$SYSUPDATE" --no-pager --definitions="$uki_definitions" update "$version"; then
-        remove_trial_uki "$version" "$roothash"
-        vpkg cancel-pending --roothash "$roothash" --version "$version" || true
-        echo "UKI installation failed; the pending vpkg binding was canceled." >&2
-        return 1
-    fi
-    trial_uki="/boot/EFI/Linux/veyra-next_${version}+3-0.efi"
-    if [[ ! -f "$trial_uki" || -L "$trial_uki" ]] || ! uki_matches "$trial_uki" "$version" "$roothash"; then
-        remove_trial_uki "$version" "$roothash"
-        vpkg cancel-pending --roothash "$roothash" --version "$version" || true
-        echo "The installed trial UKI does not match the preflighted root; pending activation was canceled." >&2
-        return 1
+    if [[ "$boot_mode" == uefi ]]; then
+        copy_effective_transfer 99-uki.transfer "$boot_definitions"
+        if ! "$SYSUPDATE" --no-pager --definitions="$boot_definitions" update "$version"; then
+            remove_trial_uki "$version" "$roothash"
+            vpkg cancel-pending --roothash "$roothash" --version "$version" || true
+            echo "UKI installation failed; the pending vpkg binding was canceled." >&2
+            return 1
+        fi
+        trial_uki="/boot/EFI/Linux/veyra-next_${version}+3-0.efi"
+        if [[ ! -f "$trial_uki" || -L "$trial_uki" ]] || ! uki_matches "$trial_uki" "$version" "$roothash"; then
+            remove_trial_uki "$version" "$roothash"
+            vpkg cancel-pending --roothash "$roothash" --version "$version" || true
+            echo "The installed trial UKI does not match the preflighted root; pending activation was canceled." >&2
+            return 1
+        fi
+    else
+        copy_effective_transfer 80-bios-kernel.transfer "$boot_definitions"
+        copy_effective_transfer 90-bios-initrd.transfer "$boot_definitions"
+        if ! "$SYSUPDATE" --no-pager --definitions="$boot_definitions" update "$version"; then
+            remove_trial_bios_assets "$version"
+            vpkg cancel-pending --roothash "$roothash" --version "$version" || true
+            echo "BIOS kernel/initramfs installation failed; the pending vpkg binding was canceled." >&2
+            return 1
+        fi
+        kernel_asset="/boot/VEYRA/veyra-next_${version}.vmlinuz"
+        initrd_asset="/boot/VEYRA/veyra-next_${version}.initrd"
+        if [[ ! -f "$kernel_asset" || -L "$kernel_asset" || ! -s "$kernel_asset" ||
+              ! -f "$initrd_asset" || -L "$initrd_asset" || ! -s "$initrd_asset" ]]; then
+            remove_trial_bios_assets "$version"
+            vpkg cancel-pending --roothash "$roothash" --version "$version" || true
+            echo "The signed BIOS assets are incomplete; the pending vpkg binding was canceled." >&2
+            return 1
+        fi
+        sync -f /boot/VEYRA
+        if ! python3 "$GRUB_OTA_HELPER" stage \
+            --boot-dir "$BIOS_BOOT_DIR" \
+            --current-version "$current_version" \
+            --current-roothash "$current_hash" \
+            --target-version "$version" \
+            --target-roothash "$roothash"; then
+            remove_trial_bios_assets "$version"
+            vpkg cancel-pending --roothash "$roothash" --version "$version" || true
+            echo "GRUB could not safely activate the BIOS trial; the pending vpkg binding was canceled." >&2
+            return 1
+        fi
     fi
 
     printf 'Prepared Veyra %s for trial boot (dm-verity root %s).\n' "$version" "$roothash"
-    printf 'The old deployment and package generation remain selected until this UKI boots successfully.\n'
+    printf 'The previous deployment and package generation remain the fallback until this trial boots successfully.\n'
 }
 
 remove_trial_uki() {
@@ -252,8 +319,25 @@ remove_trial_uki() {
     fi
 }
 
+remove_trial_bios_assets() {
+    local version="$1" suffix asset
+    valid_version "$version" || return 2
+    for suffix in vmlinuz initrd; do
+        asset="/boot/VEYRA/veyra-next_${version}.${suffix}"
+        if [[ -L "$asset" || ( -e "$asset" && ! -f "$asset" ) ]]; then
+            echo "Refusing to remove an unsafe BIOS boot asset: $asset" >&2
+            return 1
+        fi
+    done
+    for suffix in vmlinuz initrd; do
+        rm -f -- "/boot/VEYRA/veyra-next_${version}.${suffix}"
+    done
+    sync -f /boot/VEYRA
+}
+
 settle_fallback() {
     local pending target_hash version current_stub current_version_hash exhausted stable entry
+    local current_identity current_version current_hash result
     local -a parsed_pending=() trial_entries=()
 
     [[ -f "$VPKG_PENDING_FILE" && ! -L "$VPKG_PENDING_FILE" ]] || return 0
@@ -278,6 +362,33 @@ print(version)
     target_hash="${parsed_pending[0]:-}"
     version="${parsed_pending[1]:-}"
     [[ -n "$target_hash" && -n "$version" ]] || return 0
+
+    if ! uefi_firmware; then
+        if ! current_identity="$(current_boot_identity)"; then
+            echo "Cannot inspect the running BIOS deployment; keeping package mutations blocked." >&2
+            return 0
+        fi
+        current_version="${current_identity%%$'\n'*}"
+        current_hash="${current_identity##*$'\n'}"
+        if ! result="$(python3 "$GRUB_OTA_HELPER" settle \
+            --boot-dir "$BIOS_BOOT_DIR" \
+            --current-version "$current_version" \
+            --current-roothash "$current_hash" \
+            --target-version "$version" \
+            --target-roothash "$target_hash")"; then
+            echo "Could not reconcile GRUB's BIOS trial state; keeping package mutations blocked." >&2
+            return 0
+        fi
+        if [[ "$result" != fallback ]]; then
+            return 0
+        fi
+        if ! vpkg cancel-pending --roothash "$target_hash" --version "$version"; then
+            echo "Could not release the fallback package lock; it remains pending." >&2
+            return 0
+        fi
+        echo "Verified GRUB fallback to the stable BIOS deployment; released the pending vpkg mutation lock."
+        return 0
+    fi
 
     current_stub="$(bootctl --print-stub-path 2>/dev/null)" || return 0
     [[ -f "$current_stub" && ! -L "$current_stub" ]] || return 0
@@ -321,7 +432,7 @@ print(version)
 }
 
 cancel_update() {
-    local expected_version="${1:-}" pending current_stub current_identity
+    local expected_version="${1:-}" pending current_identity
     local target_hash version current_hash current_version
     local -a parsed_pending=()
 
@@ -363,12 +474,10 @@ print(version)
         return 1
     }
 
-    current_stub="$(bootctl --print-stub-path)"
-    [[ -f "$current_stub" && ! -L "$current_stub" ]] || {
-        echo "Could not identify the running UKI; refusing to cancel the pending update." >&2
+    current_identity="$(current_boot_identity)" || {
+        echo "Could not identify the running deployment; refusing to cancel the pending update." >&2
         return 1
     }
-    current_identity="$(uki_identity "$current_stub")" || return 1
     current_version="${current_identity%%$'\n'*}"
     current_hash="${current_identity##*$'\n'}"
     if [[ "$current_hash" == "$target_hash" && "$current_version" == "$version" ]]; then
@@ -376,14 +485,24 @@ print(version)
         return 1
     fi
 
-    remove_trial_uki "$version" "$target_hash"
-    sync -f /boot/EFI/Linux
+    if uefi_firmware; then
+        remove_trial_uki "$version" "$target_hash"
+        sync -f /boot/EFI/Linux
+    else
+        python3 "$GRUB_OTA_HELPER" cancel \
+            --boot-dir "$BIOS_BOOT_DIR" \
+            --current-version "$current_version" \
+            --current-roothash "$current_hash" \
+            --target-version "$version" \
+            --target-roothash "$target_hash"
+        remove_trial_bios_assets "$version"
+    fi
     vpkg cancel-pending --roothash "$target_hash" --version "$version"
     printf 'Canceled pending Veyra %s update.\n' "$version"
 }
 
 complete_pending_if_current() {
-    local pending target_hash version current_stub current_identity
+    local pending target_hash version current_identity current_version current_hash
     local -a parsed_pending=()
 
     [[ -f "$VPKG_PENDING_FILE" && ! -L "$VPKG_PENDING_FILE" ]] || return 0
@@ -407,22 +526,29 @@ print(version)
     version="${parsed_pending[1]:-}"
     [[ -n "$target_hash" && -n "$version" ]] || return 0
 
-    if ! current_stub="$(bootctl --print-stub-path 2>/dev/null)" ||
-        [[ ! -f "$current_stub" || -L "$current_stub" ]] ||
-        ! current_identity="$(uki_identity "$current_stub")"; then
-        echo "Cannot inspect the running UKI; preserving the mutation lock." >&2
+    if ! current_identity="$(current_boot_identity)"; then
+        echo "Cannot inspect the running deployment; preserving the mutation lock." >&2
         return 0
     fi
-    if [[ "${current_identity%%$'\n'*}" != "$version" || "${current_identity##*$'\n'}" != "$target_hash" ]]; then
-        # systemd-boot can bless a manually selected old UKI. Keep OTA pending
-        # and allow that healthy fallback boot to complete normally.
+    current_version="${current_identity%%$'\n'*}"
+    current_hash="${current_identity##*$'\n'}"
+    if [[ "$current_version" != "$version" || "$current_hash" != "$target_hash" ]]; then
+        # A manually selected stable entry is healthy but does not complete
+        # the pending update; keep the candidate and package lock available.
+        return 0
+    fi
+    if ! uefi_firmware && ! python3 "$GRUB_OTA_HELPER" bless \
+        --boot-dir "$BIOS_BOOT_DIR" \
+        --current-version "$current_version" \
+        --current-roothash "$current_hash"; then
+        echo "Could not durably bless the BIOS GRUB trial; preserving the mutation lock." >&2
         return 0
     fi
     vpkg complete-pending --current
 }
 
 pending_update() {
-    local pending target_hash version entry
+    local pending target_hash version entry state_json tries_left
     local -a parsed_pending=() trial_entries=()
 
     [[ -f "$VPKG_PENDING_FILE" && ! -L "$VPKG_PENDING_FILE" ]] || {
@@ -445,6 +571,38 @@ print(version)
     target_hash="${parsed_pending[0]:-}"
     version="${parsed_pending[1]:-}"
     [[ -n "$target_hash" && -n "$version" ]] || return 1
+
+    if ! uefi_firmware; then
+        state_json="$(python3 "$GRUB_OTA_HELPER" status --boot-dir "$BIOS_BOOT_DIR")" || {
+            echo "GRUB has no valid stable/trial state for this BIOS deployment." >&2
+            return 1
+        }
+        if ! tries_left="$(python3 -c '
+import json, re, sys
+state = json.loads(sys.stdin.read())
+if state.get("veyra_trial_version") != sys.argv[1] or state.get("veyra_trial_roothash") != sys.argv[2]:
+    raise SystemExit("pending OTA identity does not match the GRUB trial")
+tries = state.get("veyra_trial_tries_left")
+if not isinstance(tries, str) or not re.fullmatch(r"[0-3]", tries):
+    raise SystemExit("GRUB trial attempt state is invalid")
+print(tries)
+' "$version" "$target_hash" <<<"$state_json")"; then
+            echo "The pending OTA marker does not match GRUB's trial boot state." >&2
+            return 1
+        fi
+        for entry in "/boot/VEYRA/veyra-next_${version}.vmlinuz" "/boot/VEYRA/veyra-next_${version}.initrd"; do
+            [[ -f "$entry" && ! -L "$entry" && -s "$entry" ]] || {
+                echo "The pending BIOS trial is missing a signed kernel or initramfs asset." >&2
+                return 1
+            }
+        done
+        if [[ "$tries_left" == 0 ]]; then
+            printf 'Veyra %s exhausted its three BIOS trial boots; reboot to return to the stable deployment.\n' "$version"
+        else
+            printf 'Veyra %s is staged as a signed GRUB BIOS trial (%s tries remain).\n' "$version" "$tries_left"
+        fi
+        return 0
+    fi
 
     shopt -s nullglob
     for entry in \
@@ -475,7 +633,9 @@ reboot_update() {
 import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])
 ' "$VPKG_PENDING_FILE")"
-    bootctl set-oneshot "veyra-next_${version}.efi"
+    if uefi_firmware; then
+        bootctl set-oneshot "veyra-next_${version}.efi"
+    fi
     systemctl reboot
 }
 
@@ -572,13 +732,14 @@ Usage: veyra-update <command> [VERSION]
 
   list       Show installed and available system versions
   check      Check whether a newer signed version is available
-  install    Stage and preflight a version before publishing its trial UKI
+  install    Stage and preflight a version before publishing its trial boot entry
   pending    Check whether a staged version awaits reboot
   reboot     Reboot only when a staged system version is waiting
-  cancel     Remove a pending trial UKI and release the vpkg mutation lock
+  cancel     Remove a pending trial and release the vpkg mutation lock
 
 Installing an update does not reboot automatically. Use the reboot command
-after saving your work. A trial boot is accepted only after boot checks pass.
+after saving your work. UEFI uses systemd-boot trial UKIs; Legacy BIOS uses
+GRUB trial state. A trial is accepted only after boot checks pass.
 EOF
         ;;
     *)

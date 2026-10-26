@@ -1,0 +1,13 @@
+[Unit]
+Description=Veyra Legacy BIOS boot acceptance marker
+After=graphical.target
+ConditionKernelCommandLine=veyra_bios_ci=1
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "printf 'VEYRA_BIOS_BOOT_CI_PASS\\n' > /dev/ttyS0"
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target

@@ -13,6 +13,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 ROOT_VERITY_TYPE = "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
+BIOS_BOOT_TYPE = "21686148-6449-6e6f-744e-656564454649"
+EFI_SYSTEM_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 
 def configured_fedora_release() -> str:
     section = ""
@@ -145,6 +147,31 @@ def validate_fedora_release(image: pathlib.Path) -> None:
             )
 
 
+def validate_bios_boot_partition(partitions: list[dict[str, object]]) -> None:
+    bios_partitions = [
+        partition
+        for partition in partitions
+        if str(partition.get("type", "")).lower() == BIOS_BOOT_TYPE
+    ]
+    if len(bios_partitions) != 1:
+        raise ValueError(
+            f"expected one GRUB BIOS Boot Partition, found {len(bios_partitions)}"
+        )
+    try:
+        sectors = int(bios_partitions[0].get("size", 0))
+    except (TypeError, ValueError) as error:
+        raise ValueError("BIOS Boot Partition has an invalid sector size") from error
+    if sectors < 2048:
+        raise ValueError("BIOS Boot Partition must be at least 1 MiB")
+    esp_partitions = [
+        partition
+        for partition in partitions
+        if str(partition.get("type", "")).lower() == EFI_SYSTEM_TYPE
+    ]
+    if len(esp_partitions) != 1:
+        raise ValueError(f"expected one EFI System Partition, found {len(esp_partitions)}")
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: check-image.py IMAGE.raw", file=sys.stderr)
@@ -171,6 +198,11 @@ def main() -> int:
         return 1
 
     partitions = layout.get("partitiontable", {}).get("partitions", [])
+    try:
+        validate_bios_boot_partition(partitions)
+    except (TypeError, ValueError) as error:
+        print(f"invalid Legacy BIOS partition layout: {error}", file=sys.stderr)
+        return 1
     root_partitions = [p for p in partitions if p.get("type", "").lower() == ROOT_TYPE]
     verity_partitions = [p for p in partitions if p.get("type", "").lower() == ROOT_VERITY_TYPE]
     labels = {p.get("name", "") for p in partitions}

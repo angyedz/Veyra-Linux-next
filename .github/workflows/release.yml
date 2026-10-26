@@ -25,7 +25,7 @@ jobs:
         run: |
           dnf5 install --assumeyes \
             btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs erofs-utils \
-            fdisk gh gnupg2 kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
+            fdisk gh gnupg2 grub2-tools-minimal kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
             cryptsetup sudo systemd-container systemd-ukify uv xz zstd
       - name: Gate the build container and Fedora 44 repositories
         run: python3 scripts/check-build-environment.py
@@ -95,6 +95,8 @@ jobs:
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
           python3 scripts/check-image.py mkosi.output/veyra-next.raw
           test -s "mkosi.output/veyra-next_${version}.efi"
+          test -s "mkosi.output/veyra-next_${version}.vmlinuz"
+          test -s "mkosi.output/veyra-next_${version}.initrd"
           test -s mkosi.output/veyra-next_*.root.raw.zst
           test -s mkosi.output/veyra-next_*.root-verity.raw.zst
           test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
@@ -121,11 +123,13 @@ jobs:
           cd mkosi.output
           mapfile -t assets < <(find . -maxdepth 1 -type f \
             \( -name "veyra-next_${IMAGE_VERSION}.efi" \
+            -o -name "veyra-next_${IMAGE_VERSION}.vmlinuz" \
+            -o -name "veyra-next_${IMAGE_VERSION}.initrd" \
             -o -name "veyra-next_${IMAGE_VERSION}_*.root.raw.zst" \
             -o -name "veyra-next_${IMAGE_VERSION}_*.root-verity.raw.zst" \) \
             -printf '%f\n' | LC_ALL=C sort)
-          if ((${#assets[@]} != 3)); then
-            echo "Expected exactly one UKI, one root image, and one verity image." >&2
+          if ((${#assets[@]} != 5)); then
+            echo "Expected one UKI, one BIOS kernel, one BIOS initramfs, one root image, and one verity image." >&2
             exit 1
           fi
           sha256sum "${assets[@]}" > SHA256SUMS
@@ -159,6 +163,8 @@ jobs:
             mkosi.output/SHA256SUMS \
             mkosi.output/SHA256SUMS.gpg \
             mkosi.output/veyra-next_"${IMAGE_VERSION}".efi \
+            mkosi.output/veyra-next_"${IMAGE_VERSION}".vmlinuz \
+            mkosi.output/veyra-next_"${IMAGE_VERSION}".initrd \
             mkosi.output/veyra-next_"${IMAGE_VERSION}"_*.root.raw.zst \
             mkosi.output/veyra-next_"${IMAGE_VERSION}"_*.root-verity.raw.zst \
             --title "Veyra Linux pre-alpha ${IMAGE_VERSION}" \
