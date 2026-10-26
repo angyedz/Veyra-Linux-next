@@ -107,7 +107,7 @@ class VpkgContainerModeContractTests(unittest.TestCase):
 
         with patch.object(Path, "stat", autospec=True, side_effect=root_owned_stat):
             with patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")):
-                return vpkg.validate_container_root(root, marker, mountinfo)
+                return vpkg.validate_container_root(root, marker, mountinfo, root / "cmdline")
 
     def _fixture(self, temporary: str):
         root = Path(temporary)
@@ -125,10 +125,11 @@ class VpkgContainerModeContractTests(unittest.TestCase):
             "image_id": "veyra-next",
             "image_version": "0.1.0",
             "base_digest": "b" * 64,
-            "storage_driver": "podman-overlay",
+            "storage_driver": "overlayfs",
             "immutable_base": True,
         }), encoding="utf-8")
         marker.chmod(0o444)
+        (root / "cmdline").write_text(f"quiet roothash={'b' * 64}\n", encoding="ascii")
         mountinfo = root / "mountinfo"
         mountinfo.write_text(f"31 1 0:1 / {marker} ro,relatime - tmpfs tmpfs ro\n", encoding="utf-8")
         return root, marker, mountinfo
@@ -173,6 +174,13 @@ class VpkgContainerModeContractTests(unittest.TestCase):
             root, marker, mountinfo = self._fixture(temporary)
             mountinfo.write_text(f"31 1 0:1 / {marker} rw,relatime - tmpfs tmpfs rw\n", encoding="utf-8")
             with self.assertRaisesRegex(vpkg.VpkgReject, "mounted read-only"):
+                self._validate(root, marker, mountinfo)
+
+    def test_container_marker_must_match_active_verity_roothash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            (root / "cmdline").write_text(f"quiet roothash={'c' * 64}\n", encoding="ascii")
+            with self.assertRaisesRegex(vpkg.VpkgReject, "active dm-verity root hash"):
                 self._validate(root, marker, mountinfo)
 
     def test_container_session_targets_root_and_private_state(self) -> None:

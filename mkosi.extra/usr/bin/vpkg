@@ -287,8 +287,9 @@ def validate_container_root(
     root: Path = Path("/"),
     marker_path: Path = CONTAINER_ROOT_MARKER,
     mountinfo_path: Path = PROC_MOUNTINFO,
+    cmdline_path: Path = Path("/proc/cmdline"),
 ) -> dict[str, object]:
-    """Fail closed unless running on a private Veyra OCI root with private state."""
+    """Fail closed unless running on a private Veyra OverlayFS root with private state."""
     try:
         mountinfo = mountinfo_path.read_text(encoding="utf-8")
         marker_stat = marker_path.stat(follow_symlinks=False)
@@ -305,13 +306,13 @@ def validate_container_root(
         "schema", "kind", "root_id", "image_id", "image_version", "base_digest",
         "storage_driver", "immutable_base",
     }
-    if not required_fields.issubset(marker) or set(marker) - required_fields - {"mount_program"}:
+    if not required_fields.issubset(marker) or set(marker) - required_fields:
         raise VpkgReject("REJECT: Vforge root marker has unknown or missing fields.")
     if (
         marker.get("schema") != 1
         or marker.get("kind") != "vforge-veyra-root"
         or marker.get("image_id") != "veyra-next"
-        or marker.get("storage_driver") != "podman-overlay"
+        or marker.get("storage_driver") != "overlayfs"
         or marker.get("immutable_base") is not True
         or not isinstance(marker.get("root_id"), str)
         or not re.fullmatch(r"[0-9a-f]{32}", marker["root_id"])
@@ -319,14 +320,20 @@ def validate_container_root(
         or not SHA256_RE.fullmatch(marker["base_digest"])
         or not isinstance(marker.get("image_version"), str)
         or not re.fullmatch(r"[A-Za-z0-9._+-]+", marker["image_version"])
-        or ("mount_program" in marker and marker["mount_program"] != "fuse-overlayfs")
     ):
-        raise VpkgReject("REJECT: Vforge root marker does not identify a private Veyra OCI deployment.")
+        raise VpkgReject("REJECT: Vforge root marker does not identify a private Veyra OverlayFS deployment.")
+    try:
+        command_line = cmdline_path.read_text(encoding="ascii")
+    except (OSError, UnicodeError) as error:
+        raise VpkgReject(f"REJECT: active Veyra dm-verity identity is unavailable: {error}") from error
+    active_roothashes = re.findall(r"(?:^|\s)roothash=([0-9a-f]{64})(?:\s|$)", command_line)
+    if len(active_roothashes) != 1 or marker["base_digest"] != active_roothashes[0]:
+        raise VpkgReject("REJECT: Vforge marker does not match the active dm-verity root hash.")
     _, _, image_id, image_version = _read_container_release_identity(root)
     if marker["image_id"] != image_id or marker["image_version"] != image_version:
         raise VpkgReject("REJECT: Vforge marker identity does not match the mounted Veyra rootfs.")
     if any(path == "/usr" or path.startswith("/usr/") for path in mounts):
-        raise VpkgReject("REJECT: container /usr and RPM database must come from the private Veyra OCI rootfs.")
+        raise VpkgReject("REJECT: container /usr and RPM database must come from the private Veyra OverlayFS rootfs.")
     database = rpm_database_path(root)
     expected_db = root / "usr/lib/sysimage/rpm"
     if database != Path("/usr/lib/sysimage/rpm") or any(
@@ -3443,7 +3450,7 @@ def build_parser() -> argparse.ArgumentParser:
     system_upgrade = system_commands.add_parser("upgrade", help="stage a Fedora system package upgrade")
     system_commands.add_parser("rollback", help="select the previous native system generation")
 
-    container = commands.add_parser("container", help="manage packages in a private Veyra OCI container root")
+    container = commands.add_parser("container", help="manage packages in a private Veyra OverlayFS root")
     container_commands = container.add_subparsers(dest="container_command", required=True)
     container_install = container_commands.add_parser("install", help="install packages into the Veyra container root")
     container_install.add_argument("packages", nargs="+")

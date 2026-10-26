@@ -1,23 +1,25 @@
-# Vpkg in Vforge containers
+# Vpkg in Vforge environments
 
 `vpkg container install NAME...`, `vpkg container remove NAME...`, and
-`vpkg container upgrade` manage RPMs in the current container's Veyra OCI
-rootfs. The commands run libdnf5 with `/` as its installroot. They do not use
-the host's native generations, extension directories, or RPM database.
+`vpkg container upgrade` manage RPMs in the current Vforge environment. They
+run libdnf5 against `/` and the environment's private RPM database. The root is
+the active Fedora 44 Veyra EROFS system image, mounted read-only as OverlayFS's
+lower layer, with the environment's own persistent upper and work directories.
+Vforge does not create a separate Fedora root or use a container engine.
 
-The container must run `vpkg` as UID 0 in its root namespace. Its immutable
-base is a Fedora 44 Veyra OCI image; Podman provides one persistent writable
-overlay per environment in the user's selected container storage. Vpkg rejects
-a root where `/usr`, the RPM database, or Vpkg state/cache have been mounted
-separately. In particular, a Fedora root with a host `/usr` overlay is not a
-supported target.
+Vpkg requires UID 0 inside the Vforge user namespace. The EROFS lower keeps the
+base system read-only; package writes go to that environment's OverlayFS upper.
+Vforge intentionally excludes the host's persistent `/etc`, `/var`, and `/home`
+mounts from the lower. Vpkg rejects separate mounts over `/usr`, the RPM
+database, or its private state and cache.
 
 ## Vforge marker contract
 
-Vforge bind-mounts a root-owned read-only marker at
-`/run/veyra-vforge/root.json`. Vpkg verifies that the marker itself is a
-read-only mount and that the identity agrees with `/usr/lib/os-release` in the
-rootfs. Required JSON fields:
+Vforge creates a root-owned, read-only bind mount at
+`/run/veyra-vforge/root.json`. Vpkg verifies the marker's mount and file modes,
+then checks its identity against `/usr/lib/os-release` and the active kernel
+`roothash=` in the environment.
+Required JSON fields:
 
 ```json
 {
@@ -26,29 +28,25 @@ rootfs. Required JSON fields:
   "root_id": "<32 lowercase hexadecimal characters, unique per environment>",
   "image_id": "veyra-next",
   "image_version": "<same as IMAGE_VERSION in the rootfs>",
-  "base_digest": "<64 lowercase hex SHA-256 OCI manifest digest>",
-  "storage_driver": "podman-overlay",
+  "base_digest": "<active 64-character dm-verity roothash>",
+  "storage_driver": "overlayfs",
   "immutable_base": true
 }
 ```
 
-The optional `mount_program` field is accepted only with value `fuse-overlayfs`
-when Podman reports it. The rootfs must report `ID=fedora`, `VERSION_ID=44`,
-`IMAGE_ID=veyra-next`, and the matching `IMAGE_VERSION`. Vpkg also requires the
-private RPM database at `/usr/lib/sysimage/rpm`.
+The rootfs must report `ID=fedora`, `VERSION_ID=44`, `IMAGE_ID=veyra-next`,
+and the matching `IMAGE_VERSION`. The marker's base digest comes from the
+running kernel's `roothash=` command-line value. Vforge refuses to create the
+marker if the active root is not a read-only EROFS Veyra deployment.
 
-All mutable package data stays inside the rootfs overlay:
+All mutable package data remains inside the environment's root overlay:
 
 - RPM database: `/usr/lib/sysimage/rpm`
 - libdnf history, persistence, state, and logs: `/var/lib/veyra/vpkg/container/`
 - libdnf metadata and package cache: `/var/cache/veyra/vpkg/container/`
 
-The identity marker asserts which immutable Veyra image Vforge selected; it
-does not grant permission to change the host. Vforge owns environment creation,
-overlay persistence, and marker lifecycle.
-
-RPM scriptlets and triggers run for container transactions so packages can
-complete their normal setup. They execute in the rootless Podman container's
-namespaces against that environment's writable overlay.
-The host and native Vpkg package paths keep scriptlet suppression and their
-existing safety policy.
+RPM scriptlets and triggers run in Vforge's user, mount, PID, and network
+namespaces against that environment's writable upper. This mode currently
+updates the environment's active upper in place; isolated package generations
+and package rollback are not implemented here yet. The host package paths
+retain their existing transaction policy.
