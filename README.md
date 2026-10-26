@@ -1,4 +1,4 @@
-# Veyra Next
+# Veyra Next Prototype
 
 ![Veyra mark](branding/veyra-logo.svg)
 
@@ -6,9 +6,9 @@ Veyra Next is a new Fedora-based desktop OS project. The intended user experienc
 
 ## Current stage
 
-This repository builds its first Fedora 44 + KDE image with `mkosi`. It includes KDE Plasma Setup for first-boot account creation, Plasma Login Manager, Wayland, Flatpak/Discover, Flathub, PipeWire, Git and common native development tools. The disk recipe lays out two EROFS root slots with dm-verity data, plus separate persistent `/etc`, `/var` and `/home` partitions. The initrd mounts the writable state before switching to the installed system.
+This repository builds a Fedora 44 + KDE prototype image with `mkosi`. It includes KDE Plasma Setup for first-boot account creation, Plasma Login Manager, Wayland, Flatpak/Discover, Flathub, PipeWire, Git and common native development tools. The disk recipe lays out two EROFS root slots with dm-verity data, plus separate persistent `/etc`, `/var` and `/home` partitions. The initrd mounts the writable state before switching to the installed system. The image identifies itself as **Veyra Next Prototype**.
 
-This is an image-building prototype, not a usable installer or pre-alpha release yet. `systemd-sysupdate` stages the matching verity partition and root into the inactive slot and installs the UKI last with three boot attempts. CI now applies a signed test update with `systemd-sysupdate`, boots the new slot in QEMU/OVMF, checks dm-verity and boot blessing, then verifies fallback after three deliberately failed trial boots. The production update-signing key is not provisioned, so there is no public OS update channel yet. The first-boot account flow still needs a separate VM validation. A graphical installer, Recovery and Developer Mode are not implemented. It has not been tested on real hardware. Steam/Proton, Discord screen sharing and NVIDIA/AMD compatibility are not yet qualified.
+This is an image-building prototype, not a usable installer or pre-alpha release yet. `systemd-sysupdate` stages the matching verity partition and root into the inactive slot and installs the UKI last with three boot attempts. CI now applies a signed test update with `systemd-sysupdate`, boots the new slot in QEMU/OVMF, checks dm-verity and boot blessing, then verifies fallback after three deliberately failed trial boots. The production update-signing key is not provisioned, so there is no public OS update channel yet. The first-boot account flow still needs a separate VM validation. Recovery has a source implementation but still needs VM validation; a graphical installer and Developer Mode are not implemented. It has not been tested on real hardware. Steam/Proton, Discord screen sharing and NVIDIA/AMD compatibility are not yet qualified.
 
 The root image is read-only EROFS and has dm-verity integrity data. Update transfers require signed `SHA256SUMS` manifests (`Verify=yes`), but a release signing key is not provisioned yet. The UKIs are unsigned, so the current image boots with Secure Boot disabled and does not authenticate the dm-verity root hash against a hardware trust root.
 

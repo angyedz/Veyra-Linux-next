@@ -228,6 +228,12 @@ jobs:
         run: python3 scripts/smoke.py
       - name: Test Recovery source and image installation contract
         run: python3 -m unittest discover -s tests -p 'test_recovery*.py' -v
+      - name: Test v-dri sysfs inventory against isolated fixtures
+        run: python3 -m unittest discover -s tests -p 'test_vdri.py' -v
+      - name: Check v-dri syntax
+        run: python3 -c 'from pathlib import Path; p=Path("mkosi.extra/usr/bin/v-dri"); compile(p.read_text(), str(p), "exec")'
+      - name: Add guest-only v-dri QEMU smoke fixture
+        run: cp -a tests/fixtures/vdri-qemu/. mkosi.extra/
       - name: Add the CI-only vpkg boot test to this disposable image
         run: |
           sudo install -D -m 0644 build/vpkg-site/RPM-GPG-KEY-VEYRA \
@@ -292,6 +298,7 @@ jobs:
           check dnf5-cli-absent sh -eu -c "! command -v dnf5"
           check vforge test -x /usr/bin/vforge
           check vforge-help /usr/bin/vforge --help
+          check v-dri test -x /usr/bin/v-dri
           check unshare /usr/bin/unshare --help
           check mount /usr/bin/mount --version
           check no-podman-cli sh -eu -c "! command -v podman"
@@ -303,6 +310,7 @@ jobs:
           check plasma-wayland test -x /usr/bin/startplasma-wayland
           node --version
           check branding test -s /usr/share/veyra/branding/veyra-logo.svg
+          check prototype-branding sh -eu -c "grep -Fq 'Veyra Next Prototype' /etc/os-release && grep -Fxq 'Track: prototype' /etc/veyra-release"
           check pinned-rpm-repository-key test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
           check veyra-sysext-level sh -eu -c "grep -Fxq SYSEXT_LEVEL=1 /etc/os-release && grep -Fxq SYSEXT_LEVEL=1 /usr/lib/os-release"
           check plasma-setup-enabled sh -eu -c "find /etc/systemd/system -type l -name plasma-setup.service -print -quit | grep -q ."
@@ -324,6 +332,9 @@ jobs:
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .
           # The BIOS QEMU harness temporarily injects serial boot diagnostics into this disposable image.
           sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw
+
+      - name: Boot Fedora 44 with a virtual GPU and verify v-dri
+        run: python3 scripts/test-vdri-qemu.py mkosi.output/veyra-next.raw --timeout 600
 
       - name: Boot the image through Legacy BIOS in QEMU
         run: python3 scripts/test-bios-boot.py --image mkosi.output/veyra-next.raw --report-dir build/bios-boot --timeout 1200
