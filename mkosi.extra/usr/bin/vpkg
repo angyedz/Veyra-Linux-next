@@ -595,7 +595,7 @@ def container_package_session(refresh: bool = False) -> Session:
             persist_dir=CONTAINER_STATE_DIR / "persist",
             state_dir=CONTAINER_STATE_DIR / "state",
             log_dir=CONTAINER_STATE_DIR / "log",
-            no_scripts=True,
+            no_scripts=False,
             refresh=refresh,
         )
     except LibdnfError as error:

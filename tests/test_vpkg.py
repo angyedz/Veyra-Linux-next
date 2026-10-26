@@ -114,6 +114,7 @@ class VpkgContainerModeContractTests(unittest.TestCase):
         self.assertEqual(options["persist_dir"], Path("/var/lib/veyra/vpkg/container/persist"))
         self.assertEqual(options["state_dir"], Path("/var/lib/veyra/vpkg/container/state"))
         self.assertEqual(options["log_dir"], Path("/var/lib/veyra/vpkg/container/log"))
+        self.assertFalse(options["no_scripts"])
 
     def test_container_transaction_policy_rejects_protected_core_changes(self) -> None:
         class Change:

@@ -46,3 +46,9 @@ All mutable package data stays inside the rootfs overlay:
 The identity marker asserts which immutable Veyra image Vforge selected; it
 does not grant permission to change the host. Vforge owns environment creation,
 overlay persistence, and marker lifecycle.
+
+RPM scriptlets and triggers run for container transactions so packages can
+complete their normal setup. They execute in the rootless Podman container's
+namespaces against that environment's writable overlay.
+The host and native Vpkg package paths keep scriptlet suppression and their
+existing safety policy.
