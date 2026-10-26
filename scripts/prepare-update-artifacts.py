@@ -19,7 +19,20 @@ sys.path.insert(0, str(ROOT / "mkosi.extra/usr/lib/veyra"))
 import grub_ota
 
 
-def image_version() -> str:
+def image_version(output_dir: pathlib.Path | None = None) -> str:
+    os_release = output_dir / "veyra-next.osrelease" if output_dir else None
+    if os_release is not None and os_release.is_file():
+        versions = []
+        for raw_line in os_release.read_text(encoding="utf-8").splitlines():
+            key, separator, value = raw_line.partition("=")
+            if separator and key == "IMAGE_VERSION":
+                versions.append(value.strip().strip('"'))
+        if len(versions) != 1 or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._+-]*", versions[0]
+        ):
+            raise ValueError(f"invalid or ambiguous IMAGE_VERSION in {os_release}")
+        return versions[0]
+
     section = ""
     for raw_line in (ROOT / "mkosi.conf").read_text(encoding="utf-8").splitlines():
         line = raw_line.split("#", 1)[0].strip()
@@ -132,7 +145,7 @@ def main() -> int:
     args = parser.parse_args()
 
     output_dir = args.output_dir.resolve()
-    version = image_version()
+    version = image_version(output_dir)
     versioned_uki = output_dir / f"veyra-next_{version}.efi"
     versioned_kernel = output_dir / f"veyra-next_{version}.vmlinuz"
     versioned_initrd = output_dir / f"veyra-next_{version}.initrd.zst"

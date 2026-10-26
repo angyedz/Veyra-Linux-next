@@ -164,11 +164,14 @@ def initialize_grubenv(path: Path, stable_version: str, stable_roothash: str) ->
 
 def render_grub_config(fallback_version: str, fallback_roothash: str) -> str:
     validate_identity(fallback_version, fallback_roothash)
-    return f"""search --no-floppy --file --set=root /grub2/grub.cfg
-insmod part_gpt
+    return f"""insmod part_gpt
 insmod fat
+insmod search
+insmod search_fs_file
+search --no-floppy --file --set=root /grub2/grub.cfg
 insmod loadenv
 insmod normal
+insmod linux
 set timeout=0
 set veyra_stable_version={fallback_version}
 set veyra_stable_roothash={fallback_roothash}
@@ -186,8 +189,12 @@ if [ -n "$veyra_trial_version" ]; then
     fi
 fi
 function veyra_boot_stable {{
-    linux /VEYRA/veyra-next_${{veyra_stable_version}}.vmlinuz roothash=${{veyra_stable_roothash}} veyra.image_version=${{veyra_stable_version}} systemd.unit=graphical.target
-    initrd /VEYRA/veyra-next_${{veyra_stable_version}}.initrd.zst
+    if linux /VEYRA/veyra-next_${{veyra_stable_version}}.vmlinuz roothash=${{veyra_stable_roothash}} veyra.image_version=${{veyra_stable_version}} systemd.unit=graphical.target; then
+        if initrd /VEYRA/veyra-next_${{veyra_stable_version}}.initrd.zst; then
+            return
+        fi
+    fi
+    echo "Could not load the stable Veyra deployment."
 }}
 function veyra_boot_trial {{
     if [ "$veyra_trial_tries_left" = "3" ]; then
@@ -202,8 +209,13 @@ function veyra_boot_trial {{
         return
     fi
     if save_env veyra_trial_tries_left; then
-        linux /VEYRA/veyra-next_${{veyra_trial_version}}.vmlinuz roothash=${{veyra_trial_roothash}} veyra.image_version=${{veyra_trial_version}} systemd.unit=graphical.target
-        initrd /VEYRA/veyra-next_${{veyra_trial_version}}.initrd.zst
+        if linux /VEYRA/veyra-next_${{veyra_trial_version}}.vmlinuz roothash=${{veyra_trial_roothash}} veyra.image_version=${{veyra_trial_version}} systemd.unit=graphical.target; then
+            if initrd /VEYRA/veyra-next_${{veyra_trial_version}}.initrd.zst; then
+                return
+            fi
+        fi
+        echo "Could not load the Veyra trial; booting the stable deployment."
+        veyra_boot_stable
     else
         echo "Could not record this Veyra trial boot; booting the stable deployment."
         veyra_boot_stable
@@ -311,6 +323,16 @@ def write_fallback_config(boot_dir: Path, version: str, roothash: str) -> None:
 def bless_trial(boot_dir: Path, current_version: str, current_roothash: str) -> None:
     validate_identity(current_version, current_roothash)
     state = read_state(boot_dir)
+    if not any(key in state for key in TRIAL_KEYS):
+        if (
+            state["veyra_stable_version"] == current_version
+            and state["veyra_stable_roothash"] == current_roothash
+        ):
+            # A previous boot may have durably blessed GRUB but failed while
+            # committing the matching vpkg generation. Let that commit retry.
+            write_fallback_config(boot_dir, current_version, current_roothash)
+            return
+        raise RuntimeError("running deployment does not match the pending GRUB trial")
     if (
         state.get("veyra_trial_version") != current_version
         or state.get("veyra_trial_roothash") != current_roothash
@@ -399,6 +421,17 @@ def main() -> int:
     parser.add_argument("--target-version")
     parser.add_argument("--target-roothash")
     args = parser.parse_args()
+    required = {
+        "identity": (),
+        "status": (),
+        "stage": ("current_version", "current_roothash", "target_version", "target_roothash"),
+        "bless": ("current_version", "current_roothash"),
+        "cancel": ("current_version", "current_roothash", "target_version", "target_roothash"),
+        "settle": ("current_version", "current_roothash", "target_version", "target_roothash"),
+    }[args.command]
+    missing = [name.replace("_", "-") for name in required if getattr(args, name) is None]
+    if missing:
+        parser.error(f"{args.command} requires: {', '.join('--' + name for name in missing)}")
     try:
         if args.command == "identity":
             version, roothash = running_bios_identity()

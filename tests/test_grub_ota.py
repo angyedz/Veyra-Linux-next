@@ -20,13 +20,16 @@ class GrubOtaTests(unittest.TestCase):
     def test_menu_counts_each_trial_before_loading_kernel_and_keeps_stable_fallback(self) -> None:
         config = grub_ota.render_grub_config("1.0.0", "a" * 64)
 
+        self.assertIn("insmod search_fs_file", config)
         self.assertIn("insmod loadenv", config)
+        self.assertIn("insmod linux", config)
         self.assertIn("load_env --file=/grub2/grubenv", config)
         self.assertIn("set default=veyra-stable", config)
         self.assertIn('set veyra_trial_tries_left=2', config)
         self.assertIn('set veyra_trial_tries_left=1', config)
         self.assertIn('set veyra_trial_tries_left=0', config)
         self.assertIn("save_env veyra_trial_tries_left", config)
+        self.assertIn("Could not load the Veyra trial; booting the stable deployment.", config)
         self.assertIn("veyra_trial_version", config)
         self.assertIn("veyra_stable_roothash", config)
         self.assertIn("/VEYRA/veyra-next_${veyra_trial_version}.vmlinuz", config)
@@ -150,6 +153,7 @@ class GrubOtaTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "does not match the pending GRUB trial"):
                 grub_ota.bless_trial(boot_dir, "1.1.0", "c" * 64)
 
+            grub_ota.bless_trial(boot_dir, "1.1.0", "b" * 64)
             grub_ota.bless_trial(boot_dir, "1.1.0", "b" * 64)
             blessed = grub_ota.read_environment(env_path)
             self.assertEqual(blessed["veyra_stable_version"], "1.1.0")

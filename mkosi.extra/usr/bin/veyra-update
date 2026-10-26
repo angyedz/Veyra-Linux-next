@@ -732,13 +732,14 @@ Usage: veyra-update <command> [VERSION]
 
   list       Show installed and available system versions
   check      Check whether a newer signed version is available
-  install    Stage and preflight a version before publishing its trial UKI
+  install    Stage and preflight a version before publishing its trial boot entry
   pending    Check whether a staged version awaits reboot
   reboot     Reboot only when a staged system version is waiting
-  cancel     Remove a pending trial UKI and release the vpkg mutation lock
+  cancel     Remove a pending trial and release the vpkg mutation lock
 
 Installing an update does not reboot automatically. Use the reboot command
-after saving your work. A trial boot is accepted only after boot checks pass.
+after saving your work. UEFI uses systemd-boot trial UKIs; Legacy BIOS uses
+GRUB trial state. A trial is accepted only after boot checks pass.
 EOF
         ;;
     *)

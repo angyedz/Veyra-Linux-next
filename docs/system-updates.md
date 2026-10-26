@@ -3,21 +3,22 @@
 ## Firmware support status
 
 The tested OTA path currently targets UEFI with systemd-boot and trial UKIs.
-Legacy BIOS is not an update-supported mode yet: `veyra-update` still selects
-the next boot with `bootctl`, and successful-boot confirmation relies on
-systemd-boot boot-count metadata. A GRUB BIOS image without an equivalent
-trial counter, blessing, and rollback path must not be shipped as supported.
-The BIOS image and QEMU boot work remains incomplete until those behaviors are
-implemented and verified under SeaBIOS.
+The code also has a Legacy BIOS path: `veyra-update` stages a kernel and
+initramfs and GRUB tracks three trial boots, blessing, and fallback. The QEMU
+gate currently checks only that the BIOS image reaches `graphical.target`;
+BIOS OTA activation, successful blessing, and rollback have not yet passed an
+end-to-end SeaBIOS test. Do not advertise BIOS updates as supported until that
+test passes.
 
 ## Transaction flow
 
 The image contains two root partitions, each paired with dm-verity data. A
-system release contains the compressed root image, its matching verity image,
-and a versioned UKI. `systemd-sysupdate` writes the root and verity payloads to
-the unused slots first and installs the UKI last. The UKI filename starts with
-three boot attempts. The current OS version is protected while staging the
-update.
+system release contains the compressed root image and its matching verity
+image, plus a versioned UKI for UEFI and a kernel/initramfs pair for Legacy
+BIOS. `systemd-sysupdate` writes the root and verity payloads to the unused
+slots first. After `vpkg` preflight, it installs the firmware-specific boot
+artifacts last: a three-attempt UKI for UEFI or versioned kernel/initramfs for
+GRUB. The current OS version is protected while staging the update.
 
 The installed command is `veyra-update`:
 
@@ -32,25 +33,25 @@ sudo veyra-update cancel
 
 Staging and rebooting are separate actions. On systemd 259, `veyra-update`
 first stages the signed root and matching dm-verity partitions in the inactive
-slot, without publishing a UKI. It verifies their root hash and mounts the
+slot, without publishing boot artifacts. It verifies their root hash and mounts the
 candidate EROFS root read-only so `vpkg` can resolve the saved explicit package
 intents and version pins against that base. A solver conflict leaves the
-currently bootable UKI and package generation selected; the inactive root and
-verity partitions may remain staged, but no trial UKI is installed.
+currently bootable deployment and package generation selected; the inactive
+root and verity partitions may remain staged, but no trial boot entry is installed.
 
 After a successful preflight, `vpkg` writes the resolved generation binding
 for the candidate `(root hash, IMAGE_VERSION)` identity and records a pending
 OTA transaction that blocks further package mutations. Compatibility is
 resolved against the root hash; the image version distinguishes deployments
 whose EROFS bytes happen to share a root hash. Only then does `veyra-update`
-install the trial UKI as the final sysupdate transfer. If UKI installation
-fails, the updater removes any unblessed trial UKI and cancels the pending
-binding. Use
+install the firmware-specific boot artifacts. If their installation or trial
+activation fails, the updater removes those unblessed artifacts and cancels
+the pending binding. Use
 `sudo veyra-update cancel` to explicitly cancel a staged trial. The pending
-package lock is released after systemd blesses the matching root-hash and image
-version, or after the fallback path verifies that the target UKI has exhausted
-its boot attempts. Merely booting the old UKI while the trial remains eligible
-does not release the lock.
+package lock is released after the firmware-specific boot check blesses the
+matching root hash and image version, or after the fallback path verifies that
+the candidate exhausted its attempts. Merely booting the old deployment while
+the trial remains eligible does not release the lock.
 
 After reboot, `vpkg` selects the package generation bound to both the running
 UKI's dm-verity root hash and `IMAGE_VERSION` before systemd-sysext activation.

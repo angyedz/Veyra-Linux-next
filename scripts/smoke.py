@@ -310,12 +310,13 @@ def main() -> int:
     bios_partition_content = bios_partition.read_text(encoding="utf-8")
     for expected in (
         "Type=21686148-6449-6e6f-744e-656564454649",
-        "Format=no",
         "SizeMinBytes=1M",
         "SizeMaxBytes=1M",
     ):
         if expected not in bios_partition_content:
             return fail(f"the BIOS Boot Partition must include {expected!r}")
+    if re.search(r"(?m)^Format=", bios_partition_content):
+        return fail("the GRUB BIOS Boot Partition must remain unformatted")
     for relative in (
         "20-empty-root-verity.conf",
         "21-empty-root.conf",

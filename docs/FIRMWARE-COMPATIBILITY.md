@@ -8,9 +8,12 @@ boot code and the conventional kernel/initramfs. CI now has a SeaBIOS QEMU
 gate that requires the guest to reach `graphical.target`; its result is
 pending until the updated workflow completes.
 
-This boot path does not yet qualify BIOS OTA activation, rollback, or
-Recovery. A BIOS image must not be released as supported until those paths
-work. Secure Boot is also unsupported.
+The BIOS updater path is implemented in `veyra-update` and GRUB state handling,
+but it is not yet qualified: the current QEMU test checks the initial BIOS
+boot only. BIOS OTA activation, blessing, and rollback need an end-to-end
+SeaBIOS test, and Recovery remains unimplemented. Do not advertise BIOS updates
+or Recovery as supported until their gates pass. Secure Boot is also
+unsupported.
 
 ## Boot design
 
@@ -24,9 +27,11 @@ work. Secure Boot is also unsupported.
 - **QEMU acceptance:** `scripts/test-bios-boot.py` runs SeaBIOS with a
   temporary disk snapshot and succeeds only when a CI-only service emits
   its marker after `graphical.target`. A timeout or early exit fails.
-- **A/B updates and Recovery:** UEFI's update and rollback path continues
-  to use systemd-boot. BIOS-specific update selection, rollback, and
-  Recovery must be implemented and tested before claiming parity.
+- **A/B updates:** UEFI uses systemd-boot. BIOS has a GRUB trial counter,
+  blessing, and fallback implementation; full OTA behavior still needs to pass
+  under SeaBIOS before claiming parity.
+- **Recovery:** BIOS and UEFI Recovery entries are not yet implemented or
+  tested.
 
 ## Diagnostics
 

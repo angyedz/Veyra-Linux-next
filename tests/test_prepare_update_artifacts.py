@@ -35,6 +35,25 @@ def write_uki(path: Path, section_name: bytes, section: bytes) -> None:
 
 
 class BiosArtifactTests(unittest.TestCase):
+    def test_uses_the_built_image_version_when_mkosi_overrides_the_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "veyra-next.osrelease").write_text(
+                'IMAGE_ID="veyra-next"\nIMAGE_VERSION="0.1.1"\n', encoding="utf-8"
+            )
+
+            self.assertEqual(prepare.image_version(output), "0.1.1")
+
+    def test_rejects_ambiguous_built_image_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "veyra-next.osrelease").write_text(
+                'IMAGE_VERSION="0.1.1"\nIMAGE_VERSION="0.1.2"\n', encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "invalid or ambiguous IMAGE_VERSION"):
+                prepare.image_version(output)
+
     def test_extracts_exact_linux_section_from_uki(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
