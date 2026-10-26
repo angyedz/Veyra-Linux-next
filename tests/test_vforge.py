@@ -5,6 +5,7 @@ import json
 import os
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -138,6 +139,57 @@ class VforgeNativeTests(unittest.TestCase):
         self.assertIn("--mount", command)
         self.assertIn("--pid", command)
         self.assertIn("--net", command)
+
+    def test_environment_unmounts_private_mounts_before_removing_runtime_tree(self) -> None:
+        environment = vforge.create("backend")
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        mounted: list[str] = []
+        commands: list[list[str]] = []
+
+        def fake_run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+            commands.append(command)
+            if command[0] == "mount" and command[1] != "--make-rprivate" and command[1] != "-o":
+                mounted.append(command[-1])
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        def fake_bind_mount(source: str, target: str, *, readonly: bool = False, mountpoints=None) -> None:
+            mounted.append(target)
+            if mountpoints is not None:
+                mountpoints.append(target)
+
+        with (
+            patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(runtime)}),
+            patch.object(vforge, "verify_immutable_root_mount"),
+            patch.object(vforge, "veyra_root_marker", return_value={}),
+            patch.object(vforge, "run", side_effect=fake_run),
+            patch.object(vforge, "mount_in_namespace", side_effect=fake_bind_mount),
+            patch.object(vforge.os, "fork", return_value=12345),
+            patch.object(vforge.os, "waitpid", return_value=(12345, 0)),
+        ):
+            self.assertEqual(vforge.run_environment(environment, ["/bin/true"]), 0)
+
+        unmounted = [command[-1] for command in commands if command[0] == "umount"]
+        self.assertEqual(unmounted, list(reversed(mounted)), f"mounted={mounted!r}")
+        self.assertEqual(list((runtime / "vforge").iterdir()), [])
+
+    def test_bind_mount_pins_regular_files_and_rejects_symlinks(self) -> None:
+        source = self.root / "device"
+        source.write_text("device fixture")
+        target = self.root / "target"
+        target.touch()
+        mountpoints: list[str] = []
+        with patch.object(vforge, "run") as run:
+            vforge.mount_in_namespace(str(source), str(target), mountpoints=mountpoints)
+
+        self.assertEqual(mountpoints, [str(target)])
+        self.assertEqual(run.call_args.args[0][1], "--bind")
+        self.assertTrue(run.call_args.args[0][2].startswith("/proc/self/fd/"))
+
+        link = self.root / "device-link"
+        link.symlink_to(source)
+        with self.assertRaisesRegex(vforge.VforgeError, "symlink"):
+            vforge.mount_in_namespace(str(link), str(target))
 
     def test_storage_root_can_be_selected_and_reused(self) -> None:
         selected = self.root / "persistent-vforge"
