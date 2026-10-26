@@ -255,7 +255,7 @@ jobs:
           test -s mkosi.output/veyra-next.manifest
           test -s "mkosi.output/veyra-next_${version}.efi"
           test -s "mkosi.output/veyra-next_${version}.vmlinuz"
-          test -s "mkosi.output/veyra-next_${version}.initrd.zst"
+          test -s "mkosi.output/veyra-next_${version}.initrd"
           python3 scripts/check-image.py mkosi.output/veyra-next.raw
           sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c '
           grep -Fxq VERSION_ID=44 /usr/lib/os-release
@@ -303,7 +303,7 @@ jobs:
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
           test -s "mkosi.output/veyra-next_${version}.efi"
           test -s "mkosi.output/veyra-next_${version}.vmlinuz"
-          test -s "mkosi.output/veyra-next_${version}.initrd.zst"
+          test -s "mkosi.output/veyra-next_${version}.initrd"
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root.raw.zst" -type f -size +0c | grep -q .
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .
 
@@ -377,7 +377,7 @@ jobs:
           grep -Fxq "IMAGE_VERSION=\"$candidate_version\"" \
             build/bios-ota-candidate/veyra-next.osrelease
           test -s "build/bios-ota-candidate/veyra-next_${candidate_version}.vmlinuz"
-          test -s "build/bios-ota-candidate/veyra-next_${candidate_version}.initrd.zst"
+          test -s "build/bios-ota-candidate/veyra-next_${candidate_version}.initrd"
           find build/bios-ota-candidate -maxdepth 1 \
             -name "veyra-next_${candidate_version}_*.root.raw.zst" -type f -size +0c | grep -q .
 

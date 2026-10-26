@@ -150,7 +150,7 @@ install_update() {
     else
         boot_mode=bios
         kernel_asset="/boot/VEYRA/veyra-next_${version}.vmlinuz"
-        initrd_asset="/boot/VEYRA/veyra-next_${version}.initrd.zst"
+        initrd_asset="/boot/VEYRA/veyra-next_${version}.initrd"
         if [[ -e "$kernel_asset" || -L "$kernel_asset" || -e "$initrd_asset" || -L "$initrd_asset" ]]; then
             echo "BIOS boot assets for Veyra $version already exist; refusing to replace another deployment identity." >&2
             return 1
@@ -274,7 +274,7 @@ print(generation or "none")
             return 1
         fi
         kernel_asset="/boot/VEYRA/veyra-next_${version}.vmlinuz"
-        initrd_asset="/boot/VEYRA/veyra-next_${version}.initrd.zst"
+        initrd_asset="/boot/VEYRA/veyra-next_${version}.initrd"
         if [[ ! -f "$kernel_asset" || -L "$kernel_asset" || ! -s "$kernel_asset" ||
               ! -f "$initrd_asset" || -L "$initrd_asset" || ! -s "$initrd_asset" ]]; then
             remove_trial_bios_assets "$version"
@@ -322,14 +322,14 @@ remove_trial_uki() {
 remove_trial_bios_assets() {
     local version="$1" suffix asset
     valid_version "$version" || return 2
-    for suffix in vmlinuz initrd.zst; do
+    for suffix in vmlinuz initrd; do
         asset="/boot/VEYRA/veyra-next_${version}.${suffix}"
         if [[ -L "$asset" || ( -e "$asset" && ! -f "$asset" ) ]]; then
             echo "Refusing to remove an unsafe BIOS boot asset: $asset" >&2
             return 1
         fi
     done
-    for suffix in vmlinuz initrd.zst; do
+    for suffix in vmlinuz initrd; do
         rm -f -- "/boot/VEYRA/veyra-next_${version}.${suffix}"
     done
     sync -f /boot/VEYRA
@@ -590,7 +590,7 @@ print(tries)
             echo "The pending OTA marker does not match GRUB's trial boot state." >&2
             return 1
         fi
-        for entry in "/boot/VEYRA/veyra-next_${version}.vmlinuz" "/boot/VEYRA/veyra-next_${version}.initrd.zst"; do
+        for entry in "/boot/VEYRA/veyra-next_${version}.vmlinuz" "/boot/VEYRA/veyra-next_${version}.initrd"; do
             [[ -f "$entry" && ! -L "$entry" && -s "$entry" ]] || {
                 echo "The pending BIOS trial is missing a signed kernel or initramfs asset." >&2
                 return 1

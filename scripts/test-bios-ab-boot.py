@@ -128,7 +128,7 @@ def stage_synthetic_failed_trial(
         assets = boot_dir / "VEYRA"
         assets.mkdir(parents=True, exist_ok=True)
         kernel = assets / f"veyra-next_{failed_version}.vmlinuz"
-        initrd = assets / f"veyra-next_{failed_version}.initrd.zst"
+        initrd = assets / f"veyra-next_{failed_version}.initrd"
         kernel.write_bytes(b"invalid BIOS trial kernel for fallback test\n")
         initrd.write_bytes(b"invalid BIOS trial initramfs for fallback test\n")
         grub_ota.stage_trial(

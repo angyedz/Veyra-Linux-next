@@ -33,7 +33,7 @@ class GrubOtaTests(unittest.TestCase):
         self.assertIn("veyra_trial_version", config)
         self.assertIn("veyra_stable_roothash", config)
         self.assertIn("/VEYRA/veyra-next_${veyra_trial_version}.vmlinuz", config)
-        self.assertIn("/VEYRA/veyra-next_${veyra_trial_version}.initrd.zst", config)
+        self.assertIn("/VEYRA/veyra-next_${veyra_trial_version}.initrd", config)
         self.assertIn("veyra.image_version=${veyra_trial_version}", config)
         self.assertIn("veyra_stable_version=1.0.0", config)
         self.assertIn("veyra_stable_roothash=" + "a" * 64, config)
@@ -84,7 +84,7 @@ class GrubOtaTests(unittest.TestCase):
             env_path = esp / "grubenv"
             grub_ota.initialize_grubenv(env_path, "1.0.0", "a" * 64)
             kernel = assets / "veyra-next_1.1.0.vmlinuz"
-            initrd = assets / "veyra-next_1.1.0.initrd.zst"
+            initrd = assets / "veyra-next_1.1.0.initrd"
             kernel.write_bytes(b"kernel")
             initrd.write_bytes(b"initrd")
             grub_ota.stage_trial(
@@ -136,7 +136,7 @@ class GrubOtaTests(unittest.TestCase):
             env_path = esp / "grubenv"
             grub_ota.initialize_grubenv(env_path, "1.0.0", "a" * 64)
             (assets / "veyra-next_1.1.0.vmlinuz").write_bytes(b"kernel")
-            (assets / "veyra-next_1.1.0.initrd.zst").write_bytes(b"initrd")
+            (assets / "veyra-next_1.1.0.initrd").write_bytes(b"initrd")
 
             grub_ota.stage_trial(
                 boot_dir,

@@ -5,12 +5,12 @@ Verify=yes
 [Source]
 Type=url-file
 Path=https://github.com/angyedz/Veyra-Linux-next/releases/latest/download/
-MatchPattern=veyra-next_@v.initrd.zst
+MatchPattern=veyra-next_@v.initrd
 
 [Target]
 Type=regular-file
 Path=/VEYRA
 PathRelativeTo=boot
-MatchPattern=veyra-next_@v.initrd.zst
+MatchPattern=veyra-next_@v.initrd
 Mode=0444
 InstancesMax=2

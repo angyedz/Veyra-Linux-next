@@ -87,7 +87,7 @@ def main() -> int:
     ):
         if expected not in output:
             return fail(f"{config.name} must contain {expected!r} in [Output]")
-    if "SplitArtifacts=partitions,uki,roothash,os-release,repart-definitions" not in output:
+    if "SplitArtifacts=partitions,uki,initrd,roothash,os-release,repart-definitions" not in output:
         return fail("the build must export root, verity and UKI artifacts for updates")
     if "ManifestFormat=json" not in output:
         return fail("the build must export an RPM manifest for the Fedora release gate")
@@ -359,7 +359,7 @@ def main() -> int:
         "10-root-verity.transfer": "veyra-next_@v_@u.root-verity.raw.zst",
         "20-root.transfer": "veyra-next_@v_@u.root.raw.zst",
         "80-bios-kernel.transfer": "veyra-next_@v.vmlinuz",
-        "90-bios-initrd.transfer": "veyra-next_@v.initrd.zst",
+        "90-bios-initrd.transfer": "veyra-next_@v.initrd",
         "99-uki.transfer": "veyra-next_@v.efi",
     }
     for name, pattern in expected_sources.items():
@@ -384,7 +384,7 @@ def main() -> int:
     if not (ROOT / "mkosi.postoutput").is_file():
         return fail("mkosi must prepare versioned update assets after image output")
     artifact_preparer = (ROOT / "scripts/prepare-update-artifacts.py").read_text(encoding="utf-8")
-    for expected in ("extract_uki_section", "write_bios_boot_files", "grub_ota.render_grub_config", ".vmlinuz", ".initrd.zst"):
+    for expected in ("extract_uki_section", "write_bios_boot_files", "grub_ota.render_grub_config", ".vmlinuz", ".initrd"):
         if expected not in artifact_preparer:
             return fail(f"the post-output artifact step must prepare BIOS boot files ({expected!r})")
     if not (ROOT / "mkosi.extra/usr/lib/veyra/grub_ota.py").is_file():

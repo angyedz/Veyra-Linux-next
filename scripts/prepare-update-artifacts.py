@@ -99,8 +99,8 @@ def write_bios_boot_files(
     roothash: str,
 ) -> None:
     kernel = output_dir / f"veyra-next_{version}.vmlinuz"
-    initrd = output_dir / f"veyra-next_{version}.initrd.zst"
-    source_initrd = output_dir / "initrd.cpio.zst"
+    initrd = output_dir / f"veyra-next_{version}.initrd"
+    source_initrd = output_dir / "veyra-next.initrd"
     if not kernel.is_file() or not initrd.is_file() or not source_initrd.is_file():
         raise ValueError("missing versioned BIOS kernel/initramfs artifacts")
 
@@ -148,7 +148,7 @@ def main() -> int:
     version = image_version(output_dir)
     versioned_uki = output_dir / f"veyra-next_{version}.efi"
     versioned_kernel = output_dir / f"veyra-next_{version}.vmlinuz"
-    versioned_initrd = output_dir / f"veyra-next_{version}.initrd.zst"
+    versioned_initrd = output_dir / f"veyra-next_{version}.initrd"
     for stale in output_dir.iterdir():
         if not stale.is_file():
             continue
@@ -156,7 +156,7 @@ def main() -> int:
             stale.unlink()
         elif stale.name.startswith("veyra-next_") and stale.name.endswith(".efi") and stale != versioned_uki:
             stale.unlink()
-        elif stale.name.startswith("veyra-next_") and stale.suffix in {".vmlinuz", ".zst"} and stale not in {
+        elif stale.name.startswith("veyra-next_") and stale.suffix in {".vmlinuz", ".zst", ".initrd"} and stale not in {
             versioned_kernel,
             versioned_initrd,
         }:
@@ -168,7 +168,7 @@ def main() -> int:
         return 1
 
     image = output_dir / "veyra-next.raw"
-    initrd = output_dir / "initrd.cpio.zst"
+    initrd = output_dir / "veyra-next.initrd"
     if not image.is_file() or not initrd.is_file():
         print("missing disk image or mkosi initrd output for Legacy BIOS boot", file=sys.stderr)
         return 1

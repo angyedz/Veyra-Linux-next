@@ -190,7 +190,7 @@ if [ -n "$veyra_trial_version" ]; then
 fi
 function veyra_boot_stable {{
     if linux /VEYRA/veyra-next_${{veyra_stable_version}}.vmlinuz roothash=${{veyra_stable_roothash}} veyra.image_version=${{veyra_stable_version}} systemd.unit=graphical.target; then
-        if initrd /VEYRA/veyra-next_${{veyra_stable_version}}.initrd.zst; then
+        if initrd /VEYRA/veyra-next_${{veyra_stable_version}}.initrd; then
             return
         fi
     fi
@@ -210,7 +210,7 @@ function veyra_boot_trial {{
     fi
     if save_env veyra_trial_tries_left; then
         if linux /VEYRA/veyra-next_${{veyra_trial_version}}.vmlinuz roothash=${{veyra_trial_roothash}} veyra.image_version=${{veyra_trial_version}} systemd.unit=graphical.target; then
-            if initrd /VEYRA/veyra-next_${{veyra_trial_version}}.initrd.zst; then
+            if initrd /VEYRA/veyra-next_${{veyra_trial_version}}.initrd; then
                 return
             fi
         fi
@@ -284,7 +284,7 @@ def stage_trial(
     if target_version == current_version:
         raise RuntimeError("the GRUB trial must use a new deployment version")
     assets_dir = boot_dir / "VEYRA"
-    for suffix in ("vmlinuz", "initrd.zst"):
+    for suffix in ("vmlinuz", "initrd"):
         asset = assets_dir / f"veyra-next_{target_version}.{suffix}"
         if not regular_asset(asset):
             raise RuntimeError(f"missing or unsafe BIOS boot asset: {asset}")
@@ -400,11 +400,11 @@ def finish_fallback(
     ):
         return False
     assets_dir = boot_dir / "VEYRA"
-    for suffix in ("vmlinuz", "initrd.zst"):
+    for suffix in ("vmlinuz", "initrd"):
         asset = assets_dir / f"veyra-next_{target_version}.{suffix}"
         if asset.is_symlink() or (asset.exists() and not asset.is_file()):
             raise RuntimeError(f"refusing to retire an unsafe BIOS boot asset: {asset}")
-    for suffix in ("vmlinuz", "initrd.zst"):
+    for suffix in ("vmlinuz", "initrd"):
         (assets_dir / f"veyra-next_{target_version}.{suffix}").unlink(missing_ok=True)
     sync_path(assets_dir)
     env_path = environment_path(boot_dir)

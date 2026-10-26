@@ -82,8 +82,8 @@ class BiosArtifactTests(unittest.TestCase):
             output = root / "output"
             output.mkdir()
             (output / "veyra-next_0.1.0.vmlinuz").write_bytes(b"kernel")
-            (output / "veyra-next_0.1.0.initrd.zst").write_bytes(b"initrd")
-            (output / "initrd.cpio.zst").write_bytes(b"source initrd")
+            (output / "veyra-next_0.1.0.initrd").write_bytes(b"initrd")
+            (output / "veyra-next.initrd").write_bytes(b"source initrd")
             copied_config: list[str] = []
             copied_grubenv: list[bytes] = []
 
@@ -117,7 +117,7 @@ class BiosArtifactTests(unittest.TestCase):
             self.assertIn("load_env --file=/grub2/grubenv", copied_config[0])
             self.assertIn("roothash=" + "a" * 64, copied_config[0])
             self.assertIn("/VEYRA/veyra-next_${veyra_stable_version}.vmlinuz", copied_config[0])
-            self.assertIn("/VEYRA/veyra-next_${veyra_stable_version}.initrd.zst", copied_config[0])
+            self.assertIn("/VEYRA/veyra-next_${veyra_stable_version}.initrd", copied_config[0])
             self.assertIn("veyra.image_version=${veyra_stable_version}", copied_config[0])
             self.assertEqual(run.call_count, 6)
 

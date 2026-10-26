@@ -644,7 +644,7 @@ def inject_bios_guest_ota_test(
                 "grep -Fq 'no trial boot entry was installed' \"$state/conflict.log\"\n"
                 "test ! -e \"$pending\"\n"
                 f"test ! -e /boot/VEYRA/veyra-next_{version}.vmlinuz\n"
-                f"test ! -e /boot/VEYRA/veyra-next_{version}.initrd.zst\n"
+                f"test ! -e /boot/VEYRA/veyra-next_{version}.initrd\n"
                 "/usr/bin/veyra-update pending >\"$state/no-pending.log\"\n"
                 "grep -Fq 'No Veyra system update is waiting for a reboot.' \"$state/no-pending.log\"\n"
                 "if /usr/bin/veyra-update reboot >\"$state/no-reboot.log\" 2>&1; then\n"
@@ -806,7 +806,7 @@ def main() -> int:
                 f"veyra-next_{payload_version}_*.root.raw.zst"
             ))
             bios_kernel = payload_dir / f"veyra-next_{payload_version}.vmlinuz"
-            bios_initrd = payload_dir / f"veyra-next_{payload_version}.initrd.zst"
+            bios_initrd = payload_dir / f"veyra-next_{payload_version}.initrd"
             if (
                 len(root_candidates) != 1
                 or not bios_kernel.is_file()

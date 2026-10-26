@@ -96,7 +96,7 @@ jobs:
           python3 scripts/check-image.py mkosi.output/veyra-next.raw
           test -s "mkosi.output/veyra-next_${version}.efi"
           test -s "mkosi.output/veyra-next_${version}.vmlinuz"
-          test -s "mkosi.output/veyra-next_${version}.initrd.zst"
+          test -s "mkosi.output/veyra-next_${version}.initrd"
           test -s mkosi.output/veyra-next_*.root.raw.zst
           test -s mkosi.output/veyra-next_*.root-verity.raw.zst
           test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
@@ -124,7 +124,7 @@ jobs:
           mapfile -t assets < <(find . -maxdepth 1 -type f \
             \( -name "veyra-next_${IMAGE_VERSION}.efi" \
             -o -name "veyra-next_${IMAGE_VERSION}.vmlinuz" \
-            -o -name "veyra-next_${IMAGE_VERSION}.initrd.zst" \
+            -o -name "veyra-next_${IMAGE_VERSION}.initrd" \
             -o -name "veyra-next_${IMAGE_VERSION}_*.root.raw.zst" \
             -o -name "veyra-next_${IMAGE_VERSION}_*.root-verity.raw.zst" \) \
             -printf '%f\n' | LC_ALL=C sort)
@@ -164,7 +164,7 @@ jobs:
             mkosi.output/SHA256SUMS.gpg \
             mkosi.output/veyra-next_"${IMAGE_VERSION}".efi \
             mkosi.output/veyra-next_"${IMAGE_VERSION}".vmlinuz \
-            mkosi.output/veyra-next_"${IMAGE_VERSION}".initrd.zst \
+            mkosi.output/veyra-next_"${IMAGE_VERSION}".initrd \
             mkosi.output/veyra-next_"${IMAGE_VERSION}"_*.root.raw.zst \
             mkosi.output/veyra-next_"${IMAGE_VERSION}"_*.root-verity.raw.zst \
             --title "Veyra Linux pre-alpha ${IMAGE_VERSION}" \
