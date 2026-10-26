@@ -58,10 +58,11 @@ The image is configured to offer KDE Plasma Setup on first boot so the user can 
 Those are product goals, not claims that this image already provides them.
 
 `vforge` supports native OverlayFS upper/work storage, named and project-local
-environments, and explicitly approved bind mounts. Namespace and OverlayFS
-runtime behavior still needs Fedora 44 guest validation. Snapshot/rollback,
-permission profiles, trusted desktop resources, and compatibility management
-are not implemented. See [the vforge implementation and limits](docs/vforge.md).
+environments, explicitly approved bind mounts, and opt-in shared networking.
+Namespace and OverlayFS runtime behavior still needs Fedora 44 guest validation.
+Snapshot/rollback, most permission profiles, trusted desktop resources, and
+compatibility management are not implemented. See [the vforge implementation
+and limits](docs/vforge.md).
 
 ## Architectural direction
 

@@ -171,6 +171,9 @@ def environment_metadata(path: Path) -> dict:
     verify_private_directory(path / "upper", "OverlayFS upper directory")
     verify_private_directory(path / "work", "OverlayFS work directory")
     validate_mount_records(value.get("mounts", []))
+    network = value.setdefault("network", "isolated")
+    if not isinstance(network, str) or network not in {"isolated", "shared"}:
+        raise VforgeError("environment metadata has an invalid network permission")
     project = value.get("project")
     if project is None:
         expected = store_root() / "environments" / name
@@ -272,36 +275,62 @@ def normalize_mounts(items: object) -> list[dict[str, str]]:
     return result
 
 
-def project_mount_approvals(project: Path) -> list[dict[str, str]]:
+def project_permission_state() -> dict:
     approval_path = config_directory() / PERMISSION_FILE
     state = read_private_json_optional(
-        approval_path, "Vforge mount approvals", {"schema": 1, "projects": {}}
+        approval_path, "Vforge permission approvals", {"schema": 1, "projects": {}, "network_projects": {}}
     )
-    if not isinstance(state, dict) or state.get("schema") != 1 or not isinstance(state.get("projects"), dict):
-        raise VforgeError("Vforge mount approval state is malformed")
-    for project_name, mounts in state["projects"].items():
+    if (not isinstance(state, dict) or state.get("schema") != 1
+            or not isinstance(state.get("projects"), dict)
+            or not isinstance(state.get("network_projects", {}), dict)):
+        raise VforgeError("Vforge permission approval state is malformed")
+    state.setdefault("network_projects", {})
+    for project_name in state["projects"]:
         if not isinstance(project_name, str) or not Path(project_name).is_absolute():
-            raise VforgeError("Vforge mount approval state contains an invalid project path")
-        state["projects"][project_name] = validate_mount_records(mounts)
-    return state["projects"].get(str(project), [])
+            raise VforgeError("Vforge permission approval state contains an invalid project path")
+    state["projects"] = {project_name: validate_mount_records(mounts)
+                          for project_name, mounts in state["projects"].items()}
+    network_projects = state.get("network_projects", {})
+    for project_name, network in network_projects.items():
+        if (not isinstance(project_name, str) or not Path(project_name).is_absolute()
+                or network != "shared"):
+            raise VforgeError("Vforge permission approval state contains an invalid network grant")
+    return state
 
 
-def authorize_project_mounts(name: str, project: Path, requested: list[dict[str, str]]) -> None:
+def project_mount_approvals(project: Path) -> list[dict[str, str]]:
+    return project_permission_state()["projects"].get(str(project), [])
+
+
+def project_network_approval(project: Path) -> str:
+    return project_permission_state()["network_projects"].get(str(project), "isolated")
+
+
+def authorize_project_permissions(
+    name: str,
+    project: Path,
+    requested_mounts: list[dict[str, str]],
+    requested_network: str,
+) -> None:
     approval_path = config_directory() / PERMISSION_FILE
-    state = read_private_json_optional(
-        approval_path, "Vforge mount approvals", {"schema": 1, "projects": {}}
-    )
-    if not isinstance(state, dict) or state.get("schema") != 1 or not isinstance(state.get("projects"), dict):
-        raise VforgeError("Vforge mount approval state is malformed")
-    approved = project_mount_approvals(project)
-    added = [item for item in requested if item not in approved]
-    if added:
-        confirm_permissions(name, added)
-    if requested:
-        state["projects"][str(project)] = requested
+    state = project_permission_state()
+    project_key = str(project)
+    approved_mounts = state["projects"].get(project_key, [])
+    added_mounts = [mount for mount in requested_mounts if mount not in approved_mounts]
+    if added_mounts:
+        confirm_permissions(name, added_mounts)
+    if requested_network == "shared" and state["network_projects"].get(project_key) != "shared":
+        confirm_network_permission(name)
+
+    if requested_mounts:
+        state["projects"][project_key] = requested_mounts
     else:
-        state["projects"].pop(str(project), None)
-    write_private_json(approval_path, state, "Vforge mount approvals")
+        state["projects"].pop(project_key, None)
+    if requested_network == "shared":
+        state["network_projects"][project_key] = "shared"
+    else:
+        state["network_projects"].pop(project_key, None)
+    write_private_json(approval_path, state, "Vforge permission approvals")
 
 
 def confirm_permissions(name: str, requested: list[dict[str, str]]) -> None:
@@ -313,21 +342,45 @@ def confirm_permissions(name: str, requested: list[dict[str, str]]) -> None:
         raise VforgeError("host mount permission was not granted")
 
 
-def create(name: str, *, project: Path | None = None, mounts: list[dict[str, str]] | None = None) -> Path:
+def confirm_network_permission(name: str) -> None:
+    print(
+        f"Environment '{name}' requests shared host networking. "
+        "It can reach the internet and services on the local network."
+    )
+    if not sys.stdin.isatty():
+        raise VforgeError("shared network access requires interactive approval")
+    if input("Allow shared network access? [y/N] ").strip().lower() not in {"y", "yes"}:
+        raise VforgeError("shared network access was not granted")
+
+
+def create(
+    name: str,
+    *,
+    project: Path | None = None,
+    mounts: list[dict[str, str]] | None = None,
+    network: str = "isolated",
+) -> Path:
     validate_name(name)
+    if not isinstance(network, str) or network not in {"isolated", "shared"}:
+        raise VforgeError("network must be isolated or shared")
     if project is not None:
         project = project.resolve(strict=True)
         if not project.is_dir():
             raise VforgeError("project path must be a directory")
         ensure_private_directory(project / ".vforge")
         requested = validate_mount_records(mounts or [])
-        authorize_project_mounts(name, project, requested)
+        authorize_project_permissions(name, project, requested, network)
     else:
         requested = validate_mount_records(mounts or [])
         if requested:
             raise VforgeError("host mounts can only be configured in a project .vforge.toml file")
         ensure_private_directory(store_root())
         ensure_private_directory(store_root() / "environments")
+        if network == "shared":
+            existing = environment_path(name)
+            previous_network = environment_metadata(existing).get("network", "isolated") if existing.exists() else "isolated"
+            if previous_network != "shared":
+                confirm_network_permission(name)
     path = environment_path(name, project=project)
     if path.is_symlink():
         raise VforgeError("project Vforge state may not use symlinks")
@@ -336,8 +389,10 @@ def create(name: str, *, project: Path | None = None, mounts: list[dict[str, str
         if current.get("project") != (str(project) if project else None):
             raise VforgeError(f"environment '{name}' already belongs to a different project")
         previous = current.get("mounts", [])
-        if requested != previous:
+        previous_network = current.get("network", "isolated")
+        if requested != previous or previous_network != network:
             current["mounts"] = requested
+            current["network"] = network
             write_metadata(path, current)
         print(f"Environment '{name}' already exists at {path}")
         return path
@@ -355,18 +410,19 @@ def create(name: str, *, project: Path | None = None, mounts: list[dict[str, str
         "work": str(path / "work"),
         "project": str(project) if project else None,
         "mounts": requested,
+        "network": network,
     }
     write_metadata(path, metadata)
     print(f"Created native OverlayFS environment '{name}' at {path}")
     return path
 
 
-def project_settings(project: Path) -> tuple[str, list[dict[str, str]]]:
+def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str]:
     config = project / PROJECT_CONFIG
     try:
         descriptor = os.open(config, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
-        return project.name.lower().replace(" ", "-")[:55] or "project", []
+        return project.name.lower().replace(" ", "-")[:55] or "project", [], "isolated"
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise VforgeError("project Vforge configuration may not be a symlink") from error
@@ -393,13 +449,16 @@ def project_settings(project: Path) -> tuple[str, list[dict[str, str]]]:
     if home_mode != "project-only":
         raise VforgeError("native Vforge currently supports project-only Home access")
     mounts = normalize_mounts(permissions.get("mounts", []))
-    return name, mounts
+    network = permissions.get("network", "isolated")
+    if not isinstance(network, str) or network not in {"isolated", "shared"}:
+        raise VforgeError("permissions.network must be isolated or shared")
+    return name, mounts, network
 
 
 def project_up(cwd: Path) -> Path:
     project = cwd.resolve()
-    name, mounts = project_settings(project)
-    return create(name, project=project, mounts=mounts)
+    name, mounts, network = project_settings(project)
+    return create(name, project=project, mounts=mounts, network=network)
 
 
 def namespace_command(path: Path, command: Sequence[str]) -> int:
@@ -407,10 +466,10 @@ def namespace_command(path: Path, command: Sequence[str]) -> int:
     verify_project_mount_approvals(metadata)
     if not command:
         command = ["/bin/bash", "--login"]
-    arguments = [
-        "unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--net",
-        sys.executable, str(Path(__file__).resolve()), "_run", str(path), *command,
-    ]
+    arguments = ["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork"]
+    if metadata["network"] == "isolated":
+        arguments.append("--net")
+    arguments.extend([sys.executable, str(Path(__file__).resolve()), "_run", str(path), *command])
     try:
         result = subprocess.run(arguments)
     except FileNotFoundError as error:
@@ -424,9 +483,15 @@ def verify_project_mount_approvals(metadata: dict) -> None:
     project = metadata.get("project")
     if project is None:
         return
-    approved = project_mount_approvals(Path(project))
+    project_path = Path(project)
+    _, configured_mounts, configured_network = project_settings(project_path)
+    if configured_mounts != metadata.get("mounts", []) or configured_network != metadata.get("network", "isolated"):
+        raise VforgeError("project Vforge permissions changed; run `vforge up` to review and apply them")
+    approved = project_mount_approvals(project_path)
     if any(mount not in approved for mount in metadata.get("mounts", [])):
         raise VforgeError("project environment contains unapproved host mounts; review .vforge.toml with `vforge up`")
+    if metadata.get("network", "isolated") == "shared" and project_network_approval(project_path) != "shared":
+        raise VforgeError("shared network permission is not approved; review .vforge.toml with `vforge up`")
 
 
 def mount_in_namespace(
@@ -681,6 +746,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser = subparsers.add_parser("create", help="create a persistent OverlayFS environment")
     create_parser.add_argument("name")
     create_parser.add_argument("--storage-root", type=Path, help="select the persistent root for named environments")
+    create_parser.add_argument("--network", choices=("isolated", "shared"), default="isolated")
     for action in ("enter", "exec", "delete"):
         sub = subparsers.add_parser(action)
         sub.add_argument("name", nargs="?" if action == "enter" else None)
@@ -709,7 +775,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 selected = selected.resolve()
                 ensure_private_directory(selected)
                 write_private_json(config_directory() / "config.json", {"storage_root": str(selected)}, "Vforge configuration")
-            create(args.name)
+            create(args.name, network=args.network)
             return 0
         if args.action == "up":
             project_up(Path.cwd())

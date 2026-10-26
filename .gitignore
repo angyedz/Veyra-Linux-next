@@ -17,3 +17,4 @@ __pycache__/
 !mkosi.images/
 !mkosi.images/initrd/
 !mkosi.images/initrd/**
+mkosi.images/**/__pycache__/

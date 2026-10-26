@@ -13,6 +13,17 @@ Vforge intentionally excludes the host's persistent `/etc`, `/var`, and `/home`
 mounts from the lower. Vpkg rejects separate mounts over `/usr`, the RPM
 database, or its private state and cache.
 
+To download packages from Fedora or RPM Fusion, a named environment can be
+created with `vforge create NAME --network shared`. For a project, request shared
+network access in `.vforge.toml` and approve it when running `vforge up`:
+
+```toml
+[permissions]
+network = "shared"
+```
+
+Without that approval, the environment has its own isolated network namespace.
+
 ## Vforge marker contract
 
 Vforge creates a root-owned, read-only bind mount at

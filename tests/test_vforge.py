@@ -84,6 +84,98 @@ class VforgeNativeTests(unittest.TestCase):
         with self.assertRaisesRegex(vforge.VforgeError, "configuration may not be a symlink"):
             vforge.project_settings(project)
 
+    def test_project_network_is_isolated_unless_shared_is_requested(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated"))
+
+        (project / ".vforge.toml").write_text(
+            '[environment]\nname = "backend"\n[permissions]\nnetwork = "shared"\n'
+        )
+        self.assertEqual(vforge.project_settings(project), ("backend", [], "shared"))
+
+    def test_project_rejects_unknown_network_permission(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text('[permissions]\nnetwork = "host"\n')
+
+        with self.assertRaisesRegex(vforge.VforgeError, "network must be isolated or shared"):
+            vforge.project_settings(project)
+
+    def test_shared_project_network_requires_recorded_user_approval(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text(
+            '[environment]\nname = "backend"\n[permissions]\nnetwork = "shared"\n'
+        )
+
+        with patch.object(vforge, "confirm_network_permission") as confirm:
+            path = vforge.create("backend", project=project, network="shared")
+
+        confirm.assert_called_once_with("backend")
+        self.assertEqual(vforge.environment_metadata(path)["network"], "shared")
+        self.assertEqual(vforge.project_network_approval(project), "shared")
+
+        with patch.object(vforge.subprocess, "run", return_value=type("Result", (), {"returncode": 0})()) as run:
+            self.assertEqual(vforge.namespace_command(path, ["/bin/true"]), 0)
+        self.assertNotIn("--net", run.call_args.args[0])
+
+    def test_shared_project_network_fails_closed_without_interactive_approval(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text(
+            '[environment]\nname = "backend"\n[permissions]\nnetwork = "shared"\n'
+        )
+
+        with patch.object(vforge.sys.stdin, "isatty", return_value=False):
+            with self.assertRaisesRegex(vforge.VforgeError, "requires interactive approval"):
+                vforge.create("backend", project=project, network="shared")
+
+        self.assertFalse((project / ".vforge" / "backend").exists())
+
+    def test_project_network_isolation_remains_active_without_sharing(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        path = vforge.create("backend", project=project)
+        with patch.object(vforge.subprocess, "run", return_value=type("Result", (), {"returncode": 0})()) as run:
+            self.assertEqual(vforge.namespace_command(path, ["/bin/true"]), 0)
+
+        self.assertIn("--net", run.call_args.args[0])
+
+    def test_shared_network_environment_refuses_revoked_approval(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text(
+            '[environment]\nname = "backend"\n[permissions]\nnetwork = "shared"\n'
+        )
+        with patch.object(vforge, "confirm_network_permission"):
+            path = vforge.create("backend", project=project, network="shared")
+        approval_path = vforge.config_directory() / vforge.PERMISSION_FILE
+        approvals = json.loads(approval_path.read_text())
+        approvals["network_projects"].pop(str(project))
+        approval_path.write_text(json.dumps(approvals))
+
+        with patch.object(vforge.subprocess, "run") as run:
+            with self.assertRaisesRegex(vforge.VforgeError, "shared network permission is not approved"):
+                vforge.namespace_command(path, ["/bin/true"])
+
+        run.assert_not_called()
+
+    def test_shared_network_stops_when_project_configuration_is_changed(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        config = project / ".vforge.toml"
+        config.write_text('[environment]\nname = "backend"\n[permissions]\nnetwork = "shared"\n')
+        with patch.object(vforge, "confirm_network_permission"):
+            path = vforge.create("backend", project=project, network="shared")
+        config.write_text('[environment]\nname = "backend"\n[permissions]\nnetwork = "isolated"\n')
+
+        with patch.object(vforge.subprocess, "run") as run:
+            with self.assertRaisesRegex(vforge.VforgeError, "permissions changed"):
+                vforge.namespace_command(path, ["/bin/true"])
+
+        run.assert_not_called()
+
     def test_root_base_must_be_read_only_erofs(self) -> None:
         mountinfo = "40 30 0:1 / / ro,relatime - erofs /dev/mapper/veyra-root ro\n"
         vforge.verify_immutable_root_mount(mountinfo)
@@ -139,6 +231,18 @@ class VforgeNativeTests(unittest.TestCase):
         self.assertIn("--mount", command)
         self.assertIn("--pid", command)
         self.assertIn("--net", command)
+
+    def test_named_environment_shared_network_requires_confirmation(self) -> None:
+        with patch.object(vforge, "confirm_network_permission") as confirm:
+            path = vforge.create("backend", network="shared")
+
+        confirm.assert_called_once_with("backend")
+        with patch.object(vforge.subprocess, "run", return_value=type("Result", (), {"returncode": 0})()) as run:
+            self.assertEqual(vforge.namespace_command(path, ["/bin/true"]), 0)
+        self.assertNotIn("--net", run.call_args.args[0])
+
+        parsed = vforge.build_parser().parse_args(["create", "toolbox", "--network", "shared"])
+        self.assertEqual(parsed.network, "shared")
 
     def test_environment_unmounts_private_mounts_before_removing_runtime_tree(self) -> None:
         environment = vforge.create("backend")

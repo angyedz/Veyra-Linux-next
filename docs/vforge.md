@@ -16,6 +16,8 @@ vforge list
 vforge delete backend
 ```
 
+Named environments start with isolated networking. `vforge create backend --network shared` requests access to the host network and asks for confirmation.
+
 The default storage root is `$XDG_DATA_HOME/vforge` or
 `~/.local/share/vforge`. Choose another persistent location with
 `vforge config storage-root /path/to/vforge-data` or
@@ -36,6 +38,9 @@ Example configuration:
 name = "backend"
 isolation = "integrated"
 
+[permissions]
+network = "shared"
+
 [permissions.home]
 mode = "project-only"
 
@@ -51,11 +56,18 @@ configuration adds a mount. Mounts are read-only unless `access =
 "read-write"` is specified. Reserved system paths and paths that escape `/` are
 rejected. The whole host Home is never mounted.
 
+Project networking is isolated unless `[permissions].network = "shared"` is
+requested. The first request requires an interactive approval; the approval is
+stored outside the project. Shared networking lets the environment reach the
+internet and local network services. Removing the request in `.vforge.toml`
+revokes it the next time the project is refreshed with `vforge up`.
+
 ## Isolation and limits
 
-Vforge starts user, mount, PID, and network namespaces. Networking is disabled.
-It creates a private mount tree and binds only the active read-only Veyra EROFS
-root as OverlayFS's lower. The bind is deliberately non-recursive, so the
+Vforge starts user, mount, PID, and network namespaces. Networking is isolated
+by default; an approved project may share the host network namespace. It creates
+a private mount tree and binds only the active read-only Veyra EROFS root as
+OverlayFS's lower. The bind is deliberately non-recursive, so the
 machine's persistent `/etc`, `/var`, and `/home` mounts are not exposed. The
 environment's own persistent upper/work pair receives writes.
 The process starts inside that merged root. Only the project and individually
@@ -64,10 +76,10 @@ provided privately for the process. Host environment variables are not passed
 to commands; only locale and terminal settings are retained.
 
 This is an early native implementation. Only the `integrated` project profile
-is accepted today. GPU, Wayland, PipeWire, D-Bus, shared networking, capability
-selection, seccomp policy, SELinux policy, snapshot/rollback, automatic base
-compatibility management, and project package reconciliation are not
-implemented. Package installation and real OverlayFS behavior have not yet
+is accepted today. GPU, Wayland, PipeWire, D-Bus, capability selection, seccomp
+policy, SELinux policy, snapshot/rollback, automatic base compatibility
+management, and project package reconciliation are not implemented. Package
+installation and real OverlayFS behavior have not yet
 been validated in a Veyra guest. A user namespace and rootless OverlayFS
 supporting the host kernel/storage filesystem are required; Vforge reports the
 kernel or mount error when those prerequisites are unavailable.
@@ -80,8 +92,8 @@ version.
 ## Verification status
 
 Source tests cover persistent upper/work layout, project state placement,
-read-only explicit mounts, reserved targets, Veyra root identity, and namespace
-selection. GitHub Actions runs those checks and builds the installed Veyra
+read-only explicit mounts, network approval, reserved targets, Veyra root
+identity, and namespace selection. GitHub Actions runs those checks and builds the installed Veyra
 image directly. A Fedora 44 Veyra guest run
 has not yet confirmed namespace creation, OverlayFS mount, package installation,
 or persistence across process restarts.
