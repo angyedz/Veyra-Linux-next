@@ -161,6 +161,7 @@ def main() -> int:
                 successful_markers.extend((
                     "VEYRA_VPKG_CI_PASS",
                     "VEYRA_VFORGE_VPKG_CI_PASS",
+                    "VEYRA_VFORGE_ROOTLESS_CI_PASS",
                 ))
             successful_log = boot_until(
                 image=test_image,

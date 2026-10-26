@@ -93,6 +93,42 @@ vforge snapshots vpkg-ci | grep -Fq "$snapshot_id"
 echo "VEYRA_VFORGE_VPKG_CI_PASS"
 echo "Veyra QEMU test: vforge package and snapshot commands stayed inside the persistent native environment"
 
+# Exercise the supported rootless path with an ordinary guest user. The main
+# vpkg integration service runs as root, so it cannot prove that a desktop user
+# can own the environment storage and create the user/mount namespaces.
+vforge_ci_uid=65534
+vforge_ci_home=/var/lib/veyra/vforge-ci-rootless-home
+vforge_ci_storage=/var/lib/veyra/vforge-ci-rootless-storage
+vforge_ci_runtime=/run/veyra-vforge-rootless
+install -d -m 0700 -o "$vforge_ci_uid" -g "$vforge_ci_uid" \
+    "$vforge_ci_home" "$vforge_ci_storage" "$vforge_ci_runtime"
+vforge_as_unprivileged() {
+    setpriv --reuid="$vforge_ci_uid" --regid="$vforge_ci_uid" --clear-groups -- env \
+        HOME="$vforge_ci_home" \
+        XDG_CONFIG_HOME="$vforge_ci_home/.config" \
+        XDG_RUNTIME_DIR="$vforge_ci_runtime" \
+        VFORGE_STORAGE_ROOT="$vforge_ci_storage" \
+        "$@"
+}
+test "$(vforge_as_unprivileged id -u)" = "$vforge_ci_uid"
+vforge_as_unprivileged vforge create rootless-ci
+rootless_env="$vforge_ci_storage/environments/rootless-ci"
+test "$(stat -c %u "$rootless_env/environment.json")" = "$vforge_ci_uid"
+vforge_as_unprivileged vforge exec rootless-ci -- sh -ec \
+    'printf "rootless vforge upper\n" > /etc/veyra-vforge-rootless-marker'
+vforge_as_unprivileged vforge exec rootless-ci -- \
+    grep -Fxq "rootless vforge upper" /etc/veyra-vforge-rootless-marker
+test ! -e /etc/veyra-vforge-rootless-marker
+rootless_snapshot="$(vforge_as_unprivileged vforge snapshot rootless-ci | awk '{print $4}')"
+test -n "$rootless_snapshot"
+vforge_as_unprivileged vforge exec rootless-ci -- sh -ec \
+    'printf "after rootless snapshot\n" > /etc/veyra-vforge-rootless-marker'
+vforge_as_unprivileged vforge rollback rootless-ci --snapshot "$rootless_snapshot"
+vforge_as_unprivileged vforge exec rootless-ci -- \
+    grep -Fxq "rootless vforge upper" /etc/veyra-vforge-rootless-marker
+test ! -e /etc/veyra-vforge-rootless-marker
+echo "VEYRA_VFORGE_ROOTLESS_CI_PASS"
+
 project=/var/lib/veyra/vforge-project-ci
 install -d -m 0700 "$project"
 cat > "$project/.vforge.toml" <<'EOF'

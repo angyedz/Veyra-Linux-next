@@ -137,9 +137,11 @@ Source tests cover persistent upper/work layout, project state placement,
 read-only explicit mounts, network approval, reserved targets, Veyra root
 identity, namespace selection, snapshot restore, and package command routing.
 GitHub Actions runs those checks and builds the installed Veyra image directly.
-A Fedora 44 Veyra guest run has not yet confirmed namespace creation, OverlayFS
-mount, package installation, snapshots, rollback, or persistence across process
-restarts.
+The Fedora 44 QEMU guest scenario now checks package installation and project
+packages, then runs environment creation, namespace creation, OverlayFS writes,
+and snapshot rollback as an unprivileged guest UID. It also checks that those
+writes do not reach the host root. These runtime behaviors remain unverified
+until the current guest workflow passes.
 
 Inside the environment, `vpkg install`, `remove`, and `upgrade` act on that
 environment's private RPM database and OverlayFS upper. See

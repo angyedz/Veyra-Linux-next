@@ -59,10 +59,13 @@ Those are product goals, not claims that this image already provides them.
 
 `vforge` supports native OverlayFS upper/work storage, named and project-local
 environments, explicitly approved bind mounts, and opt-in shared networking.
-Namespace and OverlayFS runtime behavior still needs Fedora 44 guest validation.
-Snapshot/rollback, most permission profiles, trusted desktop resources, and
-compatibility management are not implemented. See [the vforge implementation
-and limits](docs/vforge.md).
+It routes package commands through `vpkg`, stores snapshots in the selected
+environment location, and blocks use after a Veyra base change until
+`vforge upgrade` succeeds. Fedora 44 QEMU validation for namespace creation,
+rootless OverlayFS, package operations, snapshot rollback, and OTA compatibility
+is running; these runtime behaviors remain unverified until that guest check
+passes. GPU, Wayland, PipeWire, D-Bus, seccomp, and SELinux integration remain
+incomplete. See [the vforge implementation and limits](docs/vforge.md).
 
 ## Architectural direction
 

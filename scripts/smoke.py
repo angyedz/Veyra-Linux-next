@@ -429,8 +429,11 @@ def main() -> int:
     vforge_guest_test = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-ci-test"
     if (not vforge_guest_test.is_file()
             or "VEYRA_VFORGE_VPKG_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
+            or "VEYRA_VFORGE_ROOTLESS_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
             or "VEYRA_VFORGE_VPKG_CI_PASS" not in boot_test_content):
-        return fail("QEMU CI must prove vpkg installs a package inside a native Vforge environment")
+        return fail("QEMU CI must prove native Vforge package and rootless environment behavior")
+    if "VEYRA_VFORGE_ROOTLESS_CI_PASS" not in boot_test_content:
+        return fail("QEMU CI must wait for the normal-user Vforge OverlayFS test to pass")
     update_image_test = ROOT / "scripts/test-sysupdate-image.py"
     if not update_image_test.is_file():
         return fail("CI must create the signed A/B test update")

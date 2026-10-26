@@ -1,26 +1,34 @@
 # Decision: use the running Veyra root as the vforge lower layer
 
-Status: accepted for the native implementation; guest validation pending
+Status: accepted for the native implementation; Fedora 44 guest validation pending
 
-The prior separate OCI-root design for Vforge is retired. Vforge bind-mounts
-only the active read-only EROFS Veyra root as OverlayFS's lower layer. The bind
-is non-recursive, so persistent machine-specific `/etc`, `/var`, and `/home`
-mounts are excluded. Each environment owns persistent upper and work
-directories selected by the user or stored in the project's `.vforge/`
-directory. Linux user and mount namespaces provide the privilege and mount
-boundary; PID and network namespaces are also created, with networking disabled
-by default.
+Vforge uses no Podman or separate Fedora container root. It bind-mounts only the
+active read-only EROFS Veyra root as OverlayFS's lower layer, then runs commands
+inside that merged root. The bind is non-recursive, so machine-specific `/etc`,
+`/var`, and `/home` mounts are excluded. Each environment has persistent upper
+and work directories in the user-selected shared storage location or the
+project's `.vforge/` directory. Linux user and mount namespaces provide the
+privilege and mount boundary; PID and network namespaces are also created,
+with networking disabled by default.
 
 Vforge verifies the Fedora 44 Veyra image identity and the active dm-verity root
 hash before creating the read-only marker consumed by `vpkg`. Vpkg
 uses libdnf5 against the environment's merged root and private RPM database.
 
-This removes the separate Fedora root image, archive import flow, and container
-engine dependency. Environment compatibility follows the Veyra base version:
-Vforge does not yet track an environment across a system update or provide
-snapshots and rollback. Container package changes currently update the active
-upper in place.
+Package commands run Veyra's `vpkg` against the environment's merged root and
+private RPM database. Snapshots save the OverlayFS upper using reflinks when
+available and a regular copy otherwise; they use the user's selected storage
+and do not reserve space on a separate partition.
 
-Implementation status is deliberately limited. The CLI and source-level policy
-checks exist, but OverlayFS operation, package changes, permissions, and
-cross-update behavior still require guest validation and further work.
+Every environment records the active Veyra image ID, version, and root digest.
+After an OTA changes that identity, entry and package operations stop until
+`vforge upgrade` snapshots the environment, runs `vpkg upgrade` on the new
+base, and records the new identity. If the package operation fails, Vforge
+restores the prior upper. A snapshot can be restored only while its recorded
+base identity is active.
+
+The branch includes source policy checks and a Fedora 44 QEMU scenario for
+native OverlayFS, Vforge package commands, project packages, snapshots, and
+OTA compatibility. The scenario must pass before those runtime behaviors are
+considered verified. GPU, Wayland, PipeWire, D-Bus, capability selection,
+seccomp, and SELinux integration remain incomplete.
