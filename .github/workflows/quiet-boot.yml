@@ -7,6 +7,8 @@ on:
       - 'mkosi.postinst.chroot'
       - 'mkosi.extra/usr/share/plymouth/**'
       - 'tests/test_quiet_boot.py'
+      - 'tests/test_boot_profile.py'
+      - 'scripts/profile-boot.py'
       - '.github/workflows/quiet-boot.yml'
   push:
     branches: [main]
@@ -26,4 +28,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m unittest discover -s tests -p 'test_quiet_boot.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_boot_profile.py' -v
       - run: python3 scripts/smoke.py
