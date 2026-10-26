@@ -406,6 +406,22 @@ def main() -> int:
         return fail("signed OTA installation and updates must run inside the restricted QEMU guest")
     if not (ROOT / "scripts/test-bios-ab-boot.py").is_file():
         return fail("Legacy BIOS OTA needs its own SeaBIOS trial and rollback integration check")
+    bios_boot_test = ROOT / "scripts/test-bios-boot.py"
+    if not bios_boot_test.is_file():
+        return fail("the image must be booted through SeaBIOS in QEMU")
+    bios_boot_test_content = bios_boot_test.read_text(encoding="utf-8")
+    for expected in (
+        "serial_console_diagnostics",
+        "console=ttyS0,115200n8",
+        "systemd.log_target=console",
+        "mcopy",
+    ):
+        if expected not in bios_boot_test_content:
+            return fail(f"the BIOS QEMU test must collect guest serial diagnostics ({expected!r})")
+    if "test-bios-boot.py --image mkosi.output/veyra-next.raw" not in ci_workflow:
+        return fail("CI must run the Legacy BIOS QEMU boot test against its built image")
+    if 'sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw' not in ci_workflow:
+        return fail("the BIOS QEMU diagnostic must be able to write and restore its disposable GRUB config")
     if "inject_bios_guest_ota_test" not in ota_vm_test_content or "--firmware bios" not in ci_workflow:
         return fail("CI must stage and boot a signed BIOS OTA through GRUB in QEMU")
     if "--candidate-dir build/bios-ota-candidate" not in ci_workflow:

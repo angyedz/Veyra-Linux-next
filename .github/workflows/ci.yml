@@ -308,6 +308,8 @@ jobs:
           test -s "mkosi.output/veyra-next_${version}.initrd"
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root.raw.zst" -type f -size +0c | grep -q .
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .
+          # The BIOS QEMU harness temporarily injects serial boot diagnostics into this disposable image.
+          sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw
 
       - name: Boot the image through Legacy BIOS in QEMU
         run: python3 scripts/test-bios-boot.py --image mkosi.output/veyra-next.raw --report-dir build/bios-boot --timeout 1200
