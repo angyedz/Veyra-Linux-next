@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import os
 import subprocess
 import stat
 import struct
@@ -17,6 +18,124 @@ SPEC = importlib.util.spec_from_loader("veyra_vpkg", SourceFileLoader("veyra_vpk
 assert SPEC and SPEC.loader
 vpkg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vpkg)
+
+
+
+class VpkgContainerModeContractTests(unittest.TestCase):
+    def _validate(self, root: Path, marker: Path, mountinfo: Path):
+        original_stat = Path.stat
+
+        def root_owned_stat(path: Path, *args, **kwargs):
+            result = original_stat(path, *args, **kwargs)
+            if path == marker:
+                values = list(result)
+                values[4] = 0
+                return os.stat_result(values)
+            return result
+
+        with patch.object(Path, "stat", autospec=True, side_effect=root_owned_stat):
+            with patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")):
+                return vpkg.validate_container_root(root, marker, mountinfo)
+
+    def _fixture(self, temporary: str):
+        root = Path(temporary)
+        (root / "usr/lib/sysimage/rpm").mkdir(parents=True)
+        release = root / "usr/lib/os-release"
+        release.write_text(
+            'ID=fedora\nVERSION_ID=44\nIMAGE_ID=veyra-next\nIMAGE_VERSION=0.1.0\n',
+            encoding="utf-8",
+        )
+        marker = root / "marker.json"
+        marker.write_text(json.dumps({
+            "schema": 1,
+            "kind": "vforge-veyra-root",
+            "root_id": "a" * 32,
+            "image_id": "veyra-next",
+            "image_version": "0.1.0",
+            "base_digest": "b" * 64,
+            "storage_driver": "podman-overlay",
+            "immutable_base": True,
+        }), encoding="utf-8")
+        marker.chmod(0o444)
+        mountinfo = root / "mountinfo"
+        mountinfo.write_text(f"31 1 0:1 / {marker} ro,relatime - tmpfs tmpfs ro\n", encoding="utf-8")
+        return root, marker, mountinfo
+
+    def test_container_cli_is_separate_from_host_package_commands(self) -> None:
+        install = vpkg.build_parser().parse_args(["container", "install", "htop"])
+        remove = vpkg.build_parser().parse_args(["container", "remove", "htop"])
+        upgrade = vpkg.build_parser().parse_args(["container", "upgrade"])
+        self.assertEqual((install.command, install.container_command, install.packages),
+                         ("container", "install", ["htop"]))
+        self.assertEqual((remove.container_command, remove.packages), ("remove", ["htop"]))
+        self.assertEqual(upgrade.container_command, "upgrade")
+
+    def test_container_root_requires_private_marker_and_matching_veyra_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            result = self._validate(root, marker, mountinfo)
+            self.assertEqual(result["root_id"], "a" * 32)
+
+    def test_container_root_rejects_fedora_host_or_overlay_mounts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            release = root / "usr/lib/os-release"
+            release.write_text("ID=fedora\nVERSION_ID=44\nIMAGE_ID=fedora\nIMAGE_VERSION=44\n", encoding="utf-8")
+            with self.assertRaisesRegex(vpkg.VpkgReject, "Veyra deployment"):
+                self._validate(root, marker, mountinfo)
+
+            release.write_text(
+                'ID=fedora\nVERSION_ID=44\nIMAGE_ID=veyra-next\nIMAGE_VERSION=0.1.0\n',
+                encoding="utf-8",
+            )
+            mountinfo.write_text(
+                f"31 1 0:1 / {marker} ro,relatime - tmpfs tmpfs ro\n"
+                "32 1 0:2 / /usr rw,relatime - fuse.overlay fuse.overlay rw\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(vpkg.VpkgReject, "container /usr"):
+                self._validate(root, marker, mountinfo)
+
+    def test_container_marker_must_be_read_only_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            mountinfo.write_text(f"31 1 0:1 / {marker} rw,relatime - tmpfs tmpfs rw\n", encoding="utf-8")
+            with self.assertRaisesRegex(vpkg.VpkgReject, "mounted read-only"):
+                self._validate(root, marker, mountinfo)
+
+    def test_container_session_targets_root_and_private_state(self) -> None:
+        with patch.object(vpkg, "Session") as session_type:
+            vpkg.container_package_session(refresh=True)
+        options = session_type.call_args.kwargs
+        self.assertEqual(options["installroot"], Path("/"))
+        self.assertEqual(options["repo_ids"], ("fedora", "updates", *vpkg.RPMFUSION_REPOS))
+        self.assertEqual(options["cache_dir"], Path("/var/cache/veyra/vpkg/container"))
+        self.assertEqual(options["history_dir"], Path("/var/lib/veyra/vpkg/container/history"))
+        self.assertEqual(options["persist_dir"], Path("/var/lib/veyra/vpkg/container/persist"))
+        self.assertEqual(options["state_dir"], Path("/var/lib/veyra/vpkg/container/state"))
+        self.assertEqual(options["log_dir"], Path("/var/lib/veyra/vpkg/container/log"))
+
+    def test_container_transaction_policy_rejects_protected_core_changes(self) -> None:
+        class Change:
+            name = "glibc"
+
+        policy = {
+            "schema": 1,
+            "protected_packages": {"names": ["glibc"], "prefixes": ["kernel-"]},
+        }
+        with patch.object(vpkg, "read_json_object", return_value=policy):
+            with self.assertRaisesRegex(vpkg.VpkgReject, "protected Veyra base packages"):
+                vpkg.validate_container_changes((Change(),))
+
+    def test_container_transaction_stops_before_lock_when_root_guard_fails(self) -> None:
+        with (
+            patch.object(vpkg, "require_root"),
+            patch.object(vpkg, "validate_container_root", side_effect=vpkg.VpkgReject("invalid root")),
+            patch.object(vpkg, "with_container_lock") as lock,
+        ):
+            with self.assertRaisesRegex(vpkg.VpkgReject, "invalid root"):
+                vpkg.container_transaction("upgrade")
+        lock.assert_not_called()
 
 
 def running_in_qemu_vm() -> bool:
