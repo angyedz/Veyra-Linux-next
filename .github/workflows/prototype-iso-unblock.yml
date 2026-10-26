@@ -76,6 +76,8 @@ jobs:
           VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
         run: bash scripts/build-live-iso.sh
       - name: Capture BIOS and UEFI QEMU guest screens (diagnostic only)
+        id: firmware_capture
+        continue-on-error: true
         run: |
           python3 scripts/test-live-iso-qemu.py \
             --iso build/live-iso/veyra-next-prototype-live.iso \
