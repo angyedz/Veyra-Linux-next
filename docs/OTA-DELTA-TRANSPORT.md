@@ -35,3 +35,16 @@ python3 -m unittest discover -s tests -p 'test_ota_chunks.py' -v
 ```
 
 Before production, test interrupted downloads, power loss at every stage, corrupted chunks, rollback, mixed-version boot assets, constrained disk, and GitHub release asset publication limits.
+
+## Transfer-size benchmark and fallback policy
+
+Use `python3 scripts/benchmark_ota.py current-root.img next-root.img ./bundle`
+to measure the *actual compressed changed assets* plus manifest against a full
+zlib-compressed target. It writes `benchmark.json` and recommends `delta`
+only when estimated transfer is less than **85%** of full compressed transfer.
+Otherwise it recommends `full` (this prototype does not package or install
+that fallback). The estimate does not include HTTP overhead, signatures, UKI
+or dm-verity artifacts, and must not be mistaken for production download size.
+
+Fixed-offset chunks are particularly weak when filesystem image offsets shift.
+Benchmark real consecutive EROFS builds before adopting this as the OTA format.
