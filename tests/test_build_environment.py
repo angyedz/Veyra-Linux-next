@@ -18,6 +18,19 @@ SPEC.loader.exec_module(gate)
 
 
 class BuildEnvironmentGateTests(unittest.TestCase):
+    def test_ubuntu_dnf_probe_pins_release_and_checks_literal_package_path(self) -> None:
+        with patch.object(gate.subprocess, "check_output", side_effect=("repo id repo name\n", "dnf: /usr/bin/dnf\n")) as run, patch.object(
+            gate.shutil, "which", return_value="/usr/bin/dnf"
+        ):
+            listing, available, ubuntu_owned = gate._read_ubuntu_host_dnf()
+        self.assertEqual(listing, "repo id repo name\n")
+        self.assertTrue(available)
+        self.assertTrue(ubuntu_owned)
+        self.assertEqual(run.call_args_list[0].args[0], [
+            "dnf", "--releasever=24.04", "repolist", "--enabled", "--quiet", "--cacheonly"
+        ])
+        self.assertEqual(run.call_args_list[1].args[0], ["dpkg-query", "-S", "/usr/bin/dnf"])
+
     def validate(self, *, repos: dict[str, str], listing: str, osrelease: str = "ID=fedora\nVERSION_ID=44\n",
                  mounts: str = "", in_container: bool = True, host_runner: bool = False,
                  host_dnf_available: bool = False,

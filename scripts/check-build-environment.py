@@ -193,23 +193,29 @@ def validate_environment(
             raise BuildEnvironmentError(f"host DNF/cache mount detected at {mountpoint}")
 
 
+def _read_ubuntu_host_dnf() -> tuple[str, bool, bool]:
+    listing = subprocess.check_output(
+        ["dnf", "--releasever=24.04", "repolist", "--enabled", "--quiet", "--cacheonly"], text=True
+    )
+    dnf_path = shutil.which("dnf")
+    owner = subprocess.check_output(["dpkg-query", "-S", "/usr/bin/dnf"], text=True)
+    dnf_ubuntu_owned = dnf_path == "/usr/bin/dnf" and any(
+        line.startswith("dnf: /usr/bin/dnf") for line in owner.splitlines()
+    )
+    return listing, dnf_path is not None, dnf_ubuntu_owned
+
+
 def main() -> int:
     in_container = pathlib.Path("/.dockerenv").exists() or pathlib.Path("/run/.containerenv").exists()
     host_runner = os.environ.get("VEYRA_MKOSI_RUNNER") == "github-ubuntu-24.04"
     try:
         if host_runner:
-            listing = subprocess.check_output(
-                ["dnf", "repolist", "--enabled", "--quiet", "--cacheonly"], text=True
-            )
-            dnf_path = pathlib.Path(shutil.which("dnf") or "").resolve()
-            owner = subprocess.check_output(["dpkg-query", "-S", str(dnf_path)], text=True)
-            dnf_ubuntu_owned = dnf_path == pathlib.Path("/usr/bin/dnf") and any(
-                line.startswith("dnf: /usr/bin/dnf") for line in owner.splitlines()
-            )
+            listing, dnf_available, dnf_ubuntu_owned = _read_ubuntu_host_dnf()
         else:
             listing = subprocess.check_output(
                 ["dnf5", "repo", "list", "--enabled", "--quiet"], text=True
             )
+            dnf_available = False
             dnf_ubuntu_owned = False
         validate_environment(
             osrelease_path=pathlib.Path("/etc/os-release"),
@@ -219,7 +225,7 @@ def main() -> int:
             mountinfo=pathlib.Path("/proc/self/mountinfo").read_text(encoding="utf-8"),
             in_container=in_container,
             host_runner=host_runner,
-            host_dnf_available=host_runner and shutil.which("dnf") is not None,
+            host_dnf_available=host_runner and dnf_available,
             host_dnf_ubuntu_owned=host_runner and dnf_ubuntu_owned,
         )
     except (OSError, subprocess.CalledProcessError, BuildEnvironmentError) as error:
