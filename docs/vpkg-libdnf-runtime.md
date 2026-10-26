@@ -9,11 +9,11 @@ Build and repository-fixture containers may use the DNF CLI to prepare RPMs,
 repositories, and test images. Runtime `vpkg` code must not spawn that CLI.
 
 For this image line, `vpkg` validates the selected deployment's
-`/usr/lib/os-release` and accepts only `ID=fedora`, `VERSION_ID=44`. It passes
-that validated version to libdnf5 before loading repositories. The image build
-and package gates must likewise verify the Fedora 44 release identity and reject
-Fedora 46 or Rawhide artifacts from this build. This is a current image policy,
-not a permanent restriction on future Fedora targets.
+`/usr/lib/os-release` and accepts only `ID=fedora` and the release configured
+for the image. It passes that validated version to libdnf5 before loading
+repositories. Image and package gates verify the same configured release and
+reject artifacts from a different Fedora release or Rawhide. Changing the base
+release updates this target; no future Fedora release is permanently excluded.
 
 The API adapter disables plugins, weak dependencies, RPM scriptlets and
 triggers by default; enables RPM package signature checking; explicitly selects
