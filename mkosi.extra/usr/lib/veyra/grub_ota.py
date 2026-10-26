@@ -387,16 +387,18 @@ def finish_fallback(
     validate_identity(current_version, current_roothash)
     validate_identity(target_version, target_roothash)
     state = read_state(boot_dir)
-    if (
-        state.get("veyra_trial_version") != target_version
-        or state.get("veyra_trial_roothash") != target_roothash
-    ):
-        return False
-    if state["veyra_trial_tries_left"] != "0":
+    if current_version == target_version and current_roothash == target_roothash:
         return False
     if (
         state["veyra_stable_version"] != current_version
         or state["veyra_stable_roothash"] != current_roothash
+    ):
+        return False
+    has_trial = any(key in state for key in TRIAL_KEYS)
+    if has_trial and (
+        state.get("veyra_trial_version") != target_version
+        or state.get("veyra_trial_roothash") != target_roothash
+        or state["veyra_trial_tries_left"] != "0"
     ):
         return False
     assets_dir = boot_dir / "VEYRA"
