@@ -115,7 +115,7 @@ class GlacierAssetTests(unittest.TestCase):
         for mode in ("dark", "light"):
             image = SHARE / f"plasma/look-and-feel/org.veyra.glacier.{mode}/contents/previews/preview.png"
             data = image.read_bytes()
-            self.assertTrue(data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"), mode)
+            self.assertTrue(data.startswith(bytes.fromhex("89504e470d0a1a0a")), mode)
             offset, chunks, compressed = 8, [], bytearray()
             while offset < len(data):
                 size = struct.unpack(">I", data[offset:offset + 4])[0]
