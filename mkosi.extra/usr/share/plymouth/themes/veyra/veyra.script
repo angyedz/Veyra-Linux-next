@@ -1,0 +1,36 @@
+// Veyra Glacier: centered logo, subtle breathing indicator, no boot logs.
+// Image is rendered from branding/veyra-logo.svg during image finalization.
+Window.SetBackgroundTopColor(0.027, 0.075, 0.129);
+Window.SetBackgroundBottomColor(0.016, 0.043, 0.082);
+
+logo_image = Image("veyra-logo.png");
+logo = Sprite(logo_image);
+logo.SetZ(100);
+
+label_image = Image.Text("VEYRA", 1.0, 0.91, 0.97);
+label = Sprite(label_image);
+label.SetZ(101);
+
+status_image = Image.Text("Starting your system", 0.57, 0.71, 0.82);
+status = Sprite(status_image);
+status.SetZ(101);
+
+fun center() {
+    width = Window.GetWidth();
+    height = Window.GetHeight();
+    logo.SetX((width - logo_image.GetWidth()) / 2);
+    logo.SetY(height * 0.35 - logo_image.GetHeight() / 2);
+    label.SetX((width - label_image.GetWidth()) / 2);
+    label.SetY(height * 0.60);
+    status.SetX((width - status_image.GetWidth()) / 2);
+    status.SetY(height * 0.70);
+}
+
+fun refresh() {
+    center();
+    // Gentle pulsing, deliberately independent of actual boot progress.
+    phase = Math.Sin(Plymouth.GetTime() * 2.0);
+    status.SetOpacity(0.55 + 0.25 * phase);
+}
+
+Plymouth.SetRefreshFunction(refresh);
