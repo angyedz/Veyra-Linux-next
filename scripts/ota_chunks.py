@@ -74,11 +74,52 @@ def file_digest(path: Path) -> str:
     return h.hexdigest()
 
 
+def validate_manifest(m: dict) -> None:
+    """Reject malformed or oversized manifests before touching the output."""
+    import re
+
+    if not isinstance(m, dict) or m.get("format") != FORMAT or m.get("chunk_size") != CHUNK_SIZE:
+        raise ValueError("unsupported manifest")
+    size = m.get("target_size")
+    if type(size) is not int or size < 0:
+        raise ValueError("invalid target size")
+    expected = (size + CHUNK_SIZE - 1) // CHUNK_SIZE
+    records = m.get("chunks")
+    if not isinstance(records, list) or len(records) != expected:
+        raise ValueError("invalid chunk count")
+    sha_pattern = re.compile(r"[0-9a-f]{64}\\Z")
+    if not isinstance(m.get("target_sha256"), str) or not sha_pattern.fullmatch(m["target_sha256"]):
+        raise ValueError("invalid target digest")
+    base_sha = m.get("base_sha256")
+    if base_sha is not None and (not isinstance(base_sha, str) or not sha_pattern.fullmatch(base_sha)):
+        raise ValueError("invalid base digest")
+    for index, record in enumerate(records):
+        if not isinstance(record, dict) or type(record.get("index")) is not int or record["index"] != index:
+            raise ValueError("invalid chunk index")
+        part_size = min(CHUNK_SIZE, size - index * CHUNK_SIZE)
+        if type(record.get("size")) is not int or record["size"] != part_size:
+            raise ValueError("invalid chunk size")
+        sha = record.get("sha256")
+        if not isinstance(sha, str) or not sha_pattern.fullmatch(sha):
+            raise ValueError("invalid chunk digest")
+        source = record.get("source")
+        if source == "base":
+            if base_sha is None or "asset" in record or "compressed_size" in record:
+                raise ValueError("invalid base chunk")
+        elif source == "asset":
+            if record.get("asset") != sha + ".zlib":
+                raise ValueError("unsafe or mismatched asset name")
+            compressed_size = record.get("compressed_size")
+            if type(compressed_size) is not int or not 0 < compressed_size <= MAX_ASSET_SIZE:
+                raise ValueError("invalid compressed asset size")
+        else:
+            raise ValueError("unknown chunk source")
+
+
 def reconstruct(manifest_path: Path, output: Path, base: Path | None = None) -> None:
     """Offline verification harness; never write to an installed system slot."""
     m = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if m["format"] != FORMAT or m["chunk_size"] != CHUNK_SIZE:
-        raise ValueError("unsupported manifest")
+    validate_manifest(m)
     if m["base_sha256"] is not None and (base is None or file_digest(base) != m["base_sha256"]):
         raise ValueError("base image hash mismatch")
     if output.exists():
