@@ -14,7 +14,9 @@ clearpart --all --initlabel
 reqpart
 part / --fstype=ext4 --size=16384
 
-%packages --excludedocs
+# Fedora mirrors occasionally reset large downloads; configure Anaconda retries
+# inside the transaction before retrying the entire image build.
+%packages --excludedocs --timeout=120 --retries=20
 @^kde-desktop-environment
 btrfs-progs
 calamares
