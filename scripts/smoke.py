@@ -76,7 +76,13 @@ def main() -> int:
     if "KernelCommandLine=systemd.unit=graphical.target" not in content:
         return fail("the image must boot into the graphical desktop target")
 
-    packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
+    shared_packages = ROOT / "mkosi.veyra-base.conf"
+    if not shared_packages.is_file():
+        return fail("the shared installed-image and OCI package definition is missing")
+    shared_content = section_values(shared_packages, "Content")
+    packages = {line.removeprefix("Packages=") for line in shared_content if line.startswith("Packages=")}
+    if any(line.startswith("Packages=") for line in content):
+        return fail("installed-image packages must come from the shared Veyra base definition")
     required_packages = {
         "kernel",
         "libdnf5",
