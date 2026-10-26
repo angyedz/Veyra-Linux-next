@@ -203,7 +203,9 @@ def delete_environment(name: str) -> None:
 
 
 def main() -> int:
-    xdg = tempfile.TemporaryDirectory(prefix="vforge-qemu-xdg-")
+    # /tmp is a small tmpfs on the guest. Podman must unpack the full Veyra
+    # image into the dedicated persistent home partition instead.
+    xdg = tempfile.TemporaryDirectory(prefix="vforge-qemu-xdg-", dir=pathlib.Path.home())
     old_xdg = {key: os.environ.get(key) for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME")}
     created: str | None = None
     created_graphroot: pathlib.Path | None = None

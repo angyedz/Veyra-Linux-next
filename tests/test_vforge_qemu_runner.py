@@ -155,6 +155,13 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         self.assertIn(runner.PASS_MARKER, script)
         self.assertIn(runner.FAIL_MARKER, script)
 
+    def test_guest_test_service_timeout_covers_tcg_boot_window(self) -> None:
+        self.assertIn("TimeoutStartSec=5400", runner.test_runner_unit())
+
+    def test_vforge_guest_fixture_uses_persistent_home_for_podman_storage(self) -> None:
+        source = FIXTURE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('TemporaryDirectory(prefix="vforge-qemu-xdg-", dir=pathlib.Path.home())', source)
+
     def test_qemu_command_uses_kvm_and_mounts_checkout_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

@@ -314,7 +314,7 @@ Type=oneshot
 ExecStart=/bin/bash /etc/veyra-vforge-qemu-test-runner
 StandardOutput=journal+console
 StandardError=journal+console
-TimeoutStartSec=1800
+TimeoutStartSec=5400
 
 [Install]
 WantedBy=multi-user.target
