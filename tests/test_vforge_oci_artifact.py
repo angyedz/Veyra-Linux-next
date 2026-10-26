@@ -38,7 +38,7 @@ def _blob(archive: tarfile.TarFile, content: bytes) -> str:
     return digest
 
 
-def _make_oci_archive(path: Path) -> None:
+def _make_oci_archive(path: Path, extra_files: dict[str, bytes] | None = None) -> None:
     files = {
         "usr/lib/os-release": b'ID=fedora\nVERSION_ID="44"\nIMAGE_ID=veyra-next\nIMAGE_VERSION=0.1.0\n',
         "usr/lib/sysimage/rpm/Packages": b"private-rpmdb",
@@ -50,6 +50,7 @@ def _make_oci_archive(path: Path) -> None:
         "usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-free-fedora-2020": b"key",
         "usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-nonfree-fedora-2020": b"key",
     }
+    files.update(extra_files or {})
     uncompressed = _tar_bytes(files)
     compressed = gzip.compress(uncompressed)
     config = json.dumps({
@@ -101,6 +102,13 @@ class VforgeOciArtifactTests(unittest.TestCase):
             _make_oci_archive(archive)
             rpmdb_files, _ = checker.validate_oci_archive(archive)
         self.assertEqual(rpmdb_files, ["usr/lib/sysimage/rpm/Packages"])
+
+    def test_oci_archive_rejects_python_bytecode_in_vpkg_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "rootfs.tar"
+            _make_oci_archive(archive, {"usr/lib/veyra/__pycache__/adapter.cpython-314.pyc": b"bytecode"})
+            with self.assertRaisesRegex(ValueError, "Python bytecode"):
+                checker.validate_oci_archive(archive)
 
 
 if __name__ == "__main__":

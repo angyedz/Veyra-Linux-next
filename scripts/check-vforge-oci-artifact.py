@@ -15,7 +15,8 @@ from pathlib import Path, PurePosixPath
 
 EXPECTED_EXTRA_TREES = {
     ("mkosi.extra/usr/bin/vpkg", "/usr/bin/vpkg"),
-    ("mkosi.extra/usr/lib/veyra", "/usr/lib/veyra"),
+    ("mkosi.extra/usr/lib/veyra/vpkg_libdnf.py", "/usr/lib/veyra/vpkg_libdnf.py"),
+    ("mkosi.extra/usr/lib/veyra/veyra_repo.py", "/usr/lib/veyra/veyra_repo.py"),
     ("mkosi.extra/usr/share/veyra/vpkg/protected-core.json", "/usr/share/veyra/vpkg/protected-core.json"),
     ("mkosi.extra/etc/yum.repos.d/rpmfusion.repo", "/etc/yum.repos.d/rpmfusion.repo"),
     ("mkosi.extra/usr/share/pki/rpm-gpg", "/usr/share/pki/rpm-gpg"),
@@ -234,6 +235,14 @@ def validate_oci_archive(path: Path) -> tuple[list[str], str]:
     }
     if missing := required_files - files:
         raise ValueError("OCI rootfs is missing Vpkg/runtime files: " + ", ".join(sorted(missing)))
+    vpkg_runtime = PurePosixPath("usr/lib/veyra")
+    unexpected_bytecode = sorted(
+        name for name in files
+        if PurePosixPath(name).is_relative_to(vpkg_runtime)
+        and (PurePosixPath(name).suffix in {".pyc", ".pyo"} or "__pycache__" in PurePosixPath(name).parts)
+    )
+    if unexpected_bytecode:
+        raise ValueError("OCI Vpkg runtime must not contain Python bytecode: " + ", ".join(unexpected_bytecode))
     return sorted(rpm_names), manifest_digest
 
 
