@@ -404,6 +404,12 @@ def main() -> int:
     ota_vm_test_content = ota_vm_test.read_text(encoding="utf-8")
     if "veyra-update install" not in ota_vm_test_content or "guestfwd=" not in (ROOT / "scripts/test-ab-boot.py").read_text(encoding="utf-8"):
         return fail("signed OTA installation and updates must run inside the restricted QEMU guest")
+    if not (ROOT / "scripts/test-bios-ab-boot.py").is_file():
+        return fail("Legacy BIOS OTA needs its own SeaBIOS trial and rollback integration check")
+    if "inject_bios_guest_ota_test" not in ota_vm_test_content or "--firmware bios" not in ci_workflow:
+        return fail("CI must stage and boot a signed BIOS OTA through GRUB in QEMU")
+    if "--candidate-dir build/bios-ota-candidate" not in ci_workflow:
+        return fail("BIOS OTA CI must build a target-version root, kernel, and initramfs")
     if re.search(r"systemd-sysupdate[^\n]*--image", ota_vm_test_content):
         return fail("CI must not exercise systemd-sysupdate against a host-mounted image")
     if any(option not in ota_vm_test_content for option in (

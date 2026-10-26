@@ -60,6 +60,30 @@ class SysupdateImageTests(unittest.TestCase):
                     self.assertIn("Type=partition", content)
                     self.assertIn("ReadOnly=1", content)
 
+    def test_redirects_bios_kernel_and_initramfs_transfers_for_local_staging(self) -> None:
+        transfer_dir = ROOT / "mkosi.extra/usr/lib/sysupdate.d"
+        with tempfile.TemporaryDirectory() as temporary:
+            files = Path(temporary) / "serve"
+            files.mkdir()
+            definitions = sysupdate_image.write_test_definitions(
+                files, transfer_dir, "http://127.0.0.1:8765/", firmware="bios"
+            )
+            self.assertEqual(
+                {path.name for path in definitions.iterdir()},
+                {
+                    "10-root-verity.conf",
+                    "20-root.conf",
+                    "80-bios-kernel.conf",
+                    "90-bios-initrd.conf",
+                },
+            )
+            for name in ("80-bios-kernel.conf", "90-bios-initrd.conf"):
+                content = (definitions / name).read_text(encoding="utf-8")
+                self.assertIn("Path=http://127.0.0.1:8765/", content)
+                self.assertIn("Verify=yes", content)
+                self.assertIn("Type=regular-file", content)
+                self.assertIn("Path=/VEYRA", content)
+
     def test_uki_fixture_sets_the_verity_hash_boot_target_and_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source.efi"

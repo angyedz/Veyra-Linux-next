@@ -199,7 +199,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -355,3 +355,58 @@ jobs:
             --ovmf-code "$ovmf_code" \
             --ovmf-vars "$ovmf_vars" \
             --boot-timeout 1200
+
+      - name: Build target-version artifacts for Legacy BIOS OTA
+        run: |
+          set -euo pipefail
+          current_version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          candidate_version="$(python3 - "$current_version" <<'PY'
+          import sys
+          components = sys.argv[1].split(".")
+          if not components or any(not part.isdecimal() for part in components):
+              raise SystemExit("ImageVersion must be numeric for the OTA fixture")
+          components[-1] = str(int(components[-1]) + 1)
+          print(".".join(components))
+          PY
+          )"
+          sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS \
+            scripts/mkosi.sh --force --image-version "$candidate_version" \
+            --output-directory build/bios-ota-candidate build
+          test -s build/bios-ota-candidate/veyra-next.raw
+          test -s build/bios-ota-candidate/veyra-next.osrelease
+          grep -Fxq "IMAGE_VERSION=\"$candidate_version\"" \
+            build/bios-ota-candidate/veyra-next.osrelease
+          test -s "build/bios-ota-candidate/veyra-next_${candidate_version}.vmlinuz"
+          test -s "build/bios-ota-candidate/veyra-next_${candidate_version}.initrd.zst"
+          find build/bios-ota-candidate -maxdepth 1 \
+            -name "veyra-next_${candidate_version}_*.root.raw.zst" -type f -size +0c | grep -q .
+
+      - name: Run signed Legacy BIOS OTA, GRUB bless, and rollback in QEMU
+        run: |
+          set -euo pipefail
+          version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          export GNUPGHOME="$RUNNER_TEMP/veyra-bios-ota-gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --quick-generate-key "Veyra temporary BIOS CI update key" ed25519 sign 0
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys |
+            awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          sudo --preserve-env=PATH,GNUPGHOME python3 scripts/test-sysupdate-image.py \
+            --image mkosi.output/veyra-next.raw \
+            --current-version "$version" \
+            --transfer-dir mkosi.extra/usr/lib/sysupdate.d \
+            --firmware bios \
+            --candidate-dir build/bios-ota-candidate \
+            --vpkg-test-repo build/vpkg-site \
+            --fingerprint "$fingerprint" \
+            --log-directory build/bios-ota-logs \
+            --boot-timeout 1200
+      - name: Upload Legacy BIOS OTA diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-bios-ota-diagnostics
+          path: build/bios-ota-logs/
+          if-no-files-found: ignore
+          retention-days: 3

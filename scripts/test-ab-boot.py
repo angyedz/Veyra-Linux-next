@@ -232,8 +232,8 @@ def boot_until(
     *,
     image: pathlib.Path,
     log_path: pathlib.Path,
-    code: pathlib.Path,
-    vars_path: pathlib.Path,
+    code: pathlib.Path | None,
+    vars_path: pathlib.Path | None,
     qemu: str,
     qemu_data_dir: pathlib.Path | None,
     expected: tuple[str, ...],
@@ -258,8 +258,15 @@ def boot_until(
         "-cpu", cpu,
         "-smp", "2",
         "-m", str(memory_mib),
-        "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
-        "-drive", f"if=pflash,format=raw,unit=1,file={vars_path}",
+    ])
+    if (code is None) != (vars_path is None):
+        raise RuntimeError("UEFI QEMU requires both OVMF code and variables files")
+    if code is not None and vars_path is not None:
+        command.extend([
+            "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
+            "-drive", f"if=pflash,format=raw,unit=1,file={vars_path}",
+        ])
+    command.extend([
         "-device", "ich9-ahci,id=ahci",
         "-drive", f"if=none,id=systemdisk,format=raw,file={image}",
         "-device", "ide-hd,drive=systemdisk,bus=ahci.0",
