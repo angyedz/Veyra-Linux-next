@@ -1,0 +1,15 @@
+[kdeglobals][General]
+ColorScheme=VeyraGlacier
+
+[kdeglobals][KDE]
+widgetStyle=Breeze
+
+[kdeglobals][Icons]
+Theme=breeze-dark
+
+[plasmarc][Theme]
+name=veyra-glacier-dark
+
+[kwinrc][org.kde.kdecoration2]
+ButtonsOnLeft=
+ButtonsOnRight=IAX
