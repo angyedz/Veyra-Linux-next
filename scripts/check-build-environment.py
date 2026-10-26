@@ -127,7 +127,7 @@ def validate_environment(
             for line in enabled_repo_listing.splitlines()[1:]
             if line.split()
         }
-        repo_files = list(repo_directory.glob("*.repo"))
+        repo_files = list(repo_directory.glob("*.repo")) + list(pathlib.Path("/etc/dnf/repos.d").glob("*.repo"))
         if not host_dnf_available or not host_dnf_ubuntu_owned:
             raise BuildEnvironmentError("Ubuntu host builds require Ubuntu-packaged /usr/bin/dnf")
         if configured or listed or repo_files:
@@ -199,11 +199,12 @@ def main() -> int:
     try:
         if host_runner:
             listing = subprocess.check_output(
-                ["dnf", "repolist", "--enabled", "--quiet", "--cacheonly"], text=True
+                ["dnf", "repolist", "--enabled", "--quiet", "--cacheonly", "--releasever=44"],
+                text=True,
             )
-            dnf_path = pathlib.Path(shutil.which("dnf") or "").resolve()
-            owner = subprocess.check_output(["dpkg-query", "-S", str(dnf_path)], text=True)
-            dnf_ubuntu_owned = dnf_path == pathlib.Path("/usr/bin/dnf") and any(
+            dnf_path = shutil.which("dnf") or ""
+            owner = subprocess.check_output(["dpkg-query", "-S", "/usr/bin/dnf"], text=True)
+            dnf_ubuntu_owned = dnf_path == "/usr/bin/dnf" and any(
                 line.startswith("dnf: /usr/bin/dnf") for line in owner.splitlines()
             )
         else:
