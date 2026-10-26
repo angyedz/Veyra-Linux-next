@@ -141,16 +141,8 @@ def main() -> int:
             return fail(f"missing inherited branding file: {relative}")
 
     fastfetch_config = json.loads((ROOT / "branding/fastfetch/config.jsonc").read_text(encoding="utf-8"))
-    fastfetch_default_modules = [
-        "title", "separator", "os", "host", "kernel", "uptime", "packages", "shell",
-        "display", "de", "wm", "wmtheme", "theme", "icons", "font", "cursor",
-        "terminal", "terminalfont", "cpu", "gpu", "memory", "swap", "disk", "localip",
-        "battery", "poweradapter", "locale", "break", "colors",
-    ]
-    if set(fastfetch_config) != {"$schema", "logo", "modules"}:
-        return fail("Fastfetch branding may set only its logo and the stock module list")
-    if fastfetch_config["modules"] != fastfetch_default_modules:
-        return fail("Fastfetch must keep its stock module order and system information")
+    if set(fastfetch_config) != {"$schema", "logo"}:
+        return fail("Fastfetch branding may configure only its logo, leaving default output untouched")
     installed_fastfetch_config = ROOT / "mkosi.extra/usr/share/veyra/fastfetch/config.jsonc"
     xdg_fastfetch_config = ROOT / "mkosi.extra/etc/xdg/fastfetch/config.jsonc"
     if fastfetch_config != json.loads(installed_fastfetch_config.read_text(encoding="utf-8")):
