@@ -54,21 +54,21 @@ rejected. The whole host Home is never mounted.
 ## Isolation and limits
 
 Vforge starts user, mount, PID, and network namespaces. Networking is disabled.
-It creates a private mount tree, recursively binds the current Veyra root and
-its active system mounts as a read-only lower, and mounts OverlayFS with the
-environment's persistent upper/work pair.
+It creates a private mount tree and binds only the active read-only Veyra EROFS
+root as OverlayFS's lower. The bind is deliberately non-recursive, so the
+machine's persistent `/etc`, `/var`, and `/home` mounts are not exposed. The
+environment's own persistent upper/work pair receives writes.
 The process starts inside that merged root. Only the project and individually
 approved mounts are exposed; `/proc`, a small `/dev`, `/tmp`, and `/run` are
 provided privately for the process. Host environment variables are not passed
 to commands; only locale and terminal settings are retained.
 
-This is an early native implementation. `strict`, `integrated`, and `trusted`
-are accepted as project metadata for forward compatibility but do not yet
-select different policies. GPU, Wayland, PipeWire, D-Bus, shared networking,
-capability selection, seccomp policy, SELinux policy, snapshot/rollback,
-automatic base compatibility management, and project package reconciliation
-are not implemented. Package installation and real OverlayFS behavior have not
-yet been validated in a Veyra guest. A user namespace and rootless OverlayFS
+This is an early native implementation. Only the `integrated` project profile
+is accepted today. GPU, Wayland, PipeWire, D-Bus, shared networking, capability
+selection, seccomp policy, SELinux policy, snapshot/rollback, automatic base
+compatibility management, and project package reconciliation are not
+implemented. Package installation and real OverlayFS behavior have not yet
+been validated in a Veyra guest. A user namespace and rootless OverlayFS
 supporting the host kernel/storage filesystem are required; Vforge reports the
 kernel or mount error when those prerequisites are unavailable.
 
@@ -80,8 +80,8 @@ version.
 ## Verification status
 
 Source tests cover persistent upper/work layout, project state placement,
-read-only explicit mounts, reserved targets, legacy metadata rejection, and
-namespace selection. GitHub Actions runs those checks and builds the installed
-Veyra image directly. A Fedora 44 Veyra guest run
+read-only explicit mounts, reserved targets, Veyra root identity, and namespace
+selection. GitHub Actions runs those checks and builds the installed Veyra
+image directly. A Fedora 44 Veyra guest run
 has not yet confirmed namespace creation, OverlayFS mount, package installation,
 or persistence across process restarts.

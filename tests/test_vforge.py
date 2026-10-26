@@ -83,26 +83,47 @@ class VforgeNativeTests(unittest.TestCase):
         with self.assertRaisesRegex(vforge.VforgeError, "configuration may not be a symlink"):
             vforge.project_settings(project)
 
-    def test_cloned_current_root_mounts_are_marked_for_read_only_remount(self) -> None:
-        lower = Path("/run/user/1000/vforge/env/lower")
-        mountinfo = (
-            "40 30 0:1 / / rw - rootfs rootfs rw\n"
-            "41 40 0:2 / /etc rw - ext4 /dev/disk rw\n"
-            "42 40 0:3 / /run/user/1000 rw - tmpfs tmpfs rw\n"
-            "43 42 0:4 / /run/user/1000/shared\\040docs rw - ext4 /dev/sdb rw\n"
-            f"50 40 0:1 / {lower} rw - rootfs rootfs rw\n"
-            f"51 50 0:2 / {lower}/etc rw - ext4 /dev/disk rw\n"
-            f"52 50 0:3 / {lower}/run rw - tmpfs tmpfs rw\n"
+    def test_root_base_must_be_read_only_erofs(self) -> None:
+        mountinfo = "40 30 0:1 / / ro,relatime - erofs /dev/mapper/veyra-root ro\n"
+        vforge.verify_immutable_root_mount(mountinfo)
+        with self.assertRaisesRegex(vforge.VforgeError, "EROFS root"):
+            vforge.verify_immutable_root_mount(
+                "40 30 0:1 / / rw,relatime - overlay overlay rw\n"
+            )
+
+    def test_vforge_marker_identifies_active_veyra_root_and_overlay(self) -> None:
+        root = self.root / "root"
+        (root / "usr/lib").mkdir(parents=True)
+        (root / "usr/lib/os-release").write_text(
+            'ID=fedora\nVERSION_ID=44\nIMAGE_ID=veyra-next\nIMAGE_VERSION="0.1.0"\n',
+            encoding="utf-8",
         )
+        cmdline = self.root / "cmdline"
+        roothash = "b" * 64
+        cmdline.write_text(f"quiet roothash={roothash} boot=veyra\n", encoding="ascii")
 
-        targets = vforge.cloned_mount_targets(mountinfo, lower)
+        marker = vforge.veyra_root_marker({"root_id": "a" * 32}, root, cmdline)
 
-        self.assertEqual(targets, [lower / "run", lower / "etc", lower])
+        self.assertEqual(marker["root_id"], "a" * 32)
+        self.assertEqual(marker["base_digest"], roothash)
+        self.assertEqual(marker["storage_driver"], "overlayfs")
+
+    def test_vpkg_state_is_created_inside_private_overlay_root(self) -> None:
+        root = self.root / "root"
+        (root / "usr/lib/sysimage/rpm").mkdir(parents=True)
+        vforge.ensure_vpkg_state(root)
+
+        self.assertTrue((root / "usr/lib/sysimage/rpm").is_dir())
+        self.assertTrue((root / "var/lib/veyra/vpkg/container/history").is_dir())
+        self.assertTrue((root / "var/cache/veyra/vpkg/container").is_dir())
 
     def test_invalid_environment_metadata_fails_closed(self) -> None:
         path = self.root / "legacy"
         path.mkdir()
-        (path / "environment.json").write_text('{"schema": 1, "backend": "unknown"}')
+        path.chmod(0o700)
+        metadata = path / "environment.json"
+        metadata.write_text('{"schema": 1, "backend": "unknown"}')
+        metadata.chmod(0o600)
 
         with self.assertRaisesRegex(vforge.VforgeError, "unsupported Vforge backend"):
             vforge.environment_metadata(path)

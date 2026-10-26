@@ -4,24 +4,126 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,54}$")
 PROJECT_CONFIG = ".vforge.toml"
+PERMISSION_FILE = "approved-mounts.json"
+FEDORA_RELEASE = "44"
+VEYRA_IMAGE_ID = "veyra-next"
 
 
 class VforgeError(Exception):
     pass
+
+
+def config_directory() -> Path:
+    configured = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser()
+    if not configured.is_absolute():
+        raise VforgeError("XDG_CONFIG_HOME must be an absolute path")
+    directory = configured / "vforge"
+    ensure_private_directory(directory)
+    return directory
+
+
+def ensure_private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise VforgeError(f"cannot inspect private Vforge directory {path}: {error}") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise VforgeError(f"Vforge directory must be a real directory owned by the current user: {path}")
+    if info.st_mode & 0o077:
+        os.chmod(path, 0o700)
+
+
+def verify_private_directory(path: Path, description: str) -> None:
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise VforgeError(f"cannot inspect {description} {path}: {error}") from error
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid() or info.st_mode & 0o077):
+        raise VforgeError(f"{description} must be a private directory owned by the current user: {path}")
+
+
+def read_private_json(path: Path, description: str) -> object:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise VforgeError(f"cannot safely open {description} {path}: {error}") from error
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            raise VforgeError(f"{description} must be a private regular file owned by the current user: {path}")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            return json.load(stream)
+    except (OSError, json.JSONDecodeError) as error:
+        raise VforgeError(f"cannot read {description} {path}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def read_private_json_optional(path: Path, description: str, default: object) -> object:
+    try:
+        return read_private_json(path, description)
+    except VforgeError as error:
+        if isinstance(error.__cause__, FileNotFoundError):
+            return default
+        raise
+
+
+def write_private_json(path: Path, value: object, description: str) -> None:
+    ensure_private_directory(path.parent)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        info = None
+    except OSError as error:
+        raise VforgeError(f"cannot inspect {description} {path}: {error}") from error
+    if info is not None and (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
+                             or info.st_uid != os.getuid()):
+        raise VforgeError(f"{description} must be a regular file owned by the current user: {path}")
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def store_root() -> Path:
@@ -29,14 +131,15 @@ def store_root() -> Path:
     if configured:
         root = Path(configured).expanduser()
     else:
-        config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        config_path = config_home / "vforge" / "config.json"
-        try:
-            configured = json.loads(config_path.read_text(encoding="utf-8")).get("storage_root")
-        except (OSError, json.JSONDecodeError, AttributeError):
-            configured = None
-        root = Path(configured).expanduser() if configured else Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "vforge"
-    return root.absolute()
+        config = read_private_json_optional(config_directory() / "config.json", "Vforge configuration", {})
+        configured = config.get("storage_root") if isinstance(config, dict) else None
+        data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")).expanduser()
+        if not data_home.is_absolute():
+            raise VforgeError("XDG_DATA_HOME must be an absolute path")
+        root = Path(configured).expanduser() if isinstance(configured, str) and configured else data_home / "vforge"
+    if not root.is_absolute():
+        raise VforgeError("Vforge storage root must be an absolute path")
+    return root.resolve()
 
 
 def validate_name(name: str) -> str:
@@ -51,21 +154,50 @@ def environment_path(name: str, *, project: Path | None = None) -> Path:
 
 
 def environment_metadata(path: Path) -> dict:
+    path = path.absolute()
+    verify_private_directory(path, "Vforge environment")
     metadata_path = path / "environment.json"
     try:
-        value = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        value = read_private_json(metadata_path, "Vforge environment metadata")
+    except VforgeError as error:
         raise VforgeError(f"cannot read environment metadata at {metadata_path}: {error}") from error
-    if not isinstance(value, dict) or value.get("schema") != 1 or value.get("backend") != "overlayfs":
+    if not isinstance(value, dict) or value.get("schema") not in {1, 2} or value.get("backend") != "overlayfs":
         raise VforgeError("environment metadata is invalid or was created by an unsupported Vforge backend")
+    name = validate_name(value.get("name", ""))
+    if name != path.name or value.get("lower") != "/":
+        raise VforgeError("environment metadata does not match its Veyra root or directory name")
+    if value.get("upper") != str(path / "upper") or value.get("work") != str(path / "work"):
+        raise VforgeError("environment upper and work directories must stay inside its private state directory")
+    verify_private_directory(path / "upper", "OverlayFS upper directory")
+    verify_private_directory(path / "work", "OverlayFS work directory")
+    validate_mount_records(value.get("mounts", []))
+    project = value.get("project")
+    if project is None:
+        expected = store_root() / "environments" / name
+        if path != expected:
+            raise VforgeError("named environment state is outside the configured Vforge storage root")
+        verify_private_directory(path.parent, "named environment storage")
+    else:
+        if not isinstance(project, str) or not Path(project).is_absolute():
+            raise VforgeError("project environment metadata has an invalid project path")
+        project_path = Path(project)
+        if not project_path.is_dir() or project_path.resolve() != project_path:
+            raise VforgeError("project environment path must be an existing canonical directory")
+        if path != project_path / ".vforge" / name or path.parent.is_symlink():
+            raise VforgeError("project environment state is outside its project .vforge directory")
+        verify_private_directory(path.parent, "project Vforge state directory")
+    root_id = value.get("root_id")
+    if root_id is not None and (not isinstance(root_id, str) or not re.fullmatch(r"[0-9a-f]{32}", root_id)):
+        raise VforgeError("environment metadata has an invalid root identity")
+    if value.get("schema") == 1 or root_id is None:
+        value["schema"] = 2
+        value["root_id"] = uuid.uuid4().hex
+        write_metadata(path, value)
     return value
 
 
 def write_metadata(path: Path, metadata: dict) -> None:
-    temporary = path / ".environment.json.tmp"
-    temporary.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path / "environment.json")
+    write_private_json(path / "environment.json", metadata, "Vforge environment metadata")
 
 
 def run(command: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess:
@@ -81,11 +213,32 @@ def run(command: Sequence[str], *, check: bool = True) -> subprocess.CompletedPr
 
 def checked_mount_target(target: str) -> str:
     path = PurePosixPath(target)
-    if not path.is_absolute() or target == "/" or any(part in {".", ".."} for part in path.parts):
+    if (not path.is_absolute() or len(path.parts) < 2 or str(path) != target
+            or any(part in {".", ".."} for part in path.parts)):
         raise VforgeError(f"mount target must be a safe absolute path below /: {target}")
     if path.parts[1] in {"proc", "sys", "dev", "run", "etc", "usr", "boot", "var", "home"}:
         raise VforgeError(f"mount target is reserved by Vforge: {target}")
     return str(path)
+
+
+def validate_mount_records(items: object) -> list[dict[str, str]]:
+    if not isinstance(items, list):
+        raise VforgeError("environment mounts must be an array")
+    result = []
+    for item in items:
+        if (not isinstance(item, dict) or set(item) != {"source", "target", "access"}
+                or not isinstance(item["source"], str) or not isinstance(item["target"], str)
+                or not isinstance(item["access"], str)):
+            raise VforgeError("environment mount metadata is malformed")
+        source = Path(item["source"])
+        if not source.is_absolute() or ".." in source.parts:
+            raise VforgeError("environment mount source must be an absolute canonical path")
+        target = checked_mount_target(item["target"])
+        access = item["access"]
+        if access not in {"read-only", "read-write"}:
+            raise VforgeError(f"invalid mount access for {target}: {access}")
+        result.append({"source": str(source), "target": target, "access": access})
+    return result
 
 
 def normalize_mounts(items: object) -> list[dict[str, str]]:
@@ -94,12 +247,15 @@ def normalize_mounts(items: object) -> list[dict[str, str]]:
     result = []
     for item in items:
         if (not isinstance(item, dict) or {"source", "target"} - set(item)
-                or set(item) - {"source", "target", "access"}):
+                or set(item) - {"source", "target", "access"}
+                or not isinstance(item.get("source"), str) or not isinstance(item.get("target"), str)):
             raise VforgeError("each mount must contain only source, target, and access")
-        source = Path(str(item.get("source", ""))).expanduser().absolute()
-        target = checked_mount_target(str(item.get("target", "")))
+        source = Path(item["source"]).expanduser()
+        if not source.is_absolute() or ".." in source.parts:
+            raise VforgeError("mount source must be an absolute path without parent traversal")
+        target = checked_mount_target(item["target"])
         access = item.get("access", "read-only")
-        if access not in {"read-only", "read-write"}:
+        if not isinstance(access, str) or access not in {"read-only", "read-write"}:
             raise VforgeError(f"invalid mount access for {target}: {access}")
         current = Path(source.anchor)
         for component in source.parts[1:]:
@@ -108,7 +264,7 @@ def normalize_mounts(items: object) -> list[dict[str, str]]:
                 raise VforgeError(f"mount source path must not traverse symlinks: {source}")
         try:
             resolved = source.resolve(strict=True)
-        except OSError as error:
+        except (OSError, RuntimeError) as error:
             raise VforgeError(f"mount source does not exist: {source}") from error
         if not resolved.is_dir():
             raise VforgeError(f"mount source must be a directory: {resolved}")
@@ -116,7 +272,39 @@ def normalize_mounts(items: object) -> list[dict[str, str]]:
     return result
 
 
-def confirm_permissions(name: str, requested: dict) -> None:
+def project_mount_approvals(project: Path) -> list[dict[str, str]]:
+    approval_path = config_directory() / PERMISSION_FILE
+    state = read_private_json_optional(
+        approval_path, "Vforge mount approvals", {"schema": 1, "projects": {}}
+    )
+    if not isinstance(state, dict) or state.get("schema") != 1 or not isinstance(state.get("projects"), dict):
+        raise VforgeError("Vforge mount approval state is malformed")
+    for project_name, mounts in state["projects"].items():
+        if not isinstance(project_name, str) or not Path(project_name).is_absolute():
+            raise VforgeError("Vforge mount approval state contains an invalid project path")
+        state["projects"][project_name] = validate_mount_records(mounts)
+    return state["projects"].get(str(project), [])
+
+
+def authorize_project_mounts(name: str, project: Path, requested: list[dict[str, str]]) -> None:
+    approval_path = config_directory() / PERMISSION_FILE
+    state = read_private_json_optional(
+        approval_path, "Vforge mount approvals", {"schema": 1, "projects": {}}
+    )
+    if not isinstance(state, dict) or state.get("schema") != 1 or not isinstance(state.get("projects"), dict):
+        raise VforgeError("Vforge mount approval state is malformed")
+    approved = project_mount_approvals(project)
+    added = [item for item in requested if item not in approved]
+    if added:
+        confirm_permissions(name, added)
+    if requested:
+        state["projects"][str(project)] = requested
+    else:
+        state["projects"].pop(str(project), None)
+    write_private_json(approval_path, state, "Vforge mount approvals")
+
+
+def confirm_permissions(name: str, requested: list[dict[str, str]]) -> None:
     print(f"Environment '{name}' requests additional host mounts:")
     print(json.dumps(requested, indent=2, sort_keys=True))
     if not sys.stdin.isatty():
@@ -126,34 +314,42 @@ def confirm_permissions(name: str, requested: dict) -> None:
 
 
 def create(name: str, *, project: Path | None = None, mounts: list[dict[str, str]] | None = None) -> Path:
+    validate_name(name)
+    if project is not None:
+        project = project.resolve(strict=True)
+        if not project.is_dir():
+            raise VforgeError("project path must be a directory")
+        ensure_private_directory(project / ".vforge")
+        requested = validate_mount_records(mounts or [])
+        authorize_project_mounts(name, project, requested)
+    else:
+        requested = validate_mount_records(mounts or [])
+        if requested:
+            raise VforgeError("host mounts can only be configured in a project .vforge.toml file")
+        ensure_private_directory(store_root())
+        ensure_private_directory(store_root() / "environments")
     path = environment_path(name, project=project)
-    if project and (path.parent.is_symlink() or path.is_symlink()):
+    if path.is_symlink():
         raise VforgeError("project Vforge state may not use symlinks")
     if path.exists():
         current = environment_metadata(path)
         if current.get("project") != (str(project) if project else None):
             raise VforgeError(f"environment '{name}' already belongs to a different project")
-        requested = mounts or []
         previous = current.get("mounts", [])
-        added = [item for item in requested if item not in previous]
-        if added:
-            confirm_permissions(name, added)
         if requested != previous:
             current["mounts"] = requested
             write_metadata(path, current)
         print(f"Environment '{name}' already exists at {path}")
         return path
-    requested = mounts or []
-    if requested:
-        confirm_permissions(name, requested)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.mkdir(mode=0o700, parents=True)
+    ensure_private_directory(path.parent)
+    path.mkdir(mode=0o700)
     (path / "upper").mkdir(mode=0o700)
     (path / "work").mkdir(mode=0o700)
     metadata = {
-        "schema": 1,
+        "schema": 2,
         "backend": "overlayfs",
         "name": name,
+        "root_id": uuid.uuid4().hex,
         "lower": "/",
         "upper": str(path / "upper"),
         "work": str(path / "work"),
@@ -167,21 +363,32 @@ def create(name: str, *, project: Path | None = None, mounts: list[dict[str, str
 
 def project_settings(project: Path) -> tuple[str, list[dict[str, str]]]:
     config = project / PROJECT_CONFIG
-    if config.is_symlink():
-        raise VforgeError("project Vforge configuration may not be a symlink")
-    if not config.exists():
-        return project.name.lower().replace(" ", "-")[:55] or "project", []
     try:
-        value = tomllib.loads(config.read_text(encoding="utf-8"))
+        descriptor = os.open(config, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return project.name.lower().replace(" ", "-")[:55] or "project", []
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise VforgeError("project Vforge configuration may not be a symlink") from error
+        raise VforgeError(f"cannot safely open project Vforge configuration: {error}") from error
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise VforgeError("project Vforge configuration must be a regular file")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            value = tomllib.loads(stream.read())
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise VforgeError(f"invalid project configuration: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     environment = value.get("environment", {})
     permissions = value.get("permissions", {})
     if not isinstance(environment, dict) or not isinstance(permissions, dict):
         raise VforgeError("[environment] and [permissions] must be tables")
     name = validate_name(str(environment.get("name", project.name.lower().replace(" ", "-")[:55])))
-    if environment.get("isolation", "integrated") not in {"strict", "integrated", "trusted"}:
-        raise VforgeError("permissions request an unsupported isolation profile")
+    if environment.get("isolation", "integrated") != "integrated":
+        raise VforgeError("native Vforge currently supports only the integrated isolation profile")
     home_mode = permissions.get("home", {}).get("mode", "project-only") if isinstance(permissions.get("home", {}), dict) else None
     if home_mode != "project-only":
         raise VforgeError("native Vforge currently supports project-only Home access")
@@ -197,6 +404,7 @@ def project_up(cwd: Path) -> Path:
 
 def namespace_command(path: Path, command: Sequence[str]) -> int:
     metadata = environment_metadata(path)
+    verify_project_mount_approvals(metadata)
     if not command:
         command = ["/bin/bash", "--login"]
     arguments = [
@@ -212,48 +420,142 @@ def namespace_command(path: Path, command: Sequence[str]) -> int:
     return 0
 
 
+def verify_project_mount_approvals(metadata: dict) -> None:
+    project = metadata.get("project")
+    if project is None:
+        return
+    approved = project_mount_approvals(Path(project))
+    if any(mount not in approved for mount in metadata.get("mounts", [])):
+        raise VforgeError("project environment contains unapproved host mounts; review .vforge.toml with `vforge up`")
+
+
 def mount_in_namespace(source: str, target: str, *, readonly: bool = False) -> None:
-    descriptor = os.open(source, getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_NOFOLLOW", 0))
+    source_path = Path(source)
+    if not source_path.is_absolute() or ".." in source_path.parts:
+        raise VforgeError(f"mount source must be an absolute path without parent traversal: {source}")
+    flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(source_path.anchor, flags)
     try:
+        for component in source_path.parts[1:]:
+            next_descriptor = os.open(component, flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
         pinned_source = f"/proc/self/fd/{descriptor}"
         run(["mount", "--bind", pinned_source, target])
         if readonly:
             run(["mount", "-o", "remount,bind,ro", target])
+    except OSError as error:
+        raise VforgeError(f"cannot safely open mount source {source}: {error}") from error
     finally:
         os.close(descriptor)
 
 
-def decode_mountinfo_path(value: str) -> str:
-    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+def veyra_root_marker(
+    metadata: dict,
+    root: Path,
+    cmdline_path: Path = Path("/proc/cmdline"),
+) -> dict[str, object]:
+    release_path = root / "usr/lib/os-release"
+    try:
+        release_text = release_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise VforgeError("the Veyra root does not contain a readable /usr/lib/os-release") from error
+    wanted = {"ID", "VERSION_ID", "IMAGE_ID", "IMAGE_VERSION"}
+    fields: dict[str, str] = {}
+    for line in release_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw = line.split("=", 1)
+        if key not in wanted:
+            continue
+        if key in fields:
+            raise VforgeError(f"Veyra os-release contains duplicate {key} fields")
+        try:
+            values = shlex.split(raw, comments=True, posix=True)
+        except ValueError as error:
+            raise VforgeError(f"Veyra os-release has malformed {key} syntax") from error
+        if len(values) != 1 or not values[0]:
+            raise VforgeError(f"Veyra os-release has an invalid {key} value")
+        fields[key] = values[0]
+    if set(fields) != wanted or fields["ID"] != "fedora" or fields["VERSION_ID"] != FEDORA_RELEASE:
+        raise VforgeError("Vforge requires the Fedora 44 Veyra system root")
+    if fields["IMAGE_ID"] != VEYRA_IMAGE_ID or not re.fullmatch(r"[A-Za-z0-9._+-]+", fields["IMAGE_VERSION"]):
+        raise VforgeError("Vforge requires a supported Veyra deployment identity")
+
+    try:
+        command_line = cmdline_path.read_text(encoding="ascii")
+    except (OSError, UnicodeError) as error:
+        raise VforgeError("cannot read the running Veyra kernel command line") from error
+    hashes = re.findall(r"(?:^|\s)roothash=([0-9a-f]{64})(?:\s|$)", command_line)
+    if len(hashes) != 1:
+        raise VforgeError("Vforge requires one dm-verity roothash from the running Veyra deployment")
+    return {
+        "schema": 1,
+        "kind": "vforge-veyra-root",
+        "root_id": metadata["root_id"],
+        "image_id": fields["IMAGE_ID"],
+        "image_version": fields["IMAGE_VERSION"],
+        "base_digest": hashes[0],
+        "storage_driver": "overlayfs",
+        "immutable_base": True,
+    }
 
 
-def cloned_mount_targets(mountinfo: str, lower: Path) -> list[Path]:
-    prefix = str(lower)
-    targets = set()
+def verify_immutable_root_mount(mountinfo: str) -> None:
+    candidates = []
     for line in mountinfo.splitlines():
         fields = line.split()
-        if len(fields) < 6:
+        if len(fields) < 10 or fields[4] != "/" or "-" not in fields:
             continue
-        target = Path(decode_mountinfo_path(fields[4]))
-        if target == lower or str(target).startswith(prefix + "/"):
-            targets.add(target)
-    return sorted(targets, key=lambda target: (len(target.parts), str(target)), reverse=True)
+        separator = fields.index("-")
+        if separator + 1 >= len(fields):
+            continue
+        candidates.append((fields[5].split(","), fields[separator + 1]))
+    if len(candidates) != 1 or "ro" not in candidates[0][0] or candidates[0][1] != "erofs":
+        raise VforgeError("Vforge requires the active Veyra EROFS root to be mounted read-only")
+
+
+def ensure_vpkg_state(root: Path) -> None:
+    database = root / "usr/lib/sysimage/rpm"
+    if database.is_symlink() or not database.is_dir() or database.resolve(strict=True) != database:
+        raise VforgeError("the Veyra root must contain a private RPM database at /usr/lib/sysimage/rpm")
+    state_directories = (
+        root / "var/lib/veyra/vpkg/container/history",
+        root / "var/lib/veyra/vpkg/container/persist",
+        root / "var/lib/veyra/vpkg/container/state",
+        root / "var/lib/veyra/vpkg/container/log",
+        root / "var/cache/veyra/vpkg/container",
+    )
+    for directory in state_directories:
+        current = root
+        for component in directory.relative_to(root).parts:
+            current = current / component
+            if current.is_symlink():
+                raise VforgeError(f"Vpkg state path may not traverse symlinks: {directory}")
+        directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+        if directory.is_symlink() or directory.resolve(strict=True) != directory:
+            raise VforgeError(f"Vpkg state path is not private to the Vforge root: {directory}")
 
 
 def run_environment(path: Path, command: Sequence[str]) -> int:
     metadata = environment_metadata(path)
-    runtime_parent = (Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "vforge").absolute()
-    runtime_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    verify_project_mount_approvals(metadata)
+    verify_immutable_root_mount(Path("/proc/self/mountinfo").read_text(encoding="utf-8"))
+    runtime_root = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    if not runtime_root.is_absolute():
+        raise VforgeError("XDG_RUNTIME_DIR must be an absolute path")
+    verify_private_directory(runtime_root, "user runtime directory")
+    runtime_parent = runtime_root / "vforge"
+    ensure_private_directory(runtime_parent)
     with tempfile.TemporaryDirectory(prefix=f"{metadata['name']}-", dir=runtime_parent) as temporary:
         root = Path(temporary)
         lower, merged = root / "lower", root / "merged"
         lower.mkdir()
         merged.mkdir()
         run(["mount", "--make-rprivate", "/"])
-        run(["mount", "--rbind", "/", str(lower)])
-        run(["mount", "--make-rslave", str(lower)])
-        for target in cloned_mount_targets(Path("/proc/self/mountinfo").read_text(), lower):
-            run(["mount", "-o", "remount,bind,ro", str(target)])
+        run(["mount", "--bind", "/", str(lower)])
+        run(["mount", "-o", "remount,bind,ro", str(lower)])
         options = f"lowerdir={lower},upperdir={metadata['upper']},workdir={metadata['work']}"
         run(["mount", "-t", "overlay", "overlay", "-o", options, str(merged)])
         if metadata.get("project"):
@@ -289,10 +591,19 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
         run(["mount", "-t", "tmpfs", "-o", "mode=1777,nosuid,nodev", "tmpfs", str(merged / "tmp")])
         run(["mount", "-t", "tmpfs", "-o", "mode=755,nosuid,nodev", "tmpfs", str(merged / "run")])
         run(["mount", "-t", "tmpfs", "-o", "mode=755,nosuid,nodev", "tmpfs", str(merged / "home")])
+        marker = veyra_root_marker(metadata, merged)
+        marker_directory = merged / "run/veyra-vforge"
+        marker_directory.mkdir(mode=0o755)
+        marker_file = marker_directory / "root.json"
+        marker_file.write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
+        marker_file.chmod(0o444)
+        run(["mount", "--bind", str(marker_file), str(marker_file)])
+        run(["mount", "-o", "remount,bind,ro", str(marker_file)])
         child = os.fork()
         if child == 0:
             try:
                 os.chroot(merged)
+                ensure_vpkg_state(Path("/"))
                 os.chdir("/workspace" if metadata.get("project") else "/")
                 safe_environment = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
                 for key, value in os.environ.items():
@@ -300,7 +611,7 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
                         safe_environment[key] = value
                 safe_environment["HOME"] = "/workspace" if metadata.get("project") else "/tmp"
                 os.execvpe(command[0], list(command), safe_environment)
-            except OSError as error:
+            except (OSError, VforgeError) as error:
                 print(f"vforge: cannot start command in environment: {error}", file=sys.stderr)
                 os._exit(127)
         _, status = os.waitpid(child, 0)
@@ -347,14 +658,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate_name(args.name)
             # An explicit storage root selects a concrete environment directory.
             if args.storage_root:
-                selected = args.storage_root.expanduser().absolute()
-                selected.mkdir(mode=0o700, parents=True, exist_ok=True)
-                config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-                config_dir = config_home / "vforge"
-                config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-                config_path = config_dir / "config.json"
-                config_path.write_text(json.dumps({"storage_root": str(selected)}, indent=2) + "\n", encoding="utf-8")
-                os.chmod(config_path, 0o600)
+                selected = args.storage_root.expanduser()
+                if not selected.is_absolute():
+                    raise VforgeError("Vforge storage root must be an absolute path")
+                selected = selected.resolve()
+                ensure_private_directory(selected)
+                write_private_json(config_directory() / "config.json", {"storage_root": str(selected)}, "Vforge configuration")
             create(args.name)
             return 0
         if args.action == "up":
@@ -363,14 +672,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.action == "list":
             return list_environments()
         if args.action == "config":
-            selected = args.path.expanduser().absolute()
-            selected.mkdir(mode=0o700, parents=True, exist_ok=True)
-            config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-            config_dir = config_home / "vforge"
-            config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            config_path = config_dir / "config.json"
-            config_path.write_text(json.dumps({"storage_root": str(selected)}, indent=2) + "\n", encoding="utf-8")
-            os.chmod(config_path, 0o600)
+            selected = args.path.expanduser()
+            if not selected.is_absolute():
+                raise VforgeError("Vforge storage root must be an absolute path")
+            selected = selected.resolve()
+            ensure_private_directory(selected)
+            write_private_json(config_directory() / "config.json", {"storage_root": str(selected)}, "Vforge configuration")
             print(selected)
             return 0
         if args.action == "enter" and args.name is None:
