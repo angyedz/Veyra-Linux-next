@@ -6,3 +6,25 @@ set -euo pipefail
 # without network access inside mkosi's finalization sandbox.
 flatpak remote-add --system --if-not-exists flathub \
     /usr/share/veyra/flathub.flatpakrepo
+
+# Persistent vpkg extensions must declare the same compatibility level as this
+# system image. Bump the level only when Veyra changes the extension ABI.
+sysext_level="$(< /usr/share/veyra/sysext-level)"
+if [[ ! "$sysext_level" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+    echo "Invalid Veyra system-extension level: $sysext_level" >&2
+    exit 1
+fi
+os_release="$(readlink -f /usr/lib/os-release)"
+if [[ -z "$os_release" || ! -f "$os_release" ]]; then
+    echo "Cannot resolve the base system os-release file." >&2
+    exit 1
+fi
+level_count="$(grep -c '^SYSEXT_LEVEL=' "$os_release" || true)"
+if [[ "$level_count" -gt 1 ]]; then
+    echo "The base os-release contains more than one SYSEXT_LEVEL field." >&2
+    exit 1
+elif [[ "$level_count" -eq 1 ]]; then
+    sed -i "s/^SYSEXT_LEVEL=.*/SYSEXT_LEVEL=$sysext_level/" "$os_release"
+else
+    printf 'SYSEXT_LEVEL=%s\n' "$sysext_level" >> "$os_release"
+fi

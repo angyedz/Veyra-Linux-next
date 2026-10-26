@@ -1,0 +1,34 @@
+componentName: veyra
+
+welcomeStyleCalamares: false
+welcomeExpandingLogo: false
+windowExpanding: normal
+windowSize: 960px,620px
+windowPlacement: center
+sidebar: widget
+navigation: widget
+
+strings:
+    productName: "Veyra Next Prototype"
+    shortProductName: "Veyra"
+    version: "Prototype"
+    shortVersion: "Prototype"
+    versionedName: "Veyra Next Prototype"
+    shortVersionedName: "Veyra Next"
+    bootloaderEntryName: "Veyra Next"
+    productUrl: ""
+    supportUrl: ""
+    knownIssuesUrl: ""
+    releaseNotesUrl: ""
+    donateUrl: ""
+
+images:
+    productIcon: "veyra-logo.svg"
+    productLogo: "veyra-logo.svg"
+    productWelcome: "veyra-logo.svg"
+
+style:
+    SidebarBackground: "#202A36"
+    SidebarText: "#F1F5F9"
+    SidebarTextCurrent: "#202A36"
+    SidebarBackgroundCurrent: "#7DD3FC"

@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Give each UKI the same versioned identity as its Veyra root image."""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+
+
+def main() -> int:
+    config = json.load(sys.stdin)
+    image_id = config.get("image_id")
+    image_version = config.get("image_version")
+    if image_id == "veyra-next" and image_version:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", image_version):
+            raise ValueError(f"unsafe ImageVersion for UKI filename: {image_version!r}")
+        config["unified_kernel_image_format"] = f"{image_id}_{image_version}"
+    json.dump(config, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
