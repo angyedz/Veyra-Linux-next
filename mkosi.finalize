@@ -9,6 +9,6 @@ case "${IMAGE_ID:-}" in
     veyra-next)
         python3 "$SRCDIR/scripts/install_recovery_uki.py" \
             --root "$BUILDROOT" \
-            --output-dir "$OUTPUTDIR"
+            --output-dir "$SRCDIR/mkosi.output"
         ;;
 esac
