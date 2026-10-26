@@ -69,6 +69,36 @@ Packages=systemd
         self.assertIn('"$live_root/usr/share/veyra/installer/source/installer"', kickstart)
         self.assertIn('"$source_root/installer/dracut"', kickstart)
 
+    def test_live_installer_bundles_recovery_at_composer_lookup_path(self) -> None:
+        kickstart = (ROOT / "installer/veyra-live.ks.in").read_text()
+        self.assertIn(
+            '"$live_root/usr/share/veyra/installer/source/assets/veyra-recovery.efi"',
+            kickstart,
+        )
+        self.assertNotIn(
+            '"$live_root/usr/share/veyra/installer/assets/veyra-recovery.efi"',
+            kickstart,
+        )
+
+    def test_recovery_uki_copy_into_target_esp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            source = base / "source"
+            (source / "assets").mkdir(parents=True)
+            (source / "assets/veyra-recovery.efi").write_bytes(b"isolated prototype fixture")
+            esp = base / "esp"
+            installer.write_recovery_uki(esp, source)
+            self.assertEqual(
+                (esp / "EFI/Linux/veyra-recovery.efi").read_bytes(),
+                b"isolated prototype fixture",
+            )
+
+    def test_recovery_uki_must_not_be_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            with self.assertRaisesRegex(installer.InstallError, "Recovery UKI"):
+                installer.write_recovery_uki(base / "esp", base / "source")
+
     def test_live_media_device_is_mapped_to_its_whole_disk(self) -> None:
         devices = [{
             "path": "/dev/sdb",
