@@ -38,6 +38,24 @@ Review the critical chain before touching units; `blame` alone can be
 misleading because services start in parallel. Measure again after each
 change and keep a rollback path.
 
+## QEMU smoke diagnostics
+
+On a Linux test machine with `qemu-system-x86_64`, `ovmf` and
+`timeout` installed, after building the disk image:
+
+```sh
+bash scripts/qemu-boot-smoke.sh mkosi.output/veyra-next.raw qemu-boot-report
+```
+
+The runner uses software emulation, read-only OVMF firmware and a QEMU
+snapshot drive, so guest writes do not alter the source image. It records
+serial output and QEMU stderr, then stops after 120 seconds (configurable
+via `VEYRA_QEMU_TIMEOUT`, 10–600 seconds). **A timeout is not a pass**:
+the guest may be stuck at firmware, bootloader, initrd or login. This is a
+headless diagnostic run; use a separate graphical QEMU/OVMF session to
+verify Plymouth and KDE visually. Never infer successful graphical boot
+from the mere existence of `serial.log`.
+
 ## Required release gates
 
 1. Source checks and full mkosi image build pass.
