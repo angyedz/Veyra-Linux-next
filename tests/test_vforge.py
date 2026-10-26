@@ -383,6 +383,45 @@ class VforgeNativeTests(unittest.TestCase):
         )
         self.assertEqual(mountpoints, [str(lower)])
 
+    def test_unmount_inherited_submounts_skips_a_mount_already_detached(self) -> None:
+        lower = Path("/run/veyra-vforge/lower")
+        mountinfo = (
+            "40 30 0:1 / /run/veyra-vforge/lower ro,relatime - erofs /dev/root ro\n"
+            "41 40 0:2 / /run/veyra-vforge/lower/sys ro,relatime - sysfs sysfs ro\n"
+            "42 41 0:3 / /run/veyra-vforge/lower/sys/fs/fuse/connections rw,relatime - fusectl fusectl rw\n"
+        )
+        current_mountinfo = "40 30 0:1 / /run/veyra-vforge/lower ro,relatime - erofs /dev/root ro\n"
+        mountpoints = [str(lower)]
+
+        with (
+            patch.object(vforge, "run", side_effect=[vforge.VforgeError("not mounted"), None]) as run,
+            patch.object(Path, "read_text", return_value=current_mountinfo),
+        ):
+            vforge.unmount_inherited_submounts(lower, mountpoints, mountinfo)
+
+        self.assertEqual(
+            [call.args[0][-1] for call in run.call_args_list],
+            [str(lower / "sys/fs/fuse/connections"), str(lower / "sys")],
+        )
+        self.assertEqual(mountpoints, [str(lower)])
+
+    def test_unmount_inherited_submounts_keeps_failing_if_mount_is_still_present(self) -> None:
+        lower = Path("/run/veyra-vforge/lower")
+        mountinfo = (
+            "40 30 0:1 / /run/veyra-vforge/lower ro,relatime - erofs /dev/root ro\n"
+            "41 40 0:2 / /run/veyra-vforge/lower/sys ro,relatime - sysfs sysfs ro\n"
+        )
+        mountpoints = [str(lower)]
+
+        with (
+            patch.object(vforge, "run", side_effect=vforge.VforgeError("device busy")),
+            patch.object(Path, "read_text", return_value=mountinfo),
+        ):
+            with self.assertRaisesRegex(vforge.VforgeError, "device busy"):
+                vforge.unmount_inherited_submounts(lower, mountpoints, mountinfo)
+
+        self.assertEqual(mountpoints, [str(lower), str(lower / "sys")])
+
     def test_vforge_marker_identifies_active_veyra_root_and_overlay(self) -> None:
         root = self.root / "root"
         (root / "usr/lib").mkdir(parents=True)
