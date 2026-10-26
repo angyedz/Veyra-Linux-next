@@ -3,7 +3,7 @@ name: Fedora image
 on:
   pull_request:
   push:
-    branches: [main, feature/vforge]
+    branches: [main]
   workflow_dispatch:
 
 permissions:

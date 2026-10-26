@@ -14,7 +14,7 @@ on:
       - 'tests/test_vpkg.py'
       - 'tests/test_build_environment.py'
   push:
-    branches: [feature/vforge]
+    branches: [main]
     paths:
       - '.github/workflows/vforge-source-tests.yml'
       - 'mkosi.conf'
