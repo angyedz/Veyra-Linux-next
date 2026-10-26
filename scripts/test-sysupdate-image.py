@@ -102,7 +102,7 @@ def patch_uki(
         raise RuntimeError("test UKI must contain .cmdline and .osrel sections")
 
     cmdline = (
-        f"roothash={roothash} systemd.firstboot=no "
+        f"roothash={roothash} veyra.image_version={version} systemd.firstboot=no "
         f"systemd.unit={unit} console=ttyS0,115200n8"
     ).encode("ascii") + b"\0"
     with destination.open("r+b") as stream:

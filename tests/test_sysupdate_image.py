@@ -158,6 +158,7 @@ class SysupdateImageTests(unittest.TestCase):
                 stream.seek(cmdline_offset)
                 cmdline = stream.read(256).split(b"\0", 1)[0].decode("ascii")
             self.assertIn(f"roothash={roothash}", cmdline)
+            self.assertIn("veyra.image_version=0.1.1", cmdline)
             self.assertIn("systemd.firstboot=no", cmdline)
             self.assertIn("systemd.unit=graphical.target", cmdline)
             self.assertEqual(sysupdate_image.os_release_value(destination, "VERSION_ID"), "44")
