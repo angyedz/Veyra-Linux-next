@@ -199,7 +199,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -213,7 +213,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
-            btrfs-progs ca-certificates cpio curl cryptsetup-bin dnf dosfstools e2fsprogs \
+            btrfs-progs ca-certificates cpio curl cryptsetup-bin dnf dosfstools e2fsprogs grub-common \
             erofs-utils fdisk git gnupg kmod mtools openssl ovmf python3 \
             qemu-system-x86 squashfs-tools sudo systemd-container systemd-ukify \
             xz-utils zstd
@@ -244,6 +244,12 @@ jobs:
             mkosi.extra/usr/libexec/veyra-vpkg-ci-test
           sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery \
             mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
+          sudo install -D -m 0644 tests/fixtures/firmware/veyra-bios-ci.service \
+            mkosi.extra/usr/lib/systemd/system/veyra-bios-ci.service
+          sudo install -d -m 0755 \
+            mkosi.extra/usr/lib/systemd/system/graphical.target.wants
+          sudo ln -s /usr/lib/systemd/system/veyra-bios-ci.service \
+            mkosi.extra/usr/lib/systemd/system/graphical.target.wants/veyra-bios-ci.service
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
       - name: Gate root, UKI and core RPMs on Fedora 44
@@ -258,6 +264,8 @@ jobs:
             exit 1
           fi
           test -s "${recovery_ukis[0]}"
+          test -s "mkosi.output/veyra-next_${version}.vmlinuz"
+          test -s "mkosi.output/veyra-next_${version}.initrd"
           python3 scripts/check-image.py mkosi.output/veyra-next.raw
           sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c '
           grep -Fxq VERSION_ID=44 /usr/lib/os-release
@@ -271,7 +279,7 @@ jobs:
           sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c "$(cat <<'VERIFY_PACKAGES'
           check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
-            glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
+            glibc systemd systemd-udev kernel grub2-pc grub2-tools-minimal plasma-workspace plasma-login-manager plasma-setup \
             flatpak libdnf5 python3-libdnf5 util-linux gcc git cmake python3 nodejs22
           test "$(rpm -E '%{fedora}')" = 44
           grep -Fxq 'ID=fedora' /usr/lib/os-release
@@ -299,6 +307,9 @@ jobs:
           check veyra-sysext-level sh -eu -c "grep -Fxq SYSEXT_LEVEL=1 /etc/os-release && grep -Fxq SYSEXT_LEVEL=1 /usr/lib/os-release"
           check plasma-setup-enabled sh -eu -c "find /etc/systemd/system -type l -name plasma-setup.service -print -quit | grep -q ."
           check systemd-sysext-enabled sh -eu -c "find /etc/systemd/system -type l -name systemd-sysext.service -print -quit | grep -q ."
+          check bios-ci-service test -s /usr/lib/systemd/system/veyra-bios-ci.service
+          check bios-ci-service-enabled test -L /usr/lib/systemd/system/graphical.target.wants/veyra-bios-ci.service
+          check bios-ci-service-target test "$(readlink /usr/lib/systemd/system/graphical.target.wants/veyra-bios-ci.service)" = /usr/lib/systemd/system/veyra-bios-ci.service
           check vpkg-sync-service test -s /usr/lib/systemd/system/veyra-vpkg-sync.service
           check sysext-vpkg-ordering test -s /usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf
           VERIFY_PACKAGES
@@ -307,8 +318,23 @@ jobs:
         run: |
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
           test -s "mkosi.output/veyra-next_${version}.efi"
+          test -s "mkosi.output/veyra-next_${version}.vmlinuz"
+          test -s "mkosi.output/veyra-next_${version}.initrd"
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root.raw.zst" -type f -size +0c | grep -q .
           find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .
+          # The BIOS QEMU harness temporarily injects serial boot diagnostics into this disposable image.
+          sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw
+
+      - name: Boot the image through Legacy BIOS in QEMU
+        run: python3 scripts/test-bios-boot.py --image mkosi.output/veyra-next.raw --report-dir build/bios-boot --timeout 1200
+      - name: Upload Legacy BIOS boot diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-bios-boot-diagnostics
+          path: build/bios-boot/
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Run signed OTA integration inside a disposable QEMU guest
         run: |
@@ -347,3 +373,58 @@ jobs:
             --ovmf-code "$ovmf_code" \
             --ovmf-vars "$ovmf_vars" \
             --boot-timeout 1200
+
+      - name: Build target-version artifacts for Legacy BIOS OTA
+        run: |
+          set -euo pipefail
+          current_version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          candidate_version="$(python3 - "$current_version" <<'PY'
+          import sys
+          components = sys.argv[1].split(".")
+          if not components or any(not part.isdecimal() for part in components):
+              raise SystemExit("ImageVersion must be numeric for the OTA fixture")
+          components[-1] = str(int(components[-1]) + 1)
+          print(".".join(components))
+          PY
+          )"
+          sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS \
+            scripts/mkosi.sh --force --image-version "$candidate_version" \
+            --output-directory build/bios-ota-candidate build
+          test -s build/bios-ota-candidate/veyra-next.raw
+          test -s build/bios-ota-candidate/veyra-next.osrelease
+          grep -Fxq "IMAGE_VERSION=\"$candidate_version\"" \
+            build/bios-ota-candidate/veyra-next.osrelease
+          test -s "build/bios-ota-candidate/veyra-next_${candidate_version}.vmlinuz"
+          test -s "build/bios-ota-candidate/veyra-next_${candidate_version}.initrd"
+          find build/bios-ota-candidate -maxdepth 1 \
+            -name "veyra-next_${candidate_version}_*.root.raw.zst" -type f -size +0c | grep -q .
+
+      - name: Run signed Legacy BIOS OTA, GRUB bless, and rollback in QEMU
+        run: |
+          set -euo pipefail
+          version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          export GNUPGHOME="$RUNNER_TEMP/veyra-bios-ota-gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --quick-generate-key "Veyra temporary BIOS CI update key" ed25519 sign 0
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys |
+            awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          sudo --preserve-env=PATH,GNUPGHOME python3 scripts/test-sysupdate-image.py \
+            --image mkosi.output/veyra-next.raw \
+            --current-version "$version" \
+            --transfer-dir mkosi.extra/usr/lib/sysupdate.d \
+            --firmware bios \
+            --candidate-dir build/bios-ota-candidate \
+            --vpkg-test-repo build/vpkg-site \
+            --fingerprint "$fingerprint" \
+            --log-directory build/bios-ota-logs \
+            --boot-timeout 1200
+      - name: Upload Legacy BIOS OTA diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-bios-ota-diagnostics
+          path: build/bios-ota-logs/
+          if-no-files-found: ignore
+          retention-days: 3

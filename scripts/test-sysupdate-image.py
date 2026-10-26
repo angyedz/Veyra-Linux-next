@@ -240,22 +240,38 @@ def write_manifest(source: pathlib.Path, assets: list[str], fingerprint: str) ->
 
 
 def write_test_definitions(
-    source: pathlib.Path, definitions: pathlib.Path, base_url: str
+    source: pathlib.Path,
+    definitions: pathlib.Path,
+    base_url: str,
+    firmware: str = "uefi",
 ) -> pathlib.Path:
     destination = source / "definitions"
     destination.mkdir()
     expected = {
         "10-root-verity.transfer",
         "20-root.transfer",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
         "99-uki.transfer",
     }
     actual = {path.name for path in definitions.glob("*.transfer")}
     if actual != expected:
         raise RuntimeError(f"Unexpected system update transfer set: {sorted(actual)}")
-    for name in sorted(expected):
+    transfers_by_firmware = {
+        "uefi": {"10-root-verity.transfer", "20-root.transfer", "99-uki.transfer"},
+        "bios": {
+            "10-root-verity.transfer",
+            "20-root.transfer",
+            "80-bios-kernel.transfer",
+            "90-bios-initrd.transfer",
+        },
+    }
+    if firmware not in transfers_by_firmware:
+        raise RuntimeError(f"unsupported update test firmware: {firmware!r}")
+    for name in sorted(transfers_by_firmware[firmware]):
         content = (definitions / name).read_text(encoding="utf-8")
         content, replacements = re.subn(
-            r"(?m)^Path=https://github\.com/angyedz/Veyra-next/releases/latest/download/?[ \t]*$",
+            r"(?m)^Path=https://github\.com/angyedz/Veyra-Linux-next/releases/latest/download/?[ \t]*$",
             f"Path={base_url}",
             content,
         )
@@ -561,6 +577,178 @@ def inject_guest_ota_test(
             run(["sudo", "umount", str(mountpoint)])
 
 
+def inject_bios_guest_ota_test(
+    image: pathlib.Path,
+    definitions: pathlib.Path,
+    exported_key: pathlib.Path,
+    version: str,
+    roothash: str,
+    marker: str,
+    run_vpkg_ci: bool,
+) -> None:
+    """Configure a disposable Legacy BIOS guest to stage and bless a signed OTA."""
+    partitions, sector_size = inspect_partitions(image)
+    etc_partitions = [p for p in partitions if p.get("name") == "VEYRA_ETC"]
+    if len(etc_partitions) != 1:
+        raise RuntimeError("the test image must contain exactly one persistent /etc partition")
+    partition = etc_partitions[0]
+    offset = int(partition["start"]) * sector_size
+    size = int(partition["size"]) * sector_size
+
+    with tempfile.TemporaryDirectory(prefix="veyra-bios-ota-ci-etc-") as temporary:
+        work = pathlib.Path(temporary)
+        mountpoint = work / "etc"
+        mountpoint.mkdir()
+        run([
+            "sudo", "mount", "-t", "ext4", "-o",
+            f"loop,rw,nodev,nosuid,offset={offset},sizelimit={size}",
+            str(image), str(mountpoint),
+        ])
+        try:
+            if run_vpkg_ci:
+                marker_file = mountpoint / "veyra/vpkg-ci-enabled"
+                marker_file.parent.mkdir(parents=True, exist_ok=True)
+                marker_file.write_text("enabled\n", encoding="ascii")
+            systemd_definitions = mountpoint / "sysupdate.d"
+            systemd_definitions.mkdir(parents=True, exist_ok=True)
+            for source in sorted(definitions.glob("*.conf")):
+                destination = systemd_definitions / f"{source.stem}.transfer"
+                shutil.copyfile(source, destination)
+                destination.chmod(0o644)
+            keyring = mountpoint / "systemd/import-pubring.gpg"
+            keyring.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(exported_key, keyring)
+            keyring.chmod(0o644)
+
+            test_dir = mountpoint / "veyra/ota-ci"
+            test_dir.mkdir(parents=True, exist_ok=True)
+            prepare = test_dir / "prepare-bios"
+            prepare.write_text(
+                "#!/usr/bin/bash\n"
+                "set -euo pipefail\n"
+                "state=/var/lib/veyra/ota-ci\n"
+                "intents=/var/lib/veyra/vpkg/intents.json\n"
+                "pending=/var/lib/veyra/vpkg/pending.json\n"
+                f"version={version!r}\n"
+                f"roothash={roothash!r}\n"
+                f"marker={marker!r}\n"
+                "mkdir -p \"$state\" \"$(dirname \"$intents\")\"\n"
+                "saved_intents=\"$state/intents.before-conflict.json\"\n"
+                "had_intents=0\n"
+                "if [[ -s \"$intents\" ]]; then cp -a \"$intents\" \"$saved_intents\"; had_intents=1; fi\n"
+                "printf '{\"schema\":1,\"requests\":[{\"kind\":\"repo\",\"name\":\"systemd\"}]}\\n' >\"$intents\"\n"
+                "if /usr/bin/veyra-update install \"$version\" >\"$state/conflict.log\" 2>&1; then\n"
+                "  cat \"$state/conflict.log\" >&2\n"
+                "  echo 'OTA preflight unexpectedly accepted a protected base-system package.' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "grep -Fq 'no trial boot entry was installed' \"$state/conflict.log\"\n"
+                "test ! -e \"$pending\"\n"
+                f"test ! -e /boot/VEYRA/veyra-next_{version}.vmlinuz\n"
+                f"test ! -e /boot/VEYRA/veyra-next_{version}.initrd\n"
+                "/usr/bin/veyra-update pending >\"$state/no-pending.log\"\n"
+                "grep -Fq 'No Veyra system update is waiting for a reboot.' \"$state/no-pending.log\"\n"
+                "if /usr/bin/veyra-update reboot >\"$state/no-reboot.log\" 2>&1; then\n"
+                "  echo 'veyra-update reboot accepted a root-only partial stage.' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "grep -Fq 'There is no completed Veyra system update' \"$state/no-reboot.log\"\n"
+                "if (( had_intents )); then cp -a \"$saved_intents\" \"$intents\"; else printf '{\"schema\":1,\"requests\":[]}\\n' >\"$intents\"; fi\n"
+                "/usr/bin/veyra-update install \"$version\"\n"
+                "python3 - \"$pending\" \"$version\" \"$roothash\" <<'PY'\n"
+                "import json, pathlib, sys\n"
+                "value = json.loads(pathlib.Path(sys.argv[1]).read_text())\n"
+                "assert value == {'schema': 1, 'target_roothash': sys.argv[3], 'version': sys.argv[2]}\n"
+                "PY\n"
+                "if /usr/bin/vpkg install htop >\"$state/mutation.log\" 2>&1; then\n"
+                "  echo 'vpkg unexpectedly allowed a mutation while OTA was pending.' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "grep -Fq 'Package changes are blocked while OTA' \"$state/mutation.log\"\n"
+                "/usr/bin/veyra-update pending >\"$state/pending.log\"\n"
+                f"grep -Fq 'Veyra {version} is staged as a signed GRUB BIOS trial (3 tries remain).' \"$state/pending.log\"\n"
+                "touch \"$state/staged\"\n"
+                "printf 'VEYRA_BIOS_OTA_PREPARE_CI_PASS_%s\\n' \"$marker\" >/dev/ttyS0\n"
+                "/usr/bin/veyra-update reboot\n",
+                encoding="ascii",
+            )
+            prepare.chmod(0o755)
+
+            stable_check = test_dir / "stable-check"
+            stable_check_script = (
+                "#!/usr/bin/bash\n"
+                "set -euo pipefail\n"
+                "identity=\"$(/usr/bin/python3 /usr/lib/veyra/grub_ota.py identity)\"\n"
+                "state=\"$(/usr/bin/python3 /usr/lib/veyra/grub_ota.py status)\"\n"
+                "cmdline=\"$(cat /proc/cmdline)\"\n"
+                f"case \" $cmdline \" in *\" roothash={roothash} \"*) ;; *) echo 'BIOS OTA booted with the wrong root hash' >&2; exit 1 ;; esac\n"
+                f"case \" $cmdline \" in *\" veyra.image_version={version} \"*) ;; *) echo 'BIOS OTA booted with the wrong image version' >&2; exit 1 ;; esac\n"
+                "python3 - \"$identity\" \"$state\" <<'PY'\n"
+                "import json, sys\n"
+                "identity = sys.argv[1].splitlines()\n"
+                "state = json.loads(sys.argv[2])\n"
+                "assert len(identity) == 2\n"
+                "assert state['veyra_stable_version'] == identity[0]\n"
+                "assert state['veyra_stable_roothash'] == identity[1]\n"
+                "PY\n"
+            )
+            if run_vpkg_ci:
+                stable_check_script += "test -e /var/lib/veyra/vpkg-ci-complete\n"
+            stable_check_script += (
+                f"printf 'VEYRA_BIOS_OTA_STABLE_BOOT_CI_PASS_{marker} roothash={roothash} "
+                f"veyra.image_version={version}\\n' >/dev/ttyS0\n"
+            )
+            stable_check.write_text(stable_check_script, encoding="ascii")
+            stable_check.chmod(0o755)
+
+            systemd = mountpoint / "systemd/system"
+            systemd.mkdir(parents=True, exist_ok=True)
+            prepare_unit = systemd / "veyra-ota-ci-prepare.service"
+            prepare_after = "graphical.target veyra-vpkg-ci.service" if run_vpkg_ci else "graphical.target"
+            prepare_unit.write_text(
+                "[Unit]\n"
+                "Description=Stage a signed Veyra BIOS OTA from the disposable guest\n"
+                + ("Requires=veyra-vpkg-ci.service\n" if run_vpkg_ci else "")
+                + f"After={prepare_after}\n"
+                + "ConditionKernelCommandLine=!veyra.image_version=" + version + "\n"
+                + "ConditionPathExists=!/var/lib/veyra/ota-ci/staged\n\n"
+                + "[Service]\nType=oneshot\n"
+                + "ExecStart=/etc/veyra/ota-ci/prepare-bios\n"
+                + "TimeoutStartSec=600\n"
+                + "StandardOutput=journal+console\nStandardError=journal+console\n",
+                encoding="ascii",
+            )
+            graphical_wants = systemd / "graphical.target.wants"
+            graphical_wants.mkdir(parents=True, exist_ok=True)
+            (graphical_wants / prepare_unit.name).symlink_to(
+                "/etc/systemd/system/" + prepare_unit.name
+            )
+
+            stable_unit = systemd / "veyra-bios-ota-ci-stable.service"
+            stable_unit.write_text(
+                "[Unit]\n"
+                "Description=Verify Veyra BIOS OTA settlement state\n"
+                + ("Requires=veyra-vpkg-ci.service\nAfter=veyra-vpkg-ci.service " if run_vpkg_ci else "")
+                + "After=veyra-vpkg-sync.service veyra-grub-bless.service\n"
+                + "Before=boot-complete.target\n"
+                + "ConditionPathExists=!/sys/firmware/efi\n"
+                + f"ConditionKernelCommandLine=veyra.image_version={version}\n\n"
+                + "[Service]\nType=oneshot\n"
+                + "ExecStart=/etc/veyra/ota-ci/stable-check\n"
+                + "StandardOutput=journal+console\nStandardError=journal+console\n",
+                encoding="ascii",
+            )
+            boot_complete_dropin = systemd / "boot-complete.target.d/veyra-bios-ota-ci.conf"
+            boot_complete_dropin.parent.mkdir(parents=True, exist_ok=True)
+            boot_complete_dropin.write_text(
+                "[Unit]\nRequires=veyra-bios-ota-ci-stable.service\n"
+                "After=veyra-bios-ota-ci-stable.service\n",
+                encoding="ascii",
+            )
+        finally:
+            run(["sudo", "umount", str(mountpoint)])
+
+
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         pass
@@ -571,6 +759,8 @@ def main() -> int:
     parser.add_argument("--image", required=True, type=pathlib.Path)
     parser.add_argument("--current-version", required=True)
     parser.add_argument("--transfer-dir", required=True, type=pathlib.Path)
+    parser.add_argument("--firmware", choices=("uefi", "bios"), default="uefi")
+    parser.add_argument("--candidate-dir", type=pathlib.Path)
     parser.add_argument("--vpkg-test-repo", type=pathlib.Path)
     parser.add_argument("--fingerprint", required=True)
     parser.add_argument("--port", type=int, default=8765)
@@ -580,8 +770,8 @@ def main() -> int:
     parser.add_argument("--qemu-memory-mib", default=4096, type=int)
     parser.add_argument("--qemu-data-dir", type=pathlib.Path)
     parser.add_argument("--log-directory", type=pathlib.Path)
-    parser.add_argument("--ovmf-code", required=True, type=pathlib.Path)
-    parser.add_argument("--ovmf-vars", required=True, type=pathlib.Path)
+    parser.add_argument("--ovmf-code", type=pathlib.Path)
+    parser.add_argument("--ovmf-vars", type=pathlib.Path)
     parser.add_argument("--boot-timeout", type=int, default=300)
     args = parser.parse_args()
 
@@ -595,12 +785,41 @@ def main() -> int:
         if not shutil.which(args.qemu):
             raise RuntimeError(f"QEMU executable not found: {args.qemu}")
 
-        root_candidates = sorted(image.parent.glob(
-            f"veyra-next_{args.current_version}_*.root.raw.zst"
-        ))
-        uki_source = image.parent / f"veyra-next_{args.current_version}.efi"
-        if len(root_candidates) != 1 or not uki_source.is_file():
-            raise RuntimeError("the built image must export one matching root artifact and UKI")
+        if args.firmware == "uefi":
+            if not args.ovmf_code or not args.ovmf_vars:
+                raise RuntimeError("UEFI OTA integration requires both --ovmf-code and --ovmf-vars")
+            payload_dir = image.parent
+            payload_version = args.current_version
+            root_candidates = sorted(payload_dir.glob(
+                f"veyra-next_{payload_version}_*.root.raw.zst"
+            ))
+            uki_source = payload_dir / f"veyra-next_{payload_version}.efi"
+            if len(root_candidates) != 1 or not uki_source.is_file():
+                raise RuntimeError("the built image must export one matching root artifact and UKI")
+            bios_kernel = None
+            bios_initrd = None
+        else:
+            if not args.candidate_dir:
+                raise RuntimeError("BIOS OTA integration requires --candidate-dir with the target-version build")
+            payload_dir = args.candidate_dir.resolve()
+            payload_version = version
+            root_candidates = sorted(payload_dir.glob(
+                f"veyra-next_{payload_version}_*.root.raw.zst"
+            ))
+            bios_kernel = payload_dir / f"veyra-next_{payload_version}.vmlinuz"
+            bios_initrd = payload_dir / f"veyra-next_{payload_version}.initrd"
+            if (
+                len(root_candidates) != 1
+                or not bios_kernel.is_file()
+                or not bios_initrd.is_file()
+            ):
+                raise RuntimeError(
+                    "the candidate build must export one matching root, kernel, and initramfs"
+                )
+            osrelease = payload_dir / "veyra-next.osrelease"
+            if not osrelease.is_file() or f'IMAGE_VERSION="{version}"' not in osrelease.read_text(encoding="utf-8"):
+                raise RuntimeError("the BIOS candidate root does not identify its target image version")
+            uki_source = None
 
         with tempfile.TemporaryDirectory(prefix="veyra-sysupdate-test-") as temporary:
             source = pathlib.Path(temporary)
@@ -640,19 +859,31 @@ def main() -> int:
 
             root_asset = f"veyra-next_{version}_{root_uuid}.root.raw.xz"
             verity_asset = f"veyra-next_{version}_{verity_uuid}.root-verity.raw.xz"
-            uki_asset = f"veyra-next_{version}.efi"
             write_xz(root_raw, source / root_asset)
             write_xz(verity_raw, source / verity_asset)
-            test_uki = source / uki_asset
-            patch_uki(
-                uki_source,
-                test_uki,
-                version,
-                roothash,
-                "boot-complete.target",
-                extra_cmdline=("veyra.ota-ci=trial",),
-            )
-            write_manifest(source, [root_asset, verity_asset, uki_asset], args.fingerprint)
+            payload_assets = [root_asset, verity_asset]
+            if args.firmware == "uefi":
+                assert uki_source is not None
+                uki_asset = f"veyra-next_{version}.efi"
+                test_uki = source / uki_asset
+                patch_uki(
+                    uki_source,
+                    test_uki,
+                    version,
+                    roothash,
+                    "boot-complete.target",
+                    extra_cmdline=("veyra.ota-ci=trial",),
+                )
+                payload_assets.append(uki_asset)
+            else:
+                assert bios_kernel is not None and bios_initrd is not None
+                for artifact in (bios_kernel, bios_initrd):
+                    destination = source / artifact.name
+                    shutil.copyfile(artifact, destination)
+                    if not destination.stat().st_size:
+                        raise RuntimeError(f"empty BIOS update artifact: {artifact}")
+                    payload_assets.append(destination.name)
+            write_manifest(source, payload_assets, args.fingerprint)
 
             exported_key = source / "update-key.gpg"
             with exported_key.open("wb") as output:
@@ -668,37 +899,64 @@ def main() -> int:
             thread.start()
             try:
                 definitions = write_test_definitions(
-                    source, args.transfer_dir, f"http://10.0.2.100:{args.port}/"
+                    source,
+                    args.transfer_dir,
+                    f"http://10.0.2.100:{args.port}/",
+                    firmware=args.firmware,
                 )
                 ota_marker = uuid.uuid4().hex
-                inject_guest_ota_test(
-                    staged_image,
-                    definitions,
-                    exported_key,
-                    args.current_version,
-                    version,
-                    roothash,
-                    ota_marker,
-                    args.vpkg_test_repo is not None,
-                )
-                add_serial_to_initial_uki(staged_image)
-
-                boot_command = [
-                    sys.executable,
-                    str(pathlib.Path(__file__).with_name("test-ab-boot.py")),
-                    "--image", str(staged_image),
-                    "--version", version,
-                    "--roothash", roothash,
-                    "--ota-marker", ota_marker,
-                    "--qemu", args.qemu,
-                    "--accel", args.qemu_accel,
-                    "--cpu", args.qemu_cpu,
-                    "--memory-mib", str(args.qemu_memory_mib),
-                    "--ovmf-code", str(args.ovmf_code.resolve()),
-                    "--ovmf-vars", str(args.ovmf_vars.resolve()),
-                    "--boot-timeout", str(args.boot_timeout),
-                    "--ota-port", str(args.port),
-                ]
+                if args.firmware == "uefi":
+                    inject_guest_ota_test(
+                        staged_image,
+                        definitions,
+                        exported_key,
+                        args.current_version,
+                        version,
+                        roothash,
+                        ota_marker,
+                        args.vpkg_test_repo is not None,
+                    )
+                    add_serial_to_initial_uki(staged_image)
+                    boot_command = [
+                        sys.executable,
+                        str(pathlib.Path(__file__).with_name("test-ab-boot.py")),
+                        "--image", str(staged_image),
+                        "--version", version,
+                        "--roothash", roothash,
+                        "--ota-marker", ota_marker,
+                        "--qemu", args.qemu,
+                        "--accel", args.qemu_accel,
+                        "--cpu", args.qemu_cpu,
+                        "--memory-mib", str(args.qemu_memory_mib),
+                        "--ovmf-code", str(args.ovmf_code.resolve()),
+                        "--ovmf-vars", str(args.ovmf_vars.resolve()),
+                        "--boot-timeout", str(args.boot_timeout),
+                        "--ota-port", str(args.port),
+                    ]
+                else:
+                    inject_bios_guest_ota_test(
+                        staged_image,
+                        definitions,
+                        exported_key,
+                        version,
+                        roothash,
+                        ota_marker,
+                        args.vpkg_test_repo is not None,
+                    )
+                    boot_command = [
+                        sys.executable,
+                        str(pathlib.Path(__file__).with_name("test-bios-ab-boot.py")),
+                        "--image", str(staged_image),
+                        "--version", version,
+                        "--roothash", roothash,
+                        "--ota-marker", ota_marker,
+                        "--qemu", args.qemu,
+                        "--accel", args.qemu_accel,
+                        "--cpu", args.qemu_cpu,
+                        "--memory-mib", str(args.qemu_memory_mib),
+                        "--boot-timeout", str(args.boot_timeout),
+                        "--ota-port", str(args.port),
+                    ]
                 if args.log_directory:
                     boot_command.extend(["--log-directory", str(args.log_directory.resolve())])
                 if args.qemu_data_dir:
@@ -711,8 +969,13 @@ def main() -> int:
                 server.server_close()
                 thread.join(timeout=5)
 
-        print(f"Signed sysupdate was installed by veyra-update inside the QEMU guest as Veyra {version}.")
-        print("A deliberate three-attempt boot failure returned to the previously blessed slot.")
+        print(
+            f"Signed {args.firmware.upper()} sysupdate was installed inside the QEMU guest as Veyra {version}."
+        )
+        if args.firmware == "bios":
+            print("SeaBIOS booted the trial, GRUB blessed it, and three failed trials returned to the prior deployment.")
+        else:
+            print("A deliberate three-attempt boot failure returned to the previously blessed slot.")
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", None)

@@ -1,0 +1,9 @@
+[Unit]
+Description=Mark a healthy Veyra Legacy BIOS GRUB trial as stable
+ConditionPathExists=!/sys/firmware/efi
+After=graphical.target systemd-boot-check-no-failures.service veyra-vpkg-check.service
+Before=boot-complete.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/veyra-update bless-complete

@@ -12,7 +12,7 @@ Kinoite informs the desktop experience: Plasma, Discover, Flatpak and an atomic-
 
 The current implementation uses Fedora 44, glibc and systemd. This replaces the earlier ADR's OpenRC preference for the new project: systemd is already the native service manager on Fedora and provides the boot, partition and image-update tools being evaluated. `mkosi` composes the image, `systemd-repart` lays out its disk, and `systemd-sysupdate` stages updates. CI now exercises their end-to-end A/B behavior on a Veyra image rather than treating configuration alone as proof.
 
-The CI boot exercise uses ordinary UEFI with Secure Boot disabled. It proves the update and boot-count behavior in a virtual machine; it does not qualify physical hardware or authenticate the EFI boot path. Secure Boot is deliberately not claimed or enabled until key ownership, signing and enrollment are designed.
+The CI exercises ordinary UEFI with Secure Boot disabled and is configured to boot the same image through SeaBIOS. UEFI runs the A/B update and rollback checks. The BIOS gate currently checks boot through `graphical.target`; BIOS OTA, rollback, and Recovery remain unvalidated. VM checks do not qualify physical hardware. Secure Boot is not claimed until key ownership, signing, and enrollment are designed.
 
 ## Build and release direction
 

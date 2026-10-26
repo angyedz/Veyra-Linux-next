@@ -80,6 +80,29 @@ class FedoraReleaseGateTests(unittest.TestCase):
             image = self.make_artifacts(Path(temporary))
             check_image.validate_fedora_release(image)
 
+    def test_accepts_a_one_mib_grub_bios_boot_partition(self) -> None:
+        check_image.validate_bios_boot_partition(
+            [
+                {"type": check_image.BIOS_BOOT_TYPE.upper(), "size": 2048},
+                {"type": check_image.EFI_SYSTEM_TYPE.upper(), "size": 2048},
+            ]
+        )
+
+    def test_rejects_missing_or_undersized_bios_boot_partition(self) -> None:
+        with self.assertRaisesRegex(ValueError, "expected one"):
+            check_image.validate_bios_boot_partition([])
+        with self.assertRaisesRegex(ValueError, "at least 1 MiB"):
+            check_image.validate_bios_boot_partition(
+                [
+                    {"type": check_image.BIOS_BOOT_TYPE, "size": 2047},
+                    {"type": check_image.EFI_SYSTEM_TYPE, "size": 2048},
+                ]
+            )
+        with self.assertRaisesRegex(ValueError, "EFI System Partition"):
+            check_image.validate_bios_boot_partition(
+                [{"type": check_image.BIOS_BOOT_TYPE, "size": 2048}]
+            )
+
     def test_rejects_root_from_a_different_fedora_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target_release = check_image.configured_fedora_release()

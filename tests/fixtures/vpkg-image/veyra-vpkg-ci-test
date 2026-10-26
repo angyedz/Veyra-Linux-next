@@ -16,6 +16,8 @@ report_failure() {
     local status=$?
     printf 'VEYRA_VPKG_CI_FAILURE status=%s line=%s\n' \
         "$status" "${BASH_LINENO[0]:-unknown}" >/dev/console || true
+    printf 'VEYRA_VPKG_CI_FAILURE status=%s line=%s\n' \
+        "$status" "${BASH_LINENO[0]:-unknown}" >/dev/ttyS0 || true
     echo "Veyra vpkg CI failed at line ${BASH_LINENO[0]}: ${BASH_COMMAND} (status ${status})" >&2
     systemd-sysext status >&2 || true
     exit "$status"
@@ -86,12 +88,14 @@ if [[ -e "$stage_pass" ]]; then
     touch "$complete"
     echo "The staged-generation rollback scenario passed before graphical.target."
     echo "VEYRA_VPKG_CI_PASS"
+    printf 'VEYRA_VPKG_CI_PASS\n' >/dev/ttyS0 || true
     exit 0
 fi
 
 if [[ -e "$complete" ]]; then
     echo "Veyra vpkg VM test already completed on an earlier boot"
     echo "VEYRA_VPKG_CI_PASS"
+    printf 'VEYRA_VPKG_CI_PASS\n' >/dev/ttyS0 || true
     exit 0
 fi
 

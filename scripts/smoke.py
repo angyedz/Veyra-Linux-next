@@ -87,13 +87,14 @@ def main() -> int:
     ):
         if expected not in output:
             return fail(f"{config.name} must contain {expected!r} in [Output]")
-    if "SplitArtifacts=partitions,uki,roothash,os-release,repart-definitions" not in output:
+    if "SplitArtifacts=partitions,uki,initrd,roothash,os-release,repart-definitions" not in output:
         return fail("the build must export root, verity and UKI artifacts for updates")
     if "ManifestFormat=json" not in output:
         return fail("the build must export an RPM manifest for the Fedora release gate")
     for expected in (
         "Bootable=yes",
         "Bootloader=systemd-boot",
+        "BiosBootloader=grub",
         "UnifiedKernelImages=unsigned",
         "Initrds=%O/initrd",
     ):
@@ -103,12 +104,14 @@ def main() -> int:
         return fail(f"{config.name} must build through mkosi's isolated tools tree")
     if "Firmware=uefi" not in runtime:
         return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
-    if "KernelCommandLine=systemd.unit=graphical.target" not in content:
-        return fail("the image must boot into the graphical desktop target")
+    if "KernelCommandLine=systemd.firstboot=no systemd.unit=graphical.target" not in content:
+        return fail("the image must skip systemd-firstboot and boot into graphical.target")
 
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
         "kernel",
+        "grub2-pc",
+        "grub2-tools-minimal",
         "libdnf5",
         "util-linux",
         "systemd-udev",
@@ -301,6 +304,19 @@ def main() -> int:
     for expected in ("Type=root-verity", "Verity=hash", "VerityMatchKey=root"):
         if expected not in verity_partition:
             return fail(f"the active verity partition must include {expected!r}")
+    bios_partition = repart / "05-bios.conf"
+    if not bios_partition.is_file():
+        return fail("Legacy BIOS images must include a GRUB BIOS Boot Partition")
+    bios_partition_content = bios_partition.read_text(encoding="utf-8")
+    for expected in (
+        "Type=21686148-6449-6e6f-744e-656564454649",
+        "SizeMinBytes=1M",
+        "SizeMaxBytes=1M",
+    ):
+        if expected not in bios_partition_content:
+            return fail(f"the BIOS Boot Partition must include {expected!r}")
+    if re.search(r"(?m)^Format=", bios_partition_content):
+        return fail("the GRUB BIOS Boot Partition must remain unformatted")
     for relative in (
         "20-empty-root-verity.conf",
         "21-empty-root.conf",
@@ -326,8 +342,14 @@ def main() -> int:
 
     transfer_dir = ROOT / "mkosi.extra/usr/lib/sysupdate.d"
     transfer_names = sorted(path.name for path in transfer_dir.glob("*.transfer"))
-    if transfer_names != ["10-root-verity.transfer", "20-root.transfer", "99-uki.transfer"]:
-        return fail("systemd-sysupdate transfers must stage verity, root, then the UKI commit entry")
+    if transfer_names != [
+        "10-root-verity.transfer",
+        "20-root.transfer",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
+        "99-uki.transfer",
+    ]:
+        return fail("systemd-sysupdate transfers must stage root, BIOS boot assets, then the UEFI commit entry")
     for name in transfer_names:
         transfer = (transfer_dir / name).read_text(encoding="utf-8")
         for expected in ("Verify=yes", "ProtectVersion=%A", "Type=url-file"):
@@ -336,6 +358,8 @@ def main() -> int:
     expected_sources = {
         "10-root-verity.transfer": "veyra-next_@v_@u.root-verity.raw.zst",
         "20-root.transfer": "veyra-next_@v_@u.root.raw.zst",
+        "80-bios-kernel.transfer": "veyra-next_@v.vmlinuz",
+        "90-bios-initrd.transfer": "veyra-next_@v.initrd",
         "99-uki.transfer": "veyra-next_@v.efi",
     }
     for name, pattern in expected_sources.items():
@@ -348,12 +372,28 @@ def main() -> int:
             return fail(f"{name} must preserve the split UUID required by the dm-verity root hash")
         if "ReadOnly=1" not in transfer:
             return fail(f"{name} must mark updated root and verity partitions read-only")
+    for name in ("80-bios-kernel.transfer", "90-bios-initrd.transfer"):
+        transfer = (transfer_dir / name).read_text(encoding="utf-8")
+        for expected in ("Path=/VEYRA", "PathRelativeTo=boot", "Mode=0444", "InstancesMax=2"):
+            if expected not in transfer:
+                return fail(f"{name} must install versioned BIOS boot assets on the ESP ({expected!r})")
     uki_transfer = (transfer_dir / "99-uki.transfer").read_text(encoding="utf-8")
     for expected in ("TriesLeft=3", "TriesDone=0", "InstancesMax=2", "PathRelativeTo=boot"):
         if expected not in uki_transfer:
             return fail(f"UKI transfer must include {expected!r}")
     if not (ROOT / "mkosi.postoutput").is_file():
         return fail("mkosi must prepare versioned update assets after image output")
+    artifact_preparer = (ROOT / "scripts/prepare-update-artifacts.py").read_text(encoding="utf-8")
+    for expected in ("extract_uki_section", "write_bios_boot_files", "grub_ota.render_grub_config", ".vmlinuz", ".initrd"):
+        if expected not in artifact_preparer:
+            return fail(f"the post-output artifact step must prepare BIOS boot files ({expected!r})")
+    if not (ROOT / "mkosi.extra/usr/lib/veyra/grub_ota.py").is_file():
+        return fail("the image must include the GRUB A/B update-state helper")
+    grub_bless_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-grub-bless.service"
+    if not grub_bless_service.is_file():
+        return fail("Legacy BIOS trial updates must be blessed after the boot health checks")
+    if "veyra-grub-bless.service" not in (ROOT / "mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra.conf").read_text(encoding="utf-8"):
+        return fail("boot-complete.target must wait for the GRUB trial health decision")
     if not (ROOT / "mkosi.configure").is_file():
         return fail("the initial UKI filename must use the same version as the root slot")
     if not (ROOT / "scripts/check-image.py").is_file():
@@ -364,6 +404,35 @@ def main() -> int:
     ota_vm_test_content = ota_vm_test.read_text(encoding="utf-8")
     if "veyra-update install" not in ota_vm_test_content or "guestfwd=" not in (ROOT / "scripts/test-ab-boot.py").read_text(encoding="utf-8"):
         return fail("signed OTA installation and updates must run inside the restricted QEMU guest")
+    if not (ROOT / "scripts/test-bios-ab-boot.py").is_file():
+        return fail("Legacy BIOS OTA needs its own SeaBIOS trial and rollback integration check")
+    bios_boot_test = ROOT / "scripts/test-bios-boot.py"
+    if not bios_boot_test.is_file():
+        return fail("the image must be booted through SeaBIOS in QEMU")
+    bios_boot_test_content = bios_boot_test.read_text(encoding="utf-8")
+    for expected in (
+        "serial_console_diagnostics",
+        "console=ttyS0,115200n8",
+        "systemd.log_target=console",
+        "veyra_bios_ci=1",
+        "mcopy",
+    ):
+        if expected not in bios_boot_test_content:
+            return fail(f"the BIOS QEMU test must collect guest serial diagnostics ({expected!r})")
+    bios_ci_service = ROOT / "tests/fixtures/firmware/veyra-bios-ci.service"
+    if not bios_ci_service.is_file():
+        return fail("the BIOS QEMU test requires its CI-only boot-complete marker service")
+    bios_ci_service_content = bios_ci_service.read_text(encoding="utf-8")
+    if "ConditionKernelCommandLine=veyra_bios_ci=1" not in bios_ci_service_content:
+        return fail("the BIOS marker service must run only during the explicit BIOS diagnostic boot")
+    if "test-bios-boot.py --image mkosi.output/veyra-next.raw" not in ci_workflow:
+        return fail("CI must run the Legacy BIOS QEMU boot test against its built image")
+    if 'sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw' not in ci_workflow:
+        return fail("the BIOS QEMU diagnostic must be able to write and restore its disposable GRUB config")
+    if "inject_bios_guest_ota_test" not in ota_vm_test_content or "--firmware bios" not in ci_workflow:
+        return fail("CI must stage and boot a signed BIOS OTA through GRUB in QEMU")
+    if "--candidate-dir build/bios-ota-candidate" not in ci_workflow:
+        return fail("BIOS OTA CI must build a target-version root, kernel, and initramfs")
     if re.search(r"systemd-sysupdate[^\n]*--image", ota_vm_test_content):
         return fail("CI must not exercise systemd-sysupdate against a host-mounted image")
     if any(option not in ota_vm_test_content for option in (
@@ -379,7 +448,10 @@ def main() -> int:
         "prepare-for-base",
         "bind-generation",
         "--definitions=\"$root_definitions\" update",
-        "--definitions=\"$uki_definitions\" update",
+        "--definitions=\"$boot_definitions\" update",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
+        "GRUB_OTA_HELPER",
         "veritysetup verify",
         "cancel-pending",
         "--version \"$version\"",

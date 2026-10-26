@@ -54,6 +54,8 @@ USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / "vpkg-apps"
 USER_APP_EXTENSION_NAME = "vpkg-apps"
 PROC_CMDLINE = Path("/proc/cmdline")
 PROC_BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+SYS_FIRMWARE_EFI = Path("/sys/firmware/efi")
+OS_RELEASE_FILE = Path("/usr/lib/os-release")
 FEDORA_RELEASE = "44"
 RPMFUSION_KEYS = (
     Path("/usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-free-fedora-2020"),
@@ -777,7 +779,33 @@ def running_deployment_roothash() -> str:
 
 
 def running_uki_version() -> str:
-    """Read IMAGE_VERSION from the UKI selected for this boot, not /usr/os-release."""
+    """Read this boot's image version from its UKI or immutable BIOS root."""
+    if not SYS_FIRMWARE_EFI.is_dir():
+        try:
+            lines = OS_RELEASE_FILE.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as error:
+            raise VpkgError("Could not read the running Legacy BIOS image identity.") from error
+        fields: dict[str, list[str]] = {"ID": [], "VERSION_ID": [], "IMAGE_ID": [], "IMAGE_VERSION": []}
+        for line in lines:
+            key, separator, value = line.partition("=")
+            if separator and key in fields:
+                fields[key].append(value.strip().strip('"'))
+        if any(len(fields[key]) != 1 for key in fields):
+            raise VpkgError(
+                "The running Legacy BIOS root must contain exactly one IMAGE_VERSION "
+                "and one value for every other image identity field."
+            )
+        if (
+            fields["ID"][0] != "fedora"
+            or fields["VERSION_ID"][0] != FEDORA_RELEASE
+            or fields["IMAGE_ID"][0] != "veyra-next"
+        ):
+            raise VpkgError("The running Legacy BIOS root is not a supported Veyra deployment.")
+        version = fields["IMAGE_VERSION"][0]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
+            raise VpkgError("The running Legacy BIOS IMAGE_VERSION has unsupported characters.")
+        return version
+
     result = run(["bootctl", "--print-stub-path"], capture=True)
     uki = Path(result.stdout.strip())
     if not uki.is_absolute() or not uki.is_file():
