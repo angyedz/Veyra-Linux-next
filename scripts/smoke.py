@@ -431,6 +431,7 @@ def main() -> int:
     vforge_base_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vforge-base.service"
     vforge_tmpfiles = ROOT / "mkosi.extra/usr/lib/tmpfiles.d/veyra-vforge.conf"
     veyra_preset = ROOT / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset"
+    vforge_base_link = ROOT / "mkosi.extra/etc/systemd/system/multi-user.target.wants/veyra-vforge-base.service"
     if not all(path.is_file() for path in (vforge_command, vforge_base_service, vforge_tmpfiles, veyra_preset)):
         return fail("rootless Vforge requires its command, immutable-base service, tmpfiles entry, and preset")
     vforge_command_content = vforge_command.read_text(encoding="utf-8")
@@ -451,6 +452,9 @@ def main() -> int:
         return fail("the Vforge base service must not expose persistent host submounts")
     if "enable veyra-vforge-base.service" not in veyra_preset.read_text(encoding="utf-8"):
         return fail("the immutable Vforge base service must be enabled in the image")
+    if (not vforge_base_link.is_symlink()
+            or vforge_base_link.readlink().as_posix() != "/usr/lib/systemd/system/veyra-vforge-base.service"):
+        return fail("mkosi must install the Vforge base service enablement link in multi-user.target.wants")
     if "/run/veyra/vforge/base" not in vforge_tmpfiles.read_text(encoding="utf-8"):
         return fail("tmpfiles must create the immutable Vforge base mountpoint")
     if (not vforge_guest_test.is_file()
