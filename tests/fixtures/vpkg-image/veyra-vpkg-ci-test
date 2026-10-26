@@ -52,6 +52,40 @@ if [[ -e "$complete" ]]; then
     exit 0
 fi
 
+echo "Veyra QEMU test: create a native environment over the active Veyra root"
+export VFORGE_STORAGE_ROOT=/var/lib/veyra/vforge-ci
+export XDG_RUNTIME_DIR=/run/veyra-vforge-ci
+install -d -m 0700 "$VFORGE_STORAGE_ROOT" "$XDG_RUNTIME_DIR"
+vforge create vpkg-ci
+vforge_env="$VFORGE_STORAGE_ROOT/environments/vpkg-ci"
+vforge_upper="$vforge_env/upper"
+
+# Vforge intentionally excludes the host's persistent /etc and /var mounts.
+# Put the signed offline Fedora fixture into this environment's own upper and
+# replace the lower layer's network repository definitions with the local set.
+install -d -m 0755 "$vforge_upper/etc/yum.repos.d" \
+    "$vforge_upper/var/lib/veyra/vpkg-ci-repo"
+: > "$vforge_upper/etc/yum.repos.d/fedora.repo"
+: > "$vforge_upper/etc/yum.repos.d/fedora-updates.repo"
+: > "$vforge_upper/etc/yum.repos.d/rpmfusion.repo"
+cp /etc/yum.repos.d/veyra-vpkg-ci-upstream.repo "$vforge_upper/etc/yum.repos.d/"
+cp -a "$repo/local-upstream" "$vforge_upper/var/lib/veyra/vpkg-ci-repo/"
+
+vforge exec vpkg-ci -- rpm -q systemd >/dev/null
+vforge exec vpkg-ci -- sh -ec 'printf "private vforge upper\n" > /etc/veyra-vforge-ci-marker'
+vforge exec vpkg-ci -- grep -Fxq "private vforge upper" /etc/veyra-vforge-ci-marker
+test ! -e /etc/veyra-vforge-ci-marker
+
+host_htop_before="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+vforge exec vpkg-ci -- vpkg container install htop
+vforge exec vpkg-ci -- rpm -q htop
+vforge exec vpkg-ci -- htop --version
+vforge exec vpkg-ci -- test -x /usr/bin/htop
+host_htop_after="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+test "$host_htop_after" = "$host_htop_before"
+echo "VEYRA_VFORGE_VPKG_CI_PASS"
+echo "Veyra QEMU test: vpkg installed htop only in the persistent native environment"
+
 echo "Veyra vpkg VM test: run package safety unit tests"
 python3 -m unittest discover \
     --start-directory /var/lib/veyra/vpkg-ci-tests/repo/tests \
