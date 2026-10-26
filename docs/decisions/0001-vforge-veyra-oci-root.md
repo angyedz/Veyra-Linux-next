@@ -18,6 +18,18 @@ Vforge will ask rootless Podman to create environments from that Veyra OCI image
 
 Vpkg transactions inside an environment use libdnf5 against that environment's `/` and its private RPM database, cache and history. Vpkg must fail closed unless the environment has a valid Veyra base identity and a private root marker. It must not invoke the DNF CLI, host `systemd-sysext`, or host generation staging.
 
+Vforge supplies a root-owned read-only bind marker at
+`/run/veyra-vforge/root.json`. Its schema is `1`, kind is `vforge-veyra-root`,
+and it records a per-environment `root_id`, `image_id=veyra-next`, matching
+`image_version`, the SHA-256 digest of the selected OCI manifest,
+`storage_driver=podman-overlay`, and `immutable_base=true`. Vpkg checks this
+identity against the rootfs `/usr/lib/os-release`, requires Fedora 44 and a
+private `/usr/lib/sysimage/rpm`, and rejects separate mounts over `/usr` or its
+managed package state and cache. Rootless Podman may report
+`mount_program=fuse-overlayfs` when its overlay driver needs it. The marker
+contract is implemented in `docs/vpkg-container-mode.md` on the Vpkg branch;
+Vforge still needs to create and validate it when provisioning a container.
+
 An environment records the base identity it was created from. A Veyra OTA does not rewrite a running environment's base. Vforge must either keep using its recorded base or explicitly create a candidate from the new Veyra OCI image and switch only after Vpkg resolution and health checks succeed. The exact migration and retention policy needs runtime validation before it is considered implemented.
 
 ## Alternatives considered
