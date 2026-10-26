@@ -45,6 +45,33 @@ The Live environment and install-media build run only on GitHub Actions. The ins
 
 The Live desktop launches the Qt 6 Calamares installer. Its Veyra-branded flow opens Calamares' KonsolePart terminal module and runs the existing `/usr/libexec/veyra-installer`, preserving its whole-disk checks and explicit erase confirmation. Anaconda packages are rejected from the built Live system. Lorax still uses Anaconda inside the isolated GitHub Actions builder to compose the ISO; those build-only packages are not part of the downloaded media.
 
+## Safe installation preflight
+
+A Live user can validate the bundled installer assets and target sizing **without
+touching any disk**:
+
+```sh
+/usr/libexec/veyra-installer --preflight
+/usr/libexec/veyra-installer --list-disks
+```
+
+On a connected disposable VM with an explicit target, use
+`/usr/libexec/veyra-installer --preflight --target /dev/vdb`. Preflight
+checks the local Fedora package manifest, GPT partition definitions, built-in
+GRUB helper, Dracut module and nonempty Recovery UKI. It reports the minimum
+target capacity. It does **not** partition, format, download or install.
+
+Actual destructive installation still requires selecting an eligible whole
+disk and typing the exact `ERASE /dev/... ` confirmation string. After that
+confirmation, disk eligibility and identity (path, size, model, major/minor,
+serial and WWN when reported) are rechecked before the first repartition.
+Read-only, mounted, active-swap and Live-media devices remain excluded.
+
+**Important:** these checks are defense-in-depth, not a guarantee against
+hostile privileged processes, faulty firmware, or a device disappearing after
+the final check. Perform the first destructive tests only on a disposable
+QEMU disk, never against a development workstation's real block devices.
+
 ## Open sizing decision
 
 The current partition definitions require at least 55.5 GiB for the installed disk. The installer must report the required capacity before allowing installation. Making the layout fit smaller target disks requires changing the partition sizing contract and is not implied by the 8 GiB ISO limit.
