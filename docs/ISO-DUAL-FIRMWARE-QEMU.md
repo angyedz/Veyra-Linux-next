@@ -43,3 +43,27 @@ The source unit tests cover both firmware command lines, read-only media,
 transient UEFI variables, PNG correctness, timeout input and report safety.
 After the ISO pipeline passes, QEMU reports are published as a short-lived
 Actions artifact. Source tests do not require a built ISO.
+
+## Bounded Fedora mirror retry
+
+Lorax's Fedora 44 package installation is network-dependent even after the
+signed Fedora netinst ISO is verified. In diagnostic CI run 40399005173,
+Anaconda downloaded 1.14 GiB of a 3.29 GiB transaction, then returned
+"Failed to download the following packages". This failure is not
+evidence of an invalid UEFI/BIOS bootloader.
+
+`scripts/build-live-iso.sh` now allows **one extra attempt** only if
+the Lorax log contains an explicit package/metadata download error.
+A non-download error fails immediately, and no attempt beyond two is
+allowed. Each failed log is preserved in `build/iso-attempt-logs/`,
+including after a successful retry, and is uploaded on CI failure.
+
+```sh
+VEYRA_ISO_MAX_ATTEMPTS=1 bash scripts/build-live-iso.sh  # disable retry
+VEYRA_ISO_MAX_ATTEMPTS=2 bash scripts/build-live-iso.sh  # default
+```
+
+The test suite `tests/test_live_iso_retry.py` uses a fake offline Lorax
+process to verify the retry budget, network error recognition, failure
+propagation and preservation of logs; no real disks are touched.
+This does not solve all transient mirror errors or prove ISO boot success.

@@ -21,17 +21,56 @@ mkdir -p "$output_dir" "$(dirname -- "$kickstart")"
 sed "s|__VEYRA_SOURCE_ROOT__|$workspace|g" \
   "$root/installer/veyra-live.ks.in" > "$kickstart"
 
-livemedia-creator \
-  --make-iso \
-  --no-virt \
-  --iso="$boot_iso" \
-  --ks="$kickstart" \
-  --releasever=44 \
-  --resultdir="$result_dir" \
-  --logfile="$log_file" \
-  --iso-only \
-  --iso-name=veyra-next-prototype-live.iso \
-  --extra-boot-args="console=ttyS0,115200n8"
+# Repeat only failures that explicitly report a package/mirror download issue.
+# Keep every failed attempt log to distinguish mirror failures from ISO bugs.
+max_attempts="${VEYRA_ISO_MAX_ATTEMPTS:-2}"
+if [[ ! "$max_attempts" =~ ^[12]$ ]]; then
+  echo "VEYRA_ISO_MAX_ATTEMPTS must be 1 or 2." >&2
+  exit 2
+fi
+attempt_logs="$root/build/iso-attempt-logs"
+rm -rf -- "$attempt_logs"
+mkdir -p "$attempt_logs"
+built=0
+for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+  echo "Building Veyra Live ISO: Lorax attempt $attempt/$max_attempts" >&2
+  if livemedia-creator \
+    --make-iso \
+    --no-virt \
+    --iso="$boot_iso" \
+    --ks="$kickstart" \
+    --releasever=44 \
+    --resultdir="$result_dir" \
+    --logfile="$log_file" \
+    --iso-only \
+    --iso-name=veyra-next-prototype-live.iso \
+    --extra-boot-args="console=ttyS0,115200n8"; then
+    built=1
+    break
+  fi
+
+  if [[ -f "$log_file" ]]; then
+    cp -- "$log_file" "$attempt_logs/livemedia-attempt-$attempt.log"
+  fi
+  if ((attempt >= max_attempts)); then
+    echo "Live ISO build failed after $attempt attempts; see $attempt_logs." >&2
+    exit 1
+  fi
+  if [[ ! -f "$log_file" ]] || ! grep -Eqi \
+      '(failed to download (the following )?packages|failed to download metadata|curl error|cannot download repomd)' \
+      "$log_file"; then
+    echo "Non-download Lorax error; will not retry. See $attempt_logs." >&2
+    exit 1
+  fi
+  echo "Package download failed; retrying the disposable Lorax build once." >&2
+  rm -rf -- "$result_dir"
+  rm -f -- "$log_file"
+  sleep 5
+done
+if ((built != 1)); then
+  echo "Live ISO builder never produced a successful result." >&2
+  exit 1
+fi
 
 mapfile -t images < <(find "$result_dir" -type f -name 'veyra-next-prototype-live.iso' -print)
 if ((${#images[@]} != 1)) || [[ ! -s "${images[0]:-}" ]]; then
@@ -61,5 +100,5 @@ grep -Eq '(^|[[:space:]])-e[[:space:]]' "$output_dir/eltorito.txt" || {
   cd "$output_dir"
   sha256sum "$(basename -- "$iso")" > "$(basename -- "$iso").sha256"
 )
-rm -rf -- "$result_dir" "$kickstart" "$log_file"
+rm -rf -- "$result_dir" "$kickstart"
 printf 'Built one Live Installer ISO: %s (%s bytes)\n' "$iso" "$size"

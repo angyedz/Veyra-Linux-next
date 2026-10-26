@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'scripts/test-live-iso-qemu.py'
+      - 'scripts/build-live-iso.sh'
+      - 'tests/test_live_iso_retry.py'
       - 'tests/test_live_iso_qemu.py'
       - '.github/workflows/live-iso-qemu-harness.yml'
       - '.github/workflows/prototype-iso-unblock.yml'
@@ -11,6 +13,8 @@ on:
     branches: [main]
     paths:
       - 'scripts/test-live-iso-qemu.py'
+      - 'scripts/build-live-iso.sh'
+      - 'tests/test_live_iso_retry.py'
       - 'tests/test_live_iso_qemu.py'
 
 permissions:
@@ -25,3 +29,4 @@ jobs:
         run: |
           python3 -m py_compile scripts/test-live-iso-qemu.py tests/test_live_iso_qemu.py
           python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
+          python3 -m unittest discover -s tests -p 'test_live_iso_retry.py' -v

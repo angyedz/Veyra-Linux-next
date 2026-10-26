@@ -96,6 +96,7 @@ jobs:
           name: iso-uefi-unblock-logs
           path: |
             build/livemedia.log
+            build/iso-attempt-logs/**
             build/live-media/anaconda/**
           if-no-files-found: ignore
           retention-days: 3
