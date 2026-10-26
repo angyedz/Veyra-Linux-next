@@ -87,7 +87,7 @@ def validate_manifest(m: dict) -> None:
     records = m.get("chunks")
     if not isinstance(records, list) or len(records) != expected:
         raise ValueError("invalid chunk count")
-    sha_pattern = re.compile(r"[0-9a-f]{64}\\Z")
+    sha_pattern = re.compile(r"[0-9a-f]{64}\Z")
     if not isinstance(m.get("target_sha256"), str) or not sha_pattern.fullmatch(m["target_sha256"]):
         raise ValueError("invalid target digest")
     base_sha = m.get("base_sha256")
