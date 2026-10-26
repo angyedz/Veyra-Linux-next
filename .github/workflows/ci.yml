@@ -16,6 +16,8 @@ jobs:
       # Reject broken image source before downloading build dependencies.
       - name: Check image configuration
         run: python3 scripts/smoke.py
+      - name: Check image CI preflight ordering
+        run: python3 -m unittest discover -s tests -p 'test_image_workflow_order.py' -v
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
