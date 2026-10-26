@@ -9,11 +9,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import zlib
 
 CHUNK_SIZE = 4 * 1024 * 1024
 MAX_ASSET_SIZE = 2_000_000_000  # conservative below GitHub's 2 GiB per-file cap
+# Each asset contains one independently compressed CHUNK_SIZE block. Leave
+# generous room for zlib framing while keeping corrupted manifests bounded.
+MAX_COMPRESSED_CHUNK_SIZE = CHUNK_SIZE + 64 * 1024
 FORMAT = "veyra-ota-chunks-v1"
 
 
@@ -43,7 +48,7 @@ def plan(target: Path, output: Path, base: Path | None = None, *,
         record = {"index": index, "sha256": sha, "size": len(part), "source": "base" if reused else "asset"}
         if not reused:
             compressed = zlib.compress(part, level=9)
-            if len(compressed) > max_asset_size:
+            if len(compressed) > min(max_asset_size, MAX_COMPRESSED_CHUNK_SIZE):
                 raise ValueError(f"compressed chunk {index} exceeds asset limit")
             name = f"{sha}.zlib"
             record["asset"] = name
@@ -110,10 +115,53 @@ def validate_manifest(m: dict) -> None:
             if record.get("asset") != sha + ".zlib":
                 raise ValueError("unsafe or mismatched asset name")
             compressed_size = record.get("compressed_size")
-            if type(compressed_size) is not int or not 0 < compressed_size <= MAX_ASSET_SIZE:
+            if type(compressed_size) is not int or not 0 < compressed_size <= MAX_COMPRESSED_CHUNK_SIZE:
                 raise ValueError("invalid compressed asset size")
         else:
             raise ValueError("unknown chunk source")
+
+
+def decompress_asset(path: Path, compressed_size: int, expected_size: int) -> bytes:
+    """Read one bounded zlib chunk without loading its compressed asset at once."""
+    if not 0 < compressed_size <= MAX_COMPRESSED_CHUNK_SIZE:
+        raise ValueError("invalid compressed asset size")
+    if not 0 < expected_size <= CHUNK_SIZE:
+        raise ValueError("invalid decompressed chunk size")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != compressed_size:
+            raise ValueError("compressed asset size mismatch")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            decompressor = zlib.decompressobj()
+            output = bytearray()
+            while block := source.read(64 * 1024):
+                pending = block
+                while pending:
+                    # max_length caps output; unconsumed_tail is fed on the next pass.
+                    remaining = expected_size + 1 - len(output)
+                    part = decompressor.decompress(pending, remaining)
+                    output.extend(part)
+                    if len(output) > expected_size:
+                        raise ValueError("decompressed chunk exceeds declared size")
+                    if decompressor.unused_data:
+                        raise ValueError("invalid compressed asset")
+                    unconsumed = decompressor.unconsumed_tail
+                    if unconsumed and len(unconsumed) == len(pending) and not part:
+                        raise ValueError("invalid compressed asset")
+                    pending = unconsumed
+
+            if not decompressor.eof or decompressor.unconsumed_tail or decompressor.unused_data:
+                raise ValueError("invalid compressed asset")
+            if len(output) != expected_size:
+                raise ValueError("decompressed chunk size mismatch")
+            return bytes(output)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def reconstruct(manifest_path: Path, output: Path, base: Path | None = None) -> None:
@@ -137,13 +185,11 @@ def reconstruct(manifest_path: Path, output: Path, base: Path | None = None) -> 
                         name = record["asset"]
                         if name != record["sha256"] + ".zlib":
                             raise ValueError("unsafe or mismatched asset name")
-                        blob = (manifest_path.parent / name).read_bytes()
-                        if len(blob) != record["compressed_size"]:
-                            raise ValueError("compressed asset size mismatch")
-                        decompressor = zlib.decompressobj()
-                        part = decompressor.decompress(blob, CHUNK_SIZE + 1)
-                        if decompressor.unconsumed_tail or not decompressor.eof or decompressor.unused_data:
-                            raise ValueError("invalid compressed asset")
+                        part = decompress_asset(
+                            manifest_path.parent / name,
+                            record["compressed_size"],
+                            record["size"],
+                        )
                     else:
                         raise ValueError("unknown chunk source")
                     if len(part) != record["size"] or digest(part) != record["sha256"]:

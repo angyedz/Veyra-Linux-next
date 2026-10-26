@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ota_chunks", ROOT / "scripts/ota_chunks.py")
@@ -66,6 +68,27 @@ class OTAChunkTests(unittest.TestCase):
             ota.plan(self.target, self.bundle, max_asset_size=ota.MAX_ASSET_SIZE + 1)
         with self.assertRaisesRegex(ValueError, "exceeds asset limit"):
             ota.plan(self.target, self.bundle, max_asset_size=10)
+
+    def test_manifest_rejects_compressed_chunk_larger_than_chunk_bound(self):
+        self.target.write_bytes(b"new")
+        manifest = ota.plan(self.target, self.bundle)
+        manifest["chunks"][0]["compressed_size"] = ota.CHUNK_SIZE + 64 * 1024 + 1
+        with self.assertRaisesRegex(ValueError, "invalid compressed asset size"):
+            ota.validate_manifest(manifest)
+
+    def test_decompression_cannot_exceed_declared_chunk_size(self):
+        asset = self.root / "oversized.zlib"
+        compressed = zlib.compress(b"larger than declared")
+        asset.write_bytes(compressed)
+        with self.assertRaisesRegex(ValueError, "exceeds declared size"):
+            ota.decompress_asset(asset, len(compressed), expected_size=3)
+
+    def test_incompressible_chunk_roundtrips_through_streaming_decoder(self):
+        self.target.write_bytes(hashlib.shake_256(b"ota chunk test").digest(ota.CHUNK_SIZE))
+        manifest = ota.plan(self.target, self.bundle)
+        self.assertLessEqual(manifest["chunks"][0]["compressed_size"], ota.MAX_COMPRESSED_CHUNK_SIZE)
+        ota.reconstruct(self.bundle / "manifest.json", self.restored)
+        self.assertEqual(self.restored.read_bytes(), self.target.read_bytes())
 
     def test_existing_output_not_overwritten(self):
         self.target.write_bytes(b"new")

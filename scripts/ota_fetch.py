@@ -14,7 +14,7 @@ import re
 import urllib.error
 import urllib.request
 
-from ota_chunks import MAX_ASSET_SIZE, validate_manifest
+from ota_chunks import CHUNK_SIZE, MAX_COMPRESSED_CHUNK_SIZE, validate_manifest
 
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 BUFFER = 1024 * 1024
@@ -49,7 +49,7 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
     """
     if not SHA256.fullmatch(name.removesuffix(".zlib")) or not name.endswith(".zlib"):
         raise ValueError("invalid asset name")
-    if not 0 < size <= MAX_ASSET_SIZE:
+    if not 0 < size <= MAX_COMPRESSED_CHUNK_SIZE:
         raise ValueError("invalid asset size")
     from urllib.parse import urlsplit
     parsed = urlsplit(base_url)
@@ -121,9 +121,9 @@ def compressed_digest(path: Path, name: str) -> bool:
     try:
         with path.open("rb") as f:
             while blob := f.read(BUFFER):
-                data = d.decompress(blob, 4 * 1024 * 1024 - total + 1)
+                data = d.decompress(blob, CHUNK_SIZE - total + 1)
                 total += len(data)
-                if total > 4 * 1024 * 1024 or d.unconsumed_tail:
+                if total > CHUNK_SIZE or d.unconsumed_tail:
                     return False
                 h.update(data)
         return d.eof and not d.unused_data and h.hexdigest() == expected

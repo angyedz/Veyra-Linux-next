@@ -4,7 +4,15 @@
 
 ## Release artifacts and GitHub limit
 
-GitHub Releases currently imposes a 2 GiB maximum on each release asset, not necessarily on the total release. The prototype uses a conservative **2,000,000,000-byte** maximum per compressed chunk, below 2 GiB. An ISO is **not** an OTA payload.
+GitHub Releases allows up to 1,000 assets per release, with each file under
+2 GiB ([GitHub documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas)).
+The prototype keeps a 2,000,000,000-byte absolute file ceiling. Its current
+format puts one independently compressed 4 MiB image chunk in each asset, so
+validation imposes a much smaller **4 MiB + 64 KiB** compressed-chunk ceiling.
+This keeps each download and reconstruction step bounded. The current
+one-asset-per-chunk format can exceed GitHub's asset-count limit for large
+fully changed images; packing chunks into fewer release assets is still
+required before publishing a real update. An ISO is **not** an OTA payload.
 
 Release assets should eventually contain:
 - a small **signed** manifest identifying target version, exact base version/image digest, target root digest, chunk hashes, artifact sizes and signatures;

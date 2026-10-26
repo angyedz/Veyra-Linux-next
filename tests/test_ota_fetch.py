@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -91,6 +92,16 @@ class FetchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "integrity"):
                 fetch.fetch_asset("https://example.invalid", self.cache, self.name, self.size)
         self.assertFalse((self.cache / self.name).exists())
+
+    def test_manifest_cannot_request_gigabyte_chunk_asset(self):
+        manifest = json.loads((self.bundle / "manifest.json").read_text())
+        manifest["chunks"][0]["compressed_size"] = 2_000_000_000
+        with self.assertRaisesRegex(ValueError, "invalid compressed asset size"):
+            fetch.required_assets(manifest)
+
+    def test_download_rejects_gigabyte_chunk_before_network(self):
+        with self.assertRaisesRegex(ValueError, "invalid asset size"):
+            fetch.fetch_asset("https://example.invalid/releases", self.cache, self.name, 2_000_000_000)
 
     def test_https_required(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
