@@ -25,6 +25,10 @@ jobs:
             systemd-container systemd-ukify xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
+      - name: Test v-dri sysfs inventory against isolated fixtures
+        run: python3 -m unittest discover -s tests -p 'test_vdri.py' -v
+      - name: Check v-dri syntax
+        run: python3 -c 'from pathlib import Path; p=Path("mkosi.extra/usr/bin/v-dri"); compile(p.read_text(), str(p), "exec")'
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
       - name: Verify the packages inside the built image

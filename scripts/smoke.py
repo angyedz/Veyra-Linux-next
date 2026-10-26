@@ -59,6 +59,15 @@ def main() -> int:
     if "KernelCommandLine=systemd.unit=graphical.target" not in content:
         return fail("the image must boot into the graphical desktop target")
 
+    vdri = ROOT / "mkosi.extra/usr/bin/v-dri"
+    if not vdri.is_file() or not vdri.stat().st_mode & 0o111:
+        return fail("the read-only v-dri status command must be installed as an executable")
+    vdri_content = vdri.read_text(encoding="utf-8")
+    if '"driver_policy": "fedora-in-tree-only"' not in vdri_content or "external-module-detected" not in vdri_content:
+        return fail("v-dri must expose the Fedora in-tree driver policy and taint diagnostics")
+    if "subprocess" in vdri_content or "modprobe" in vdri_content:
+        return fail("the v-dri status command must not run or activate host driver commands")
+
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
         "kernel",
