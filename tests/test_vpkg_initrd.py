@@ -4,7 +4,6 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
 from pathlib import Path
-import struct
 import tempfile
 import unittest
 from unittest.mock import call, patch
@@ -21,49 +20,57 @@ SPEC.loader.exec_module(initrd)
 
 
 class VpkgInitrdGenerationTests(unittest.TestCase):
-    @staticmethod
-    def make_uki(path: Path, os_release: bytes) -> None:
-        sections = {b".osrel": (os_release, 0x200)}
-        image = bytearray(0x500)
-        pe_offset = 0x80
-        image[:2] = b"MZ"
-        struct.pack_into("<I", image, 0x3C, pe_offset)
-        image[pe_offset : pe_offset + 4] = b"PE\0\0"
-        struct.pack_into("<H", image, pe_offset + 6, len(sections))
-        struct.pack_into("<H", image, pe_offset + 20, 0xF0)
-        section_table = pe_offset + 24 + 0xF0
-        for index, (name, (content, raw_offset)) in enumerate(sections.items()):
-            header = section_table + index * 40
-            image[header : header + len(name)] = name
-            struct.pack_into("<I", image, header + 8, len(content))
-            struct.pack_into("<I", image, header + 16, 0x100)
-            struct.pack_into("<I", image, header + 20, raw_offset)
-            image[raw_offset : raw_offset + len(content)] = content
-        path.write_bytes(image)
-
-    def test_identity_uses_roothash_and_uki_osrel_image_version(self) -> None:
+    def test_identity_uses_roothash_and_image_version_embedded_in_uki_cmdline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            uki = Path(temporary) / "boot.efi"
-            self.make_uki(uki, b'ID=fedora\nVERSION_ID=44\nIMAGE_VERSION="0.1.7-test"\n')
+            sysroot = Path(temporary)
+            os_release = sysroot / "usr/lib/os-release"
+            os_release.parent.mkdir(parents=True)
+            os_release.write_text(
+                'ID=fedora\nVERSION_ID="44"\nIMAGE_VERSION="0.1.7-test"\n',
+                encoding="utf-8",
+            )
             identity = initrd.deployment_identity(
-                "quiet roothash=" + "a" * 64 + " systemd.unit=graphical.target", uki
+                "quiet roothash=" + "a" * 64 + " veyra.image_version=0.1.7-test"
+                " systemd.unit=graphical.target",
+                sysroot,
             )
         self.assertEqual(identity, ("a" * 64, "0.1.7-test"))
 
     def test_identity_rejects_missing_duplicate_or_unsupported_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            uki = Path(temporary) / "boot.efi"
-            self.make_uki(uki, b'ID=fedora\nVERSION_ID=44\nIMAGE_VERSION="0.1.7"\n')
+            sysroot = Path(temporary)
+            os_release = sysroot / "usr/lib/os-release"
+            os_release.parent.mkdir(parents=True)
+            os_release.write_text(
+                'ID=fedora\nVERSION_ID="44"\nIMAGE_VERSION="0.1.7"\n',
+                encoding="utf-8",
+            )
             for command_line in (
                 "quiet",
-                "roothash=" + "a" * 64 + " roothash=" + "b" * 64,
-                "roothash=invalid",
+                "roothash=" + "a" * 64 + " roothash=" + "b" * 64
+                + " veyra.image_version=0.1.7",
+                "roothash=invalid veyra.image_version=0.1.7",
+                "roothash=" + "a" * 64,
+                "roothash=" + "a" * 64 + " veyra.image_version=bad/version",
+                "roothash=" + "a" * 64 + " veyra.image_version=0.1.7"
+                + " veyra.image_version=0.1.8",
             ):
                 with self.subTest(command_line=command_line), self.assertRaises(initrd.InitrdError):
-                    initrd.deployment_identity(command_line, uki)
-            self.make_uki(uki, b'ID=fedora\nVERSION_ID=46\nIMAGE_VERSION="0.1.7"\n')
+                    initrd.deployment_identity(command_line, sysroot)
+
+    def test_identity_rejects_a_root_from_an_unsupported_fedora_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            sysroot = Path(temporary)
+            os_release = sysroot / "usr/lib/os-release"
+            os_release.parent.mkdir(parents=True)
+            os_release.write_text(
+                'ID=fedora\nVERSION_ID="46"\nIMAGE_VERSION="0.1.7"\n',
+                encoding="utf-8",
+            )
             with self.assertRaisesRegex(initrd.InitrdError, "Fedora 44"):
-                initrd.deployment_identity("roothash=" + "a" * 64, uki)
+                initrd.deployment_identity(
+                    "roothash=" + "a" * 64 + " veyra.image_version=0.1.7", sysroot
+                )
 
     def test_bootstrap_creates_a_generation_owned_rpm_database_and_active_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -322,34 +329,6 @@ class VpkgInitrdGenerationTests(unittest.TestCase):
                     check=True,
                 ),
             ])
-
-    def test_selected_uki_is_resolved_under_the_mounted_efi_system_partition(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            uki = root / "efi/EFI/Linux/veyra-next_0.1.7.efi"
-            uki.parent.mkdir(parents=True)
-            uki.write_bytes(b"UKI")
-            with patch.object(
-                initrd.subprocess, "run", return_value=type("Result", (), {"stdout": "/EFI/Linux/veyra-next_0.1.7.efi\n"})()
-            ) as run:
-                selected = initrd.selected_uki_path(root / "sysroot", efi_roots=(root / "efi",))
-
-            self.assertEqual(selected, uki)
-            run.assert_called_once_with(
-                ["bootctl", "--print-stub-path"], check=True, text=True,
-                stdout=initrd.subprocess.PIPE, stderr=initrd.subprocess.PIPE,
-            )
-
-    def test_selected_uki_rejects_paths_outside_mounted_esp_roots(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            outside = root / "tmp/not-the-esp.efi"
-            outside.parent.mkdir()
-            outside.write_bytes(b"UKI")
-            with patch.object(
-                initrd.subprocess, "run", return_value=type("Result", (), {"stdout": str(outside)})()
-            ), self.assertRaisesRegex(initrd.InitrdError, "mounted EFI System Partition"):
-                initrd.selected_uki_path(root / "sysroot", efi_roots=(root / "efi",))
 
     def test_trial_generation_keeps_parent_layer_without_copying_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

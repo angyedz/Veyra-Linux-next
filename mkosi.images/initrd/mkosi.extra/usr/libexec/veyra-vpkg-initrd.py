@@ -11,14 +11,13 @@ from pathlib import Path
 import re
 import shutil
 import stat
-import struct
 import subprocess
 import sys
 import uuid
 
 
 ROOTHASH_RE = re.compile(r"^[0-9a-f]{64}$")
-VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 GENERATION_RE = re.compile(r"^generation-[0-9a-f]{32}$")
 STATE_RELATIVE = Path("var/lib/veyra/vpkg/system-generations")
 SYSTEM_TRIAL_RELATIVE = Path("var/lib/veyra/vpkg/system-trial.json")
@@ -32,7 +31,7 @@ def parse_os_release(data: bytes) -> dict[str, str]:
     try:
         lines = data.decode("utf-8", errors="strict").splitlines()
     except UnicodeError as error:
-        raise InitrdError("The selected UKI has a malformed .osrel section.") from error
+        raise InitrdError("The mounted root image has a malformed os-release file.") from error
     values: dict[str, str] = {}
     for line in lines:
         line = line.strip()
@@ -42,71 +41,46 @@ def parse_os_release(data: bytes) -> dict[str, str]:
         if key not in {"ID", "VERSION_ID", "IMAGE_VERSION"}:
             continue
         if key in values:
-            raise InitrdError(f"The selected UKI .osrel repeats {key}.")
+            raise InitrdError(f"The mounted root image's os-release repeats {key}.")
         value = raw_value.strip()
         if value.startswith('"') and value.endswith('"'):
             value = value[1:-1]
         elif value.startswith("'") and value.endswith("'"):
             value = value[1:-1]
         if not value or any(c in value for c in "\x00\n\r"):
-            raise InitrdError(f"The selected UKI .osrel has an invalid {key}.")
+            raise InitrdError(f"The mounted root image's os-release has an invalid {key}.")
         values[key] = value
     if set(values) != {"ID", "VERSION_ID", "IMAGE_VERSION"}:
-        raise InitrdError("The selected UKI .osrel must define ID, VERSION_ID, and IMAGE_VERSION.")
+        raise InitrdError("The mounted root image's os-release must define ID, VERSION_ID, and IMAGE_VERSION.")
     if values["ID"] != "fedora" or values["VERSION_ID"] != "44":
         raise InitrdError("The vpkg initrd generation backend currently supports Fedora 44 only.")
     if not VERSION_RE.fullmatch(values["IMAGE_VERSION"]):
-        raise InitrdError("The selected UKI .osrel has an unsafe IMAGE_VERSION.")
+        raise InitrdError("The mounted root image's os-release has an unsafe IMAGE_VERSION.")
     return values
 
 
-def read_uki_image_version(uki: Path) -> str:
+def command_line_value(command_line: str, name: str, pattern: re.Pattern[str], message: str) -> str:
+    prefix = f"{name}="
+    values = [token[len(prefix):] for token in command_line.split() if token.startswith(prefix)]
+    if len(values) != 1 or not pattern.fullmatch(values[0]):
+        raise InitrdError(message)
+    return values[0]
+
+
+def deployment_identity(command_line: str, sysroot: Path) -> tuple[str, str]:
+    roothash = command_line_value(
+        command_line, "roothash", ROOTHASH_RE,
+        "The running UKI must provide exactly one valid roothash.",
+    )
+    image_version = command_line_value(
+        command_line, "veyra.image_version", VERSION_RE,
+        "The running UKI must provide exactly one valid veyra.image_version.",
+    )
     try:
-        size = uki.stat().st_size
-        with uki.open("rb") as stream:
-            header = stream.read(64)
-            if len(header) < 64 or header[:2] != b"MZ":
-                raise ValueError("missing DOS header")
-            pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
-            if pe_offset + 24 > size:
-                raise ValueError("truncated PE header")
-            stream.seek(pe_offset)
-            coff = stream.read(24)
-            if len(coff) != 24 or coff[:4] != b"PE\0\0":
-                raise ValueError("missing PE header")
-            section_count = struct.unpack_from("<H", coff, 6)[0]
-            optional_size = struct.unpack_from("<H", coff, 20)[0]
-            table_offset = pe_offset + 24 + optional_size
-            if not 0 < section_count <= 96 or optional_size > 4096:
-                raise ValueError("invalid PE dimensions")
-            if table_offset + section_count * 40 > size:
-                raise ValueError("truncated PE section table")
-            osrel_section: tuple[int, int] | None = None
-            stream.seek(table_offset)
-            for _ in range(section_count):
-                section = stream.read(40)
-                if len(section) != 40:
-                    raise ValueError("truncated PE section table")
-                name = section[:8].split(b"\0", 1)[0]
-                if name == b".osrel":
-                    raw_size, raw_offset = struct.unpack_from("<II", section, 16)
-                    if not raw_size or raw_size > 1024 * 1024 or raw_offset + raw_size > size:
-                        raise ValueError("invalid .osrel section size")
-                    osrel_section = (raw_offset, raw_size)
-            if osrel_section is None:
-                raise ValueError("missing .osrel section")
-            stream.seek(osrel_section[0])
-            osrel = parse_os_release(stream.read(osrel_section[1]).split(b"\0", 1)[0])
-            return osrel["IMAGE_VERSION"]
-    except (OSError, ValueError, struct.error) as error:
-        raise InitrdError(f"Cannot read the selected UKI identity from {uki}: {error}") from error
-
-
-def deployment_identity(command_line: str, uki: Path) -> tuple[str, str]:
-    hashes = [token.partition("=")[2] for token in command_line.split() if token.startswith("roothash=")]
-    if len(hashes) != 1 or not ROOTHASH_RE.fullmatch(hashes[0]):
-        raise InitrdError("The running UKI must provide exactly one valid roothash.")
-    return hashes[0], read_uki_image_version(uki)
+        parse_os_release((sysroot / "usr/lib/os-release").read_bytes())
+    except OSError as error:
+        raise InitrdError("Cannot read os-release from the mounted verity-protected root image.") from error
+    return roothash, image_version
 
 
 def safe_generation_id(value: str) -> str:
@@ -830,54 +804,6 @@ def unmount_trial_installroot(mounts: tuple[Path, ...] | list[Path]) -> None:
         raise InitrdError("Could not unmount the staged RPM transaction root: " + "; ".join(errors))
 
 
-def selected_uki_path(
-    sysroot: Path,
-    *,
-    efi_roots: tuple[Path, ...] = (
-        Path("/sysefi"), Path("/efi"), Path("/boot"), Path("/boot/efi")
-    ),
-) -> Path:
-    try:
-        result = subprocess.run(
-            ["bootctl", "--print-stub-path"],
-            check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise InitrdError(f"Cannot determine which UKI is booting this deployment: {error}") from error
-    raw = result.stdout.strip()
-    reported = Path(raw)
-    if not reported.is_absolute():
-        raise InitrdError("bootctl returned a non-absolute path to the selected UKI.")
-
-    candidates: list[tuple[Path, Path]] = []
-    for esp_root in efi_roots:
-        try:
-            root = esp_root.resolve(strict=True)
-        except OSError:
-            continue
-        if not root.is_dir():
-            continue
-        # systemd versions may report an ESP-root-relative path (/EFI/...) or
-        # the mounted path (/efi/EFI/...).  Resolve both forms only beneath a
-        # known mounted ESP root; never reinterpret an arbitrary absolute path.
-        if reported.is_relative_to(esp_root) or reported.is_relative_to(root):
-            candidates.append((reported, root))
-        else:
-            candidates.append((root / reported.relative_to("/"), root))
-
-    for candidate, root in candidates:
-        try:
-            resolved = candidate.resolve(strict=True)
-            if resolved.is_relative_to(root) and resolved.is_file():
-                return resolved
-        except OSError:
-            continue
-    raise InitrdError(
-        "The selected UKI is not readable under a mounted EFI System Partition: "
-        f"{reported} (sysroot {sysroot})"
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sysroot", type=Path, default=Path("/sysroot"))
@@ -974,7 +900,7 @@ def main() -> int:
             print("discarded-failed-trial", flush=True)
             return 0
         command_line = args.cmdline.read_text(encoding="ascii")
-        roothash, image_version = deployment_identity(command_line, selected_uki_path(sysroot))
+        roothash, image_version = deployment_identity(command_line, sysroot)
         boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip().lower()
         generation = select_generation_for_boot(sysroot, roothash, image_version, command_line, boot_id)
         parent_usr, parent_etc = generation_parent_layers(generation, roothash, image_version)
