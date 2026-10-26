@@ -3,7 +3,6 @@ Description=Mount the Veyra vpkg system generation before switch-root
 DefaultDependencies=no
 After=sysroot.mount sysroot-etc.mount sysroot-var.mount
 Requires=sysroot.mount sysroot-etc.mount sysroot-var.mount
-RequiresMountsFor=/sysefi
 Before=initrd-root-fs.target
 
 [Service]

@@ -13,7 +13,6 @@ import re
 import shutil
 import shlex
 import stat
-import struct
 import subprocess
 import sys
 import tempfile
@@ -71,6 +70,7 @@ RPMFUSION_KEYS = (
 PACKAGE_RE = re.compile(r"^veyra-[A-Za-z0-9][A-Za-z0-9+_.-]*$")
 RPM_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_.-]*$")
 ROOTHASH_RE = re.compile(r"^[0-9a-f]{64}$")
+IMAGE_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RPM_EVR_RE = re.compile(
     r"^(?:0|[1-9][0-9]*):[A-Za-z0-9][A-Za-z0-9.+_~^]*-[A-Za-z0-9][A-Za-z0-9.+_~^]*$"
@@ -1082,53 +1082,20 @@ def running_deployment_roothash() -> str:
 
 
 def running_uki_version() -> str:
-    """Read IMAGE_VERSION from the UKI selected for this boot, not /usr/os-release."""
-    result = run(["bootctl", "--print-stub-path"], capture=True)
-    uki = Path(result.stdout.strip())
-    if not uki.is_absolute() or not uki.is_file():
-        raise VpkgError("bootctl did not provide a readable path to the running UKI.")
+    """Read the build identity embedded in the UKI's kernel command line."""
     try:
-        with uki.open("rb") as stream:
-            header = stream.read(64)
-            if len(header) < 64 or header[:2] != b"MZ":
-                raise ValueError("missing DOS header")
-            pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
-            stream.seek(pe_offset)
-            coff = stream.read(24)
-            if len(coff) != 24 or coff[:4] != b"PE\0\0":
-                raise ValueError("missing PE header")
-            section_count = struct.unpack_from("<H", coff, 6)[0]
-            optional_size = struct.unpack_from("<H", coff, 20)[0]
-            if section_count == 0 or section_count > 96 or optional_size > 4096:
-                raise ValueError("invalid PE dimensions")
-            file_size = os.fstat(stream.fileno()).st_size
-            if pe_offset + 24 + optional_size + section_count * 40 > file_size:
-                raise ValueError("truncated PE section table")
-            stream.seek(pe_offset + 24 + optional_size)
-            osrel: tuple[int, int] | None = None
-            for _ in range(section_count):
-                section = stream.read(40)
-                if len(section) != 40:
-                    raise ValueError("truncated PE section table")
-                name = section[:8].split(b"\0", 1)[0]
-                if name == b".osrel":
-                    raw_size = struct.unpack_from("<I", section, 16)[0]
-                    raw_offset = struct.unpack_from("<I", section, 20)[0]
-                    if raw_size == 0 or raw_size > 1024 * 1024 or raw_offset + raw_size > file_size:
-                        raise ValueError("invalid .osrel section size")
-                    osrel = (raw_offset, raw_size)
-                    break
-            if osrel is None:
-                raise ValueError("missing .osrel section")
-            stream.seek(osrel[0])
-            metadata = stream.read(osrel[1]).split(b"\0", 1)[0].decode("utf-8", errors="strict")
-    except (OSError, UnicodeError, ValueError, struct.error) as error:
-        raise VpkgError("Could not read the running UKI .osrel metadata safely.") from error
-    versions = re.findall(r'(?m)^IMAGE_VERSION=(.*)$', metadata)
+        command_line = PROC_CMDLINE.read_text(encoding="ascii").split()
+    except OSError as error:
+        raise VpkgError(f"Could not read the running UKI command line: {PROC_CMDLINE}") from error
+    versions = [
+        token.partition("=")[2]
+        for token in command_line
+        if token.startswith("veyra.image_version=")
+    ]
     if len(versions) != 1:
-        raise VpkgError("The running UKI must contain exactly one IMAGE_VERSION.")
-    version = versions[0].strip().strip('"')
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
+        raise VpkgError("The running UKI command line must contain exactly one IMAGE_VERSION.")
+    version = versions[0]
+    if not IMAGE_VERSION_RE.fullmatch(version):
         raise VpkgError("The running UKI IMAGE_VERSION has unsupported characters.")
     return version
 

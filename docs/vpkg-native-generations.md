@@ -33,11 +33,12 @@ read-only for normal operation; `/etc` remains writable and its changes are
 scoped to the selected generation.
 
 Generation identity is exactly `(dm-verity roothash, UKI IMAGE_VERSION)`. The
-initrd reads the roothash from the kernel command line and `IMAGE_VERSION` from
-the selected UKI's `.osrel` section. It requires the Fedora 44 base currently
-supported by Veyra. In the initrd, the ESP is accessed through systemd's GPT
-auto mount at `/sysefi`; the boot service requires that mount before reading the
-selected UKI and before `switch-root`.
+UKI embeds its `IMAGE_VERSION` as the `veyra.image_version=` kernel command-line
+parameter. The initrd reads that value and the dm-verity `roothash` from the
+same command line and validates that the mounted verity-protected root is
+Fedora 44. The roothash binds the identity to the selected root; the version
+comes from the UKI itself. This avoids relying on EFI-variable availability or
+mounting the ESP in the initrd.
 
 ## Trial marker shared with OTA
 

@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import stat
-import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -363,30 +362,28 @@ class VpkgPolicyTests(unittest.TestCase):
             self.assertIsNone(result["generation"])
             self.assertFalse(output.exists())
 
-    def test_running_uki_version_is_read_from_its_osrel_section(self) -> None:
+    def test_running_uki_version_is_read_from_the_uki_command_line(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            uki = Path(temporary) / "current.efi"
-            image = bytearray(0x600)
-            pe_offset = 0x80
-            image[0:2] = b"MZ"
-            struct.pack_into("<I", image, 0x3C, pe_offset)
-            image[pe_offset : pe_offset + 4] = b"PE\0\0"
-            struct.pack_into("<H", image, pe_offset + 6, 1)
-            struct.pack_into("<H", image, pe_offset + 20, 0xF0)
-            section = pe_offset + 24 + 0xF0
-            image[section : section + 6] = b".osrel"
-            osrel = b'ID=fedora\nIMAGE_VERSION="1.2.3-test"\n\0'
-            struct.pack_into("<I", image, section + 8, len(osrel))
-            struct.pack_into("<I", image, section + 16, len(osrel))
-            struct.pack_into("<I", image, section + 20, 0x400)
-            image[0x400 : 0x400 + len(osrel)] = osrel
-            uki.write_bytes(image)
-            with patch.object(
-                vpkg,
-                "run",
-                return_value=subprocess.CompletedProcess([], 0, str(uki) + "\n", ""),
-            ):
+            cmdline = Path(temporary) / "cmdline"
+            cmdline.write_text(
+                "quiet roothash=" + "a" * 64 + " veyra.image_version=1.2.3-test\n",
+                encoding="ascii",
+            )
+            with patch.object(vpkg, "PROC_CMDLINE", cmdline):
                 self.assertEqual(vpkg.running_uki_version(), "1.2.3-test")
+
+    def test_running_uki_version_rejects_duplicate_or_invalid_cmdline_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cmdline = Path(temporary) / "cmdline"
+            with patch.object(vpkg, "PROC_CMDLINE", cmdline):
+                for value in (
+                    "quiet",
+                    "veyra.image_version=1.2.3 veyra.image_version=1.2.4",
+                    "veyra.image_version=bad/version",
+                ):
+                    cmdline.write_text(value, encoding="ascii")
+                    with self.subTest(value=value), self.assertRaisesRegex(vpkg.VpkgError, "IMAGE_VERSION"):
+                        vpkg.running_uki_version()
 
     def test_pending_completion_requires_exact_roothash_and_uki_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
