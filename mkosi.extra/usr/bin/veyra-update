@@ -1,0 +1,52 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+command_name="${1:-help}"
+if (($# > 0)); then
+    shift
+fi
+
+case "$command_name" in
+    list)
+        exec systemd-sysupdate --no-pager list "$@"
+        ;;
+    check)
+        exec systemd-sysupdate --no-pager check-new "$@"
+        ;;
+    install)
+        if ((EUID != 0)); then
+            echo "Install a system update with: sudo veyra-update install [VERSION]" >&2
+            exit 1
+        fi
+        exec systemd-sysupdate --no-pager update "$@"
+        ;;
+    pending)
+        exec systemd-sysupdate --no-pager pending "$@"
+        ;;
+    reboot)
+        if ((EUID != 0)); then
+            echo "Reboot into the installed update with: sudo veyra-update reboot" >&2
+            exit 1
+        fi
+        exec systemd-sysupdate reboot "$@"
+        ;;
+    help|-h|--help)
+        cat <<'EOF'
+Usage: veyra-update <command> [VERSION]
+
+  list       Show installed and available system versions
+  check      Check whether a newer signed version is available
+  install    Download and stage a version in the inactive A/B slot
+  pending    Check whether a staged version awaits reboot
+  reboot     Reboot only when a staged system version is waiting
+
+Installing an update does not reboot automatically. Use the reboot command
+after saving your work. A trial boot is accepted only after boot checks pass.
+EOF
+        ;;
+    *)
+        echo "Unknown veyra-update command: $command_name" >&2
+        echo "Run 'veyra-update help' for usage." >&2
+        exit 2
+        ;;
+esac

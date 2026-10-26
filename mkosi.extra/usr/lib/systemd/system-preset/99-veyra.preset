@@ -2,3 +2,5 @@ enable NetworkManager.service
 enable firewalld.service
 enable plasma-setup.service
 enable plasmalogin.service
+enable systemd-sysext.service
+enable systemd-boot-check-no-failures.service

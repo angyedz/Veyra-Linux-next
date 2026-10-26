@@ -1,0 +1,15 @@
+[Unit]
+Description=Mount the Veyra vpkg system generation before switch-root
+DefaultDependencies=no
+After=sysroot.mount sysroot-etc.mount sysroot-var.mount
+Requires=sysroot.mount sysroot-etc.mount sysroot-var.mount
+Before=initrd-root-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardError=journal+console
+ExecStart=/usr/bin/python3 /usr/libexec/veyra-vpkg-initrd.py
+
+[Install]
+RequiredBy=initrd-root-fs.target

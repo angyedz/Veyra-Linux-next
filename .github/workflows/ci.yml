@@ -9,10 +9,235 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  vpkg-image-fixture:
     runs-on: ubuntu-24.04
+    container: fedora:44
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Install package build and signing tools
+        run: dnf5 install --assumeyes createrepo_c cpio dnf5-plugins gnupg2 python3 rpm-build rpm-sign squashfs-tools
+      - name: Build two versions of the Veyra extension RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/rpms build/site build/empty-rpms build/v2/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          python3 scripts/build-extension-rpm.py --channel testing --output build/rpms
+          rpm_v1="$(find build/rpms -maxdepth 1 -name 'veyra-shell-tools-*.rpm' -print -quit)"
+          test -s "$rpm_v1"
+          mkdir -p build/v2/extract
+          rpm2cpio "$rpm_v1" | (cd build/v2/extract && cpio --quiet --extract --make-directories)
+          cp build/v2/extract/var/lib/extensions/veyra-shell-tools.raw build/v2/SOURCES/veyra-shell-tools.raw
+          cat > build/v2/SPECS/veyra-shell-tools.spec <<'EOF'
+          Name:           veyra-shell-tools
+          Version:        0.2.0
+          Release:        1.fc44
+          Summary:        Veyra shell tools system-extension CI fixture
+          License:        GPL-2.0-or-later AND MIT AND Unlicense
+          BuildArch:      x86_64
+          Source0:        veyra-shell-tools.raw
+
+          %description
+          Signed upgrade fixture for Veyra vpkg image integration tests.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/var/lib/extensions/veyra-shell-tools.raw
+          %files
+          /var/lib/extensions/veyra-shell-tools.raw
+          EOF
+          rpmbuild -bb build/v2/SPECS/veyra-shell-tools.spec \
+            --define "_topdir $PWD/build/v2" \
+            --define "_sourcedir $PWD/build/v2/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          cp build/v2/RPMS/*.rpm build/rpms/
+          mkdir -p build/broken/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          printf 'This is deliberately not a filesystem image.\n' > build/broken/SOURCES/veyra-broken-extension.raw
+          cat > build/broken/SPECS/veyra-broken-extension.spec <<'EOF'
+          Name:           veyra-broken-extension
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Deliberately invalid system-extension CI fixture
+          License:        MIT
+          BuildArch:      x86_64
+          Source0:        veyra-broken-extension.raw
+
+          %description
+          Used only to verify that vpkg rolls back when systemd-sysext refuses an image.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/var/lib/extensions/veyra-broken-extension.raw
+          %files
+          /var/lib/extensions/veyra-broken-extension.raw
+          EOF
+          rpmbuild -bb build/broken/SPECS/veyra-broken-extension.spec \
+            --define "_topdir $PWD/build/broken" \
+            --define "_sourcedir $PWD/build/broken/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          mkdir -p build/incompatible/{BUILD,RPMS,SOURCES,SPECS,SRPMS} \
+            build/incompatible/root/usr/lib/extension-release.d
+          cat > build/incompatible/root/usr/lib/extension-release.d/extension-release.veyra-incompatible-extension <<'EOF'
+          ID=fedora
+          VERSION_ID=44
+          SYSEXT_LEVEL=999
+          EOF
+          mksquashfs build/incompatible/root build/incompatible/SOURCES/veyra-incompatible-extension.raw \
+            -noappend -all-root -no-progress
+          cat > build/incompatible/SPECS/veyra-incompatible-extension.spec <<'EOF'
+          Name:           veyra-incompatible-extension
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Veyra system-extension compatibility CI fixture
+          License:       MIT
+          BuildArch:      x86_64
+          Source0:        veyra-incompatible-extension.raw
+
+          %description
+          Used only to verify that vpkg rolls back an extension with an incompatible SYSEXT_LEVEL.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/var/lib/extensions/veyra-incompatible-extension.raw
+          %files
+          /var/lib/extensions/veyra-incompatible-extension.raw
+          EOF
+          rpmbuild -bb build/incompatible/SPECS/veyra-incompatible-extension.spec \
+            --define "_topdir $PWD/build/incompatible" \
+            --define "_sourcedir $PWD/build/incompatible/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          mkdir -p build/scriptlet/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          printf 'Disposable vpkg scriptlet policy fixture.\n' > build/scriptlet/SOURCES/README
+          cat > build/scriptlet/SPECS/vpkg-scriptlet-fixture.spec <<'EOF'
+          Name:           vpkg-scriptlet-fixture
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Disposable vpkg RPM scriptlet policy fixture
+          License:        MIT
+          BuildArch:      x86_64
+          Source0:        README
+
+          %description
+          Used only to verify that vpkg rejects packages declaring RPM hooks.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/opt/vpkg-scriptlet-fixture/README
+          %files
+          /opt/vpkg-scriptlet-fixture/README
+
+          %pre
+          echo VEYRA_CI_SCRIPTLET_PRE_RAN
+          exit 70
+
+          %post
+          echo VEYRA_CI_SCRIPTLET_POST_RAN
+          touch /var/lib/veyra/vpkg-ci-scriptlet-post-ran
+          exit 71
+
+          %transfiletriggerin -- /opt/vpkg-scriptlet-fixture
+          echo VEYRA_CI_SCRIPTLET_TRIGGER_RAN
+          touch /var/lib/veyra/vpkg-ci-scriptlet-trigger-ran
+          exit 72
+          EOF
+          rpmbuild -bb build/scriptlet/SPECS/vpkg-scriptlet-fixture.spec \
+            --define "_topdir $PWD/build/scriptlet" \
+            --define "_sourcedir $PWD/build/scriptlet/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+          mkdir -p build/unit/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat > build/unit/SOURCES/veyra-vpkg-unit-fixture.service <<'EOF'
+          [Unit]
+          Description=Veyra vpkg systemd unit integration fixture
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          cat > build/unit/SPECS/vpkg-unit-fixture.spec <<'EOF'
+          Name:           vpkg-unit-fixture
+          Version:        0.1.0
+          Release:        1.fc44
+          Summary:        Disposable vpkg systemd unit fixture
+          License:        MIT
+          BuildArch:      x86_64
+          Source0:        veyra-vpkg-unit-fixture.service
+
+          %description
+          Used only to verify that vpkg exposes and reloads a systemd unit.
+
+          %prep
+          %build
+          %install
+          install -D -m 0644 %{SOURCE0} %{buildroot}/usr/lib/systemd/system/veyra-vpkg-unit-fixture.service
+          %files
+          /usr/lib/systemd/system/veyra-vpkg-unit-fixture.service
+          EOF
+          rpmbuild -bb build/unit/SPECS/vpkg-unit-fixture.spec \
+            --define "_topdir $PWD/build/unit" \
+            --define "_sourcedir $PWD/build/unit/SOURCES" \
+            --define '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm'
+      - name: Sign the disposable VM test repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          gpg --batch --passphrase '' --quick-generate-key 'Veyra VM CI Test Key <veyra-vm-ci@example.invalid>' rsa3072 sign 0
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          gpg --batch --armor --export "$fingerprint" > build/site/RPM-GPG-KEY-VEYRA
+          rpm --import build/site/RPM-GPG-KEY-VEYRA
+          rpmsign --define "_gpg_name $fingerprint" --addsign \
+            build/rpms/*.rpm build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm \
+            build/scriptlet/RPMS/*.rpm build/unit/RPMS/*.rpm
+          scripts/build-package-repo.sh testing build/rpms build/site
+          scripts/build-package-repo.sh main build/empty-rpms build/site
+          testing_repo=build/site/packages/testing/x86_64
+          cp build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm "$testing_repo/"
+          createrepo_c --database --update "$testing_repo"
+          testing_initial=build/site/packages/testing-initial/x86_64
+          mkdir -p "$testing_initial"
+          cp build/rpms/veyra-shell-tools-0.1.0-*.rpm "$testing_initial/"
+          cp build/broken/RPMS/*.rpm build/incompatible/RPMS/*.rpm "$testing_initial/"
+          createrepo_c --database "$testing_initial"
+          for channel in main testing testing-initial; do
+            metadata="build/site/packages/$channel/x86_64/repodata/repomd.xml"
+            gpg --batch --yes --armor --local-user "$fingerprint" --detach-sign \
+              --output "$metadata.asc" "$metadata"
+          done
+          upstream=build/site/local-upstream/x86_64
+          mkdir -p "$upstream"
+          dnf5 --repo=fedora download --resolve --alldeps --destdir="$upstream" htop
+          cp build/scriptlet/RPMS/*.rpm build/unit/RPMS/*.rpm "$upstream/"
+          createrepo_c --database "$upstream"
+          test -s "$upstream/repodata/repomd.xml"
+          test -n "$(find "$upstream" -maxdepth 1 -name 'htop-*.rpm' -print -quit)"
+          test -s "$upstream/vpkg-scriptlet-fixture-0.1.0-1.fc44.x86_64.rpm"
+          test -s "$upstream/vpkg-unit-fixture-0.1.0-1.fc44.x86_64.rpm"
+          test "$(find build/site/packages/testing/x86_64 -maxdepth 1 -name 'veyra-shell-tools-*.rpm' | wc -l)" -eq 2
+          test -s build/site/packages/testing/x86_64/veyra-broken-extension-0.1.0-1.fc44.x86_64.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veyra-vpkg-image-fixture
+          path: build/site/
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    needs: vpkg-image-fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: veyra-vpkg-image-fixture
+          path: build/vpkg-site
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -21,22 +246,135 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes \
             btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
-            debian-archive-keyring gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
-            systemd-container systemd-ukify xz-utils zstd
+            debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
+            cryptsetup-bin ovmf systemd-container systemd-ukify xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
+      - name: Add the CI-only vpkg boot test to this disposable image
+        run: |
+          sudo install -D -m 0644 build/vpkg-site/RPM-GPG-KEY-VEYRA \
+            mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
+          sudo install -D -m 0644 tests/fixtures/vpkg-image/veyra-vpkg-ci.service \
+            mkosi.extra/usr/lib/systemd/system/veyra-vpkg-ci.service
+          sudo install -D -m 0644 tests/fixtures/vpkg-image/boot-complete-vpkg-ci.conf \
+            mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra-vpkg-ci.conf
+          sudo install -D -m 0644 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery.service \
+            mkosi.extra/usr/lib/systemd/system/veyra-vpkg-stage-recovery.service
+          sudo install -D -m 0644 tests/fixtures/vpkg-image/systemd-bless-boot-vpkg-ci.conf \
+            mkosi.extra/usr/lib/systemd/system/systemd-bless-boot.service.d/veyra-vpkg-ci.conf
+          sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-ci-test \
+            mkosi.extra/usr/libexec/veyra-vpkg-ci-test
+          sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery \
+            mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
+      - name: Verify the built initrd contains the native vpkg boot backend
+        run: |
+          set -euo pipefail
+          mapfile -t initrds < <(find mkosi.output -maxdepth 1 -type f -name 'initrd*.cpio.zst' -print)
+          if ((${#initrds[@]} != 1)); then
+            echo "Expected exactly one built initrd, found ${#initrds[@]}" >&2
+            exit 1
+          fi
+          python3 scripts/check-vpkg-initrd-image.py "${initrds[0]}"
       - name: Verify the packages inside the built image
         run: |
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
+          check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
-            glibc systemd plasma-workspace plasma-login-manager plasma-setup \
-            flatpak gcc git cmake python3 nodejs22
-          test -x /usr/bin/startplasma-wayland
+            glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
+            flatpak libdnf5 python3-libdnf5 gcc git cmake python3 nodejs22
+          test "$(rpm -E "%{fedora}")" = 44
+          grep -Fxq "ID=fedora" /usr/lib/os-release
+          grep -Fxq "VERSION_ID=44" /usr/lib/os-release
+          test "$(rpm -q --qf "%{RELEASE}\n" libdnf5 python3-libdnf5 | grep -Ec "\.fc44$")" -eq 2
+          ! rpm -q dnf5 dnf5-plugins
+          check systemd-sysupdate test -x /usr/lib/systemd/systemd-sysupdate
+          check vpkg test -x /usr/bin/vpkg
+          check vpkg-generation-helper test -x /usr/libexec/veyra-vpkg-initrd.py
+          helper_mode="$(stat -c %a /usr/libexec/veyra-vpkg-initrd.py)"
+          printf "Installed Vpkg initrd helper mode: %s\\n" "$helper_mode"
+          check vpkg-generation-helper-mode test "$helper_mode" = 755
+          check vpkg-generation-helper-label matchpathcon -V /usr/libexec/veyra-vpkg-initrd.py
+          check vpkg-generation-health-unit test -s /usr/lib/systemd/system/veyra-vpkg-check.service
+          check vpkg-generation-health-label matchpathcon -V /usr/lib/systemd/system/veyra-vpkg-check.service
+          check vpkg-initrd-helper-label matchpathcon -V /usr/libexec/veyra-vpkg-initrd.py
+          check python-libdnf5 python3 -c "import libdnf5"
+          check dnf5-cli-absent sh -eu -c "! command -v dnf5"
+          check veyra-update test -x /usr/bin/veyra-update
+          check veyra-update-help /usr/bin/veyra-update --help
+          check plasma-wayland test -x /usr/bin/startplasma-wayland
           node --version
-          test -s /usr/share/veyra/branding/veyra-logo.svg
-          test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
+          check branding test -s /usr/share/veyra/branding/veyra-logo.svg
+          check pinned-rpm-repository-key test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
+          check veyra-sysext-level sh -eu -c "grep -Fxq SYSEXT_LEVEL=1 /etc/os-release && grep -Fxq SYSEXT_LEVEL=1 /usr/lib/os-release"
+          check plasma-setup-enabled sh -eu -c "find /etc/systemd/system -type l -name plasma-setup.service -print -quit | grep -q ."
+          check systemd-sysext-enabled sh -eu -c "find /etc/systemd/system -type l -name systemd-sysext.service -print -quit | grep -q ."
+          check vpkg-sync-service test -s /usr/lib/systemd/system/veyra-vpkg-sync.service
+          check sysext-vpkg-ordering test -s /usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf
           '
       - name: Check that mkosi produced a disk image
-        run: test -s mkosi.output/veyra-next.raw
+        run: |
+          version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          test -s mkosi.output/veyra-next.raw
+          python3 scripts/check-image.py mkosi.output/veyra-next.raw
+          test -s "mkosi.output/veyra-next_${version}.efi"
+          find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root.raw.zst" -type f -size +0c | grep -q .
+          find mkosi.output -maxdepth 1 -name "veyra-next_${version}_*.root-verity.raw.zst" -type f -size +0c | grep -q .
+
+      - name: Stage a signed A/B update into a disposable image copy
+        run: |
+          set -euo pipefail
+          version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          export GNUPGHOME="$RUNNER_TEMP/veyra-sysupdate-gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --quick-generate-key "Veyra temporary CI update key" ed25519 sign 0
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys |
+            awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          gpg --batch --export "$fingerprint" > "$RUNNER_TEMP/veyra-ci-update-key.gpg"
+
+          keyring=/etc/systemd/import-pubring.gpg
+          if sudo test -e /etc/systemd/import-pubring.pgp; then
+            keyring=/etc/systemd/import-pubring.pgp
+          fi
+          backup="$RUNNER_TEMP/veyra-import-pubring.backup"
+          had_keyring=false
+          if sudo test -e "$keyring"; then
+            sudo cp "$keyring" "$backup"
+            had_keyring=true
+          fi
+          restore_keyring() {
+            if [[ "$had_keyring" == true ]]; then
+              sudo install -D -m 0644 "$backup" "$keyring"
+            else
+              sudo rm -f "$keyring"
+            fi
+          }
+          trap restore_keyring EXIT
+          sudo install -D -m 0644 "$RUNNER_TEMP/veyra-ci-update-key.gpg" "$keyring"
+          ovmf_code=""
+          for candidate in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/x64/OVMF_CODE.4m.fd; do
+            if [[ -s "$candidate" ]]; then ovmf_code="$candidate"; break; fi
+          done
+          ovmf_vars=""
+          for candidate in \
+            /usr/share/OVMF/OVMF_VARS_4M.fd \
+            /usr/share/OVMF/OVMF_VARS.fd \
+            /usr/share/edk2/x64/OVMF_VARS.4m.fd; do
+            if [[ -s "$candidate" ]]; then ovmf_vars="$candidate"; break; fi
+          done
+          test -n "$ovmf_code" && test -n "$ovmf_vars"
+          python3 scripts/test-sysupdate-image.py \
+            --image mkosi.output/veyra-next.raw \
+            --current-version "$version" \
+            --transfer-dir mkosi.extra/usr/lib/sysupdate.d \
+            --vpkg-test-repo build/vpkg-site \
+            --fingerprint "$fingerprint" \
+            --ovmf-code "$ovmf_code" \
+            --ovmf-vars "$ovmf_vars" \
+            --sudo-sysupdate
