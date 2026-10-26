@@ -208,7 +208,7 @@ function veyra_boot_trial {{
         veyra_boot_stable
         return
     fi
-    if save_env veyra_trial_tries_left; then
+    if save_env --file=/grub2/grubenv veyra_trial_tries_left; then
         if linux /VEYRA/veyra-next_${{veyra_trial_version}}.vmlinuz roothash=${{veyra_trial_roothash}} veyra.image_version=${{veyra_trial_version}} systemd.unit=graphical.target; then
             if initrd /VEYRA/veyra-next_${{veyra_trial_version}}.initrd; then
                 return

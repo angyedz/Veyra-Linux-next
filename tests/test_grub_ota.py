@@ -28,7 +28,7 @@ class GrubOtaTests(unittest.TestCase):
         self.assertIn('set veyra_trial_tries_left=2', config)
         self.assertIn('set veyra_trial_tries_left=1', config)
         self.assertIn('set veyra_trial_tries_left=0', config)
-        self.assertIn("save_env veyra_trial_tries_left", config)
+        self.assertIn("save_env --file=/grub2/grubenv veyra_trial_tries_left", config)
         self.assertIn("Could not load the Veyra trial; booting the stable deployment.", config)
         self.assertIn("veyra_trial_version", config)
         self.assertIn("veyra_stable_roothash", config)
