@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a disposable Fedora 44 Veyra disk and run Vforge inside QEMU/KVM."""
+"""Prepare a disposable Fedora 44 Veyra disk and run Vforge inside QEMU."""
 
 from __future__ import annotations
 
@@ -444,31 +444,50 @@ def find_ovmf_pair() -> tuple[pathlib.Path, pathlib.Path]:
     raise VforgeQemuError("OVMF_CODE and OVMF_VARS are required for the Fedora 44 guest boot")
 
 
-def require_kvm() -> str:
+def select_qemu_acceleration(requested: str) -> tuple[str, str]:
     if os.geteuid() == 0:
         raise VforgeQemuError("run the host-side QEMU launcher as a normal user")
     qemu = shutil.which("qemu-system-x86_64")
     if qemu is None:
         raise VforgeQemuError("qemu-system-x86_64 is not installed")
-    if not os.access("/dev/kvm", os.R_OK | os.W_OK):
-        raise VforgeQemuError("/dev/kvm is not accessible; this scenario requires QEMU/KVM")
     accelerators = run([qemu, "-accel", "help"], capture=True, check=False)
-    if "kvm" not in (accelerators.stdout or "") + (accelerators.stderr or ""):
-        raise VforgeQemuError("this QEMU build does not provide KVM acceleration")
-    return qemu
+    available = (accelerators.stdout or "") + (accelerators.stderr or "")
+    has_kvm = "kvm" in available and os.access("/dev/kvm", os.R_OK | os.W_OK)
+    has_tcg = "tcg" in available
+    if requested == "auto":
+        if has_kvm:
+            return qemu, "kvm"
+        if has_tcg:
+            return qemu, "tcg"
+        raise VforgeQemuError("this QEMU build provides neither accessible KVM nor TCG acceleration")
+    if requested == "kvm":
+        if not has_kvm:
+            raise VforgeQemuError("KVM was requested, but /dev/kvm is unavailable or QEMU has no KVM accelerator")
+        return qemu, "kvm"
+    if requested == "tcg":
+        if not has_tcg:
+            raise VforgeQemuError("TCG was requested, but this QEMU build does not provide TCG acceleration")
+        return qemu, "tcg"
+    raise VforgeQemuError(f"unsupported QEMU acceleration mode: {requested}")
 
 
 def qemu_command(
     qemu: str, image: pathlib.Path, source_root: pathlib.Path, code: pathlib.Path,
     variables: pathlib.Path, vars_copy: pathlib.Path, serial_log: pathlib.Path,
-    oci_archive: pathlib.Path,
+    oci_archive: pathlib.Path, *, acceleration: str = "kvm",
 ) -> list[str]:
     values = (image, source_root, code, vars_copy, serial_log, oci_archive)
     if any("," in str(path) for path in values):
         raise VforgeQemuError("QEMU file/share paths containing commas are not supported")
     shutil.copyfile(variables, vars_copy)
+    if acceleration == "kvm":
+        machine_options = ["-machine", "q35,accel=kvm", "-cpu", "host"]
+    elif acceleration == "tcg":
+        machine_options = ["-machine", "q35", "-accel", "tcg,thread=multi", "-cpu", "max"]
+    else:
+        raise VforgeQemuError(f"unsupported QEMU acceleration mode: {acceleration}")
     return [
-        qemu, "-machine", "q35,accel=kvm", "-cpu", "host", "-smp", "2", "-m", "4096",
+        qemu, *machine_options, "-smp", "2", "-m", "4096",
         "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
         "-drive", f"if=pflash,format=raw,unit=1,file={vars_copy}",
         "-drive", f"if=none,id=systemdisk,format=raw,file={image}",
@@ -481,12 +500,16 @@ def qemu_command(
     ]
 
 
-def run_guest(qemu: str, image: pathlib.Path, source_root: pathlib.Path, oci_archive: pathlib.Path, output_dir: pathlib.Path, timeout: int) -> str:
+def run_guest(
+    qemu: str, image: pathlib.Path, source_root: pathlib.Path, oci_archive: pathlib.Path,
+    output_dir: pathlib.Path, timeout: int, acceleration: str,
+) -> str:
     code, variables = find_ovmf_pair()
     serial_log = output_dir / "serial.log"
     qemu_log = output_dir / "qemu.log"
     command = qemu_command(
-        qemu, image, source_root, code, variables, output_dir / "OVMF_VARS.fd", serial_log, oci_archive,
+        qemu, image, source_root, code, variables, output_dir / "OVMF_VARS.fd", serial_log,
+        oci_archive, acceleration=acceleration,
     )
     with qemu_log.open("wb") as log:
         process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
@@ -528,10 +551,12 @@ def main() -> int:
     parser.add_argument("--oci-archive", required=True, type=pathlib.Path, help="Veyra OCI rootfs archive from the same image build")
     parser.add_argument("--source-root", type=pathlib.Path, default=ROOT)
     parser.add_argument("--work-dir", type=pathlib.Path, default=ROOT / "work/vforge-qemu")
-    parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--timeout", type=int, default=5400)
+    parser.add_argument("--acceleration", choices=("auto", "kvm", "tcg"), default="auto")
     args = parser.parse_args()
     try:
-        qemu = require_kvm()
+        qemu, acceleration = select_qemu_acceleration(args.acceleration)
+        print(f"Running the Vforge guest with QEMU {acceleration.upper()} acceleration.", flush=True)
         source_root = args.source_root.resolve(strict=True)
         if not (source_root / "scripts/test-vforge-qemu.sh").is_file():
             raise VforgeQemuError(f"source checkout has no Vforge guest scenario: {source_root}")
@@ -550,8 +575,8 @@ def main() -> int:
         output_dir = args.work_dir / f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         output_dir.mkdir(mode=0o700, parents=True)
         test_image = prepare_test_image(base_image, output_dir, offsets, version, roothash, oci_archive.name)
-        serial = run_guest(qemu, test_image, source_root, oci_archive, output_dir, args.timeout)
-        print(f"Vforge Fedora 44 guest scenario passed. Serial log: {output_dir / 'serial.log'}", flush=True)
+        serial = run_guest(qemu, test_image, source_root, oci_archive, output_dir, args.timeout, acceleration)
+        print(f"Vforge Fedora 44 guest scenario passed with QEMU {acceleration.upper()}. Serial log: {output_dir / 'serial.log'}", flush=True)
         print("\n".join(serial.splitlines()[-40:]), flush=True)
         return 0
     except (OSError, VforgeQemuError, subprocess.CalledProcessError) as error:

@@ -155,7 +155,7 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         self.assertIn(runner.PASS_MARKER, script)
         self.assertIn(runner.FAIL_MARKER, script)
 
-    def test_qemu_command_requires_kvm_and_mounts_checkout_read_only(self) -> None:
+    def test_qemu_command_uses_kvm_and_mounts_checkout_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             code = root / "OVMF_CODE.fd"
@@ -174,6 +174,58 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         self.assertTrue(any("readonly=on" in item for item in command))
         self.assertTrue(any("security_model=none,readonly=on" in item for item in command))
         self.assertTrue(any("mount_tag=vforge-base" in item and str(root) in item for item in command))
+
+    def test_qemu_command_supports_tcg_without_host_cpu_passthrough(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            code = root / "OVMF_CODE.fd"
+            variables = root / "OVMF_VARS.fd"
+            archive = root / "veyra-base.tar"
+            for path in (code, variables):
+                path.write_bytes(b"firmware")
+            archive.write_bytes(b"oci archive")
+            command = runner.qemu_command(
+                "qemu-system-x86_64", root / "guest.raw", root / "checkout",
+                code, variables, root / "OVMF_VARS.copy.fd", root / "serial.log", archive,
+                acceleration="tcg",
+            )
+
+        self.assertIn("-accel", command)
+        self.assertIn("tcg,thread=multi", command)
+        self.assertIn("max", command)
+        self.assertNotIn("host", command)
+
+    def test_selects_tcg_when_kvm_is_unavailable(self) -> None:
+        with patch.object(runner.os, "geteuid", return_value=4242), patch.object(
+            runner.os, "access", return_value=False
+        ), patch.object(
+            runner.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
+        ), patch.object(runner, "run", return_value=subprocess.CompletedProcess([], 0, stdout="tcg\nkvm\n", stderr="")):
+            qemu, acceleration = runner.select_qemu_acceleration("auto")
+
+        self.assertEqual(qemu, "/usr/bin/qemu-system-x86_64")
+        self.assertEqual(acceleration, "tcg")
+
+    def test_selects_kvm_when_available_and_prefers_it_in_auto_mode(self) -> None:
+        with patch.object(runner.os, "geteuid", return_value=4242), patch.object(
+            runner.os, "access", return_value=True
+        ), patch.object(
+            runner.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
+        ), patch.object(runner, "run", return_value=subprocess.CompletedProcess([], 0, stdout="tcg\nkvm\n", stderr="")):
+            qemu, acceleration = runner.select_qemu_acceleration("auto")
+
+        self.assertEqual(qemu, "/usr/bin/qemu-system-x86_64")
+        self.assertEqual(acceleration, "kvm")
+
+    def test_github_workflow_runs_tcg_fixture_if_kvm_is_unavailable(self) -> None:
+        workflow = SCRIPT.parents[1] / ".github/workflows/vforge-source-tests.yml"
+        contents = workflow.read_text(encoding="utf-8")
+
+        self.assertIn("Run Vforge rootless lifecycle with the built OCI artifact in QEMU/TCG", contents)
+        self.assertIn("if: steps.kvm.outputs.available != 'true'", contents)
+        self.assertIn("--acceleration tcg --timeout 5400", contents)
+        self.assertIn("steps.vforge_tcg.outcome", contents)
+        self.assertNotIn("was skipped because this GitHub runner has no accessible KVM", contents)
 
     def test_guest_fixture_loads_extensionless_vforge_executable_for_runtime_identity(self) -> None:
         with patch.object(fixture.shutil, "which", return_value=str(SCRIPT.parents[1] / "mkosi.extra/usr/bin/vforge")):

@@ -26,9 +26,9 @@ def require_qemu_guest() -> None:
             ["systemd-detect-virt", "--vm"], check=True, capture_output=True, text=True
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError("could not verify the QEMU/KVM guest") from error
+        raise RuntimeError("could not verify the QEMU guest") from error
     if virtualizer not in {"qemu", "kvm"}:
-        raise RuntimeError(f"Veyra integration tests must run inside QEMU/KVM, detected {virtualizer!r}")
+        raise RuntimeError(f"Veyra integration tests must run inside QEMU, detected {virtualizer!r}")
     if os.geteuid() == 0:
         raise RuntimeError("run this scenario as a normal guest user so Podman stays rootless")
     host_release = os_release_fields(pathlib.Path("/etc/os-release").read_text(encoding="utf-8"))

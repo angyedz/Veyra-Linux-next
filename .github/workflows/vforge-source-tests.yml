@@ -126,23 +126,35 @@ jobs:
       - name: Check whether this runner exposes KVM to the Vforge runtime test
         id: kvm
         run: |
-          if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+          if [[ -r /dev/kvm && -w /dev/kvm ]] && qemu-system-x86_64 -accel help 2>&1 | grep -qw kvm; then
             echo 'available=true' >> "$GITHUB_OUTPUT"
           else
             echo 'available=false' >> "$GITHUB_OUTPUT"
           fi
       - name: Run Vforge rootless lifecycle with the built OCI artifact in QEMU/KVM
+        id: vforge_kvm
         if: steps.kvm.outputs.available == 'true'
         run: |
           python3 scripts/run-vforge-qemu.py \
             --image mkosi.output/veyra-next.raw \
             --oci-archive mkosi.output/veyra-next-vforge-base.tar \
             --work-dir "$RUNNER_TEMP/vforge-qemu"
+      - name: Run Vforge rootless lifecycle with the built OCI artifact in QEMU/TCG
+        id: vforge_tcg
+        if: steps.kvm.outputs.available != 'true'
+        run: |
+          python3 scripts/run-vforge-qemu.py \
+            --image mkosi.output/veyra-next.raw \
+            --oci-archive mkosi.output/veyra-next-vforge-base.tar \
+            --work-dir "$RUNNER_TEMP/vforge-qemu" \
+            --acceleration tcg --timeout 5400
       - name: Record Vforge QEMU runtime test status
         if: always()
         run: |
-          if [[ '${{ steps.kvm.outputs.available }}' == 'true' ]]; then
-            echo 'Vforge QEMU runtime test ran against mkosi.output/veyra-next-vforge-base.tar.' >> "$GITHUB_STEP_SUMMARY"
+          if [[ '${{ steps.vforge_kvm.outcome }}' == 'success' ]]; then
+            echo 'Vforge guest lifecycle passed under QEMU/KVM against mkosi.output/veyra-next-vforge-base.tar.' >> "$GITHUB_STEP_SUMMARY"
+          elif [[ '${{ steps.vforge_tcg.outcome }}' == 'success' ]]; then
+            echo 'Vforge guest lifecycle passed under QEMU/TCG against mkosi.output/veyra-next-vforge-base.tar.' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo 'Vforge QEMU runtime test was skipped because this GitHub runner has no accessible KVM device. Source and OCI build checks do not count as runtime evidence.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Vforge guest lifecycle did not pass; source and OCI build checks are not runtime evidence.' >> "$GITHUB_STEP_SUMMARY"
           fi
