@@ -52,7 +52,7 @@ jobs:
           grep -Fq "Veyra Next 0.1.0 (Fedora 44 base)" /tmp/veyra-fastfetch.txt
           grep -Fq 'OS:' /tmp/veyra-fastfetch.txt
           grep -Fq 'Kernel:' /tmp/veyra-fastfetch.txt
-          grep -Fq '#######  ###############' /tmp/veyra-fastfetch.txt
+          grep -Fq "#######  ###############" /tmp/veyra-fastfetch.txt
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
           '
       - name: Check that mkosi produced a disk image
