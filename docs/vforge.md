@@ -63,7 +63,20 @@ Additional host mounts must use existing directories and safe absolute targets.
 They require interactive approval when first requested and again if the project
 configuration adds a mount. Mounts are read-only unless `access =
 "read-write"` is specified. Reserved system paths and paths that escape `/` are
-rejected. The whole host Home is never mounted.
+rejected. The whole host Home is never mounted by default.
+
+`permissions.home.mode` supports four levels. `none` keeps `HOME` private at
+`/tmp`; the project remains separately available at `/workspace`. The default
+`project-only` mode sets `HOME` to `/workspace` and exposes no other Home files.
+`read-only` mounts the current user's Home at `/home/<user>` as read-only.
+`read-write` mounts it read-write. The two full-Home modes require interactive
+approval; their grants live in Vforge's private user configuration, outside the
+project. A changed request stops environment entry until `vforge up` records
+the new decision. Revoking a stored grant blocks entry.
+
+Named environments default to no Home access. To grant one, use
+`vforge create backend --home read-only` or `--home read-write`; Vforge asks for
+interactive approval before creating or widening the access.
 
 Project networking is isolated unless `[permissions].network = "shared"` is
 requested. The first request requires an interactive approval; the approval is
