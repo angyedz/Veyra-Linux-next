@@ -109,6 +109,10 @@ def main() -> int:
         return fail("the Live ISO Kickstart must include dracut-live for Lorax image composition")
     if "url --url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/" not in live_kickstart:
         return fail("the Fedora 44 Live ISO Kickstart must declare the network RPM source required by Lorax")
+    if 'live_root="/mnt/sysimage"' not in live_kickstart or "${LIVE_ROOT" in live_kickstart:
+        return fail("the Lorax no-virt Kickstart must copy Live assets into Anaconda's /mnt/sysimage root")
+    if "policycoreutils" not in live_iso_job.group(1):
+        return fail("the Lorax build container must provide load_policy for Anaconda cleanup")
 
     for expected in (
         "Distribution=fedora",

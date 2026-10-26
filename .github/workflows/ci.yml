@@ -495,7 +495,7 @@ jobs:
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
       - name: Install Fedora 44 Live ISO build tools
-        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui xorriso isomd5sum squashfs-tools
+        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils xorriso isomd5sum squashfs-tools
       - name: Download and verify the Fedora 44 Anaconda boot ISO
         shell: bash
         run: |

@@ -14,7 +14,7 @@ clearpart --all --initlabel
 reqpart
 part / --fstype=ext4 --size=16384
 
-%packages
+%packages --excludedocs
 @^kde-desktop-environment
 anaconda-live
 btrfs-progs
@@ -49,7 +49,7 @@ util-linux
 %post --nochroot --interpreter=/usr/bin/bash --erroronfail --log=/tmp/veyra-live-post.log
 set -euo pipefail
 source_root='__VEYRA_SOURCE_ROOT__'
-live_root="${LIVE_ROOT:?livemedia-creator did not set LIVE_ROOT}"
+live_root="/mnt/sysimage"
 install -d -m 0755 "$live_root/usr/share/veyra/installer/source" \
   "$live_root/usr/share/veyra/installer/assets" \
   "$live_root/usr/share/applications" "$live_root/usr/libexec"
