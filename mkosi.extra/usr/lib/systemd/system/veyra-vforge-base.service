@@ -1,0 +1,15 @@
+[Unit]
+Description=Expose the immutable Veyra root to native Vforge environments
+After=local-fs.target systemd-tmpfiles-setup.service
+Requires=systemd-tmpfiles-setup.service
+Before=graphical.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mount --bind / /run/veyra/vforge/base
+ExecStartPost=/usr/bin/mount -o remount,bind,ro /run/veyra/vforge/base
+ExecStop=/usr/bin/umount /run/veyra/vforge/base
+
+[Install]
+WantedBy=multi-user.target

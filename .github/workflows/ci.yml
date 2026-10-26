@@ -315,6 +315,8 @@ jobs:
           check dnf5-cli-absent sh -eu -c "! command -v dnf5"
           check veyra-update test -x /usr/bin/veyra-update
           check veyra-update-help /usr/bin/veyra-update --help
+          check vforge-base-service test -s /usr/lib/systemd/system/veyra-vforge-base.service
+          check vforge-base-service-enabled sh -eu -c "find /etc/systemd/system/multi-user.target.wants -maxdepth 1 -type l -name veyra-vforge-base.service -print -quit | grep -q ."
           check plasma-wayland test -x /usr/bin/startplasma-wayland
           node --version
           check branding test -s /usr/share/veyra/branding/veyra-logo.svg

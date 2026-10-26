@@ -593,6 +593,24 @@ class VforgeNativeTests(unittest.TestCase):
                 "40 30 0:1 / / rw,relatime - overlay overlay rw\n"
             )
 
+    def test_rootless_vforge_base_must_be_a_read_only_bind_of_active_erofs_root(self) -> None:
+        mountinfo = (
+            "40 30 253:0 / / ro,relatime - erofs /dev/mapper/veyra-root ro\n"
+            "52 40 253:0 / /run/veyra/vforge/base ro,relatime - erofs /dev/mapper/veyra-root ro\n"
+        )
+        vforge.verify_vforge_base_mount(mountinfo)
+
+        for invalid_mount in (
+            "52 40 253:0 / /run/veyra/vforge/base rw,relatime - erofs /dev/mapper/veyra-root rw",
+            "52 40 253:1 / /run/veyra/vforge/base ro,relatime - erofs /dev/mapper/other-root ro",
+            "52 40 253:0 / /run/veyra/vforge/base ro,relatime - ext4 /dev/mapper/veyra-root ro",
+            "52 40 253:0 / /run/veyra/vforge/other ro,relatime - erofs /dev/mapper/veyra-root ro",
+        ):
+            with self.subTest(mountinfo=invalid_mount), self.assertRaisesRegex(
+                vforge.VforgeError, "read-only Veyra EROFS base mount"
+            ):
+                vforge.verify_vforge_base_mount(mountinfo.splitlines()[0] + "\n" + invalid_mount + "\n")
+
     def test_vforge_marker_identifies_active_veyra_root_and_overlay(self) -> None:
         root = self.root / "root"
         (root / "usr/lib").mkdir(parents=True)
@@ -685,6 +703,7 @@ class VforgeNativeTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(runtime)}),
             patch.object(vforge, "verify_immutable_root_mount"),
+            patch.object(vforge, "verify_vforge_base_mount"),
             patch.object(vforge, "veyra_root_marker", return_value={}),
             patch.object(vforge, "run", side_effect=fake_run),
             patch.object(vforge, "mount_in_namespace", side_effect=fake_bind_mount),
@@ -697,11 +716,14 @@ class VforgeNativeTests(unittest.TestCase):
         self.assertEqual(unmounted, list(reversed(mounted)), f"mounted={mounted!r}")
         lower_binds = [
             command for command in commands
-            if command[:2] == ["mount", "--bind"] and command[2] == "/"
+            if command[:2] == ["mount", "--bind"] and command[2] == vforge.VFORGE_BASE_ROOT
             and command[-1].endswith("/lower")
         ]
         self.assertEqual(len(lower_binds), 1)
         self.assertFalse(any(command[:2] == ["mount", "--rbind"] for command in commands))
+        overlay_mounts = [command for command in commands if command[:3] == ["mount", "-t", "overlay"]]
+        self.assertEqual(len(overlay_mounts), 1)
+        self.assertIn("userxattr", overlay_mounts[0][5].split(","))
         lower_remounts = [
             command for command in commands
             if command[:3] == ["mount", "-o", "remount,bind,ro"]
@@ -740,6 +762,7 @@ class VforgeNativeTests(unittest.TestCase):
                 vforge.HOST_HOME_PATH_ENV: str(host_home),
             }),
             patch.object(vforge, "verify_immutable_root_mount"),
+            patch.object(vforge, "verify_vforge_base_mount"),
             patch.object(vforge, "veyra_root_marker", return_value={}),
             patch.object(vforge, "run", side_effect=fake_run),
             patch.object(vforge, "mount_in_namespace", side_effect=fake_bind_mount),

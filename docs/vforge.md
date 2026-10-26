@@ -1,10 +1,13 @@
 # vforge native environments
 
 `vforge` creates persistent environments over the Veyra system root currently
-running on the machine. The lower directory is `/`, mounted read-only in a
-private mount namespace. OverlayFS directs writes into an environment's
-persistent `upper` and `work` directories. Vforge does not import a separate
-distribution root or use a container engine.
+running on the machine. A small system service exposes the immutable EROFS
+root at `/run/veyra/vforge/base` as a read-only, non-recursive bind mount.
+Inside the user's private mount namespace, rootless OverlayFS uses that base
+as its lower layer and directs writes into the environment's persistent
+`upper` and `work` directories. The bind mount leaves the host's persistent
+`/etc`, `/var`, and `/home` mounts outside the environment. Vforge does not
+import a separate distribution root or use Podman.
 
 ## Create and enter environments
 
@@ -118,11 +121,13 @@ project directory.
 ## Isolation and limits
 
 Vforge starts user, mount, PID, and network namespaces. Networking is isolated
-by default; an approved project may share the host network namespace. It creates
-a private mount tree and uses the active read-only Veyra EROFS root as
-OverlayFS's lower. Nested host mounts are detached from the lower view, so the
-machine's persistent `/etc`, `/var`, and `/home` state is not exposed. The
-environment's own persistent upper/work pair receives writes.
+by default; an approved project may share the host network namespace. The
+system service prepares a read-only bind of only the active EROFS root before
+user sessions start. Vforge binds that stable mount into its private namespace
+and mounts kernel OverlayFS with `userxattr`, so it does not need permission to
+bind the host's namespace root. The machine's persistent `/etc`, `/var`, and
+`/home` state is not exposed. The environment's own persistent upper/work pair
+receives writes.
 The process starts inside that merged root. Only the project and individually
 approved mounts are exposed; `/proc`, a small `/dev`, `/tmp`, and `/run` are
 provided privately for the process. Host environment variables are not passed
