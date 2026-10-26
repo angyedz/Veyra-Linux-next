@@ -1,0 +1,35 @@
+name: Quiet boot source tests
+
+on:
+  pull_request:
+    paths:
+      - 'mkosi.conf'
+      - 'mkosi.postinst.chroot'
+      - 'mkosi.extra/usr/share/plymouth/**'
+      - 'tests/test_quiet_boot.py'
+      - 'tests/test_boot_profile.py'
+      - 'scripts/profile-boot.py'
+      - 'scripts/check-plymouth-image.py'
+      - 'tests/test_plymouth_image.py'
+      - '.github/workflows/quiet-boot.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mkosi.conf'
+      - 'mkosi.postinst.chroot'
+      - 'mkosi.extra/usr/share/plymouth/**'
+      - 'tests/test_quiet_boot.py'
+      - '.github/workflows/quiet-boot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -p 'test_quiet_boot.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_boot_profile.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_plymouth_image.py' -v
+      - run: python3 scripts/smoke.py

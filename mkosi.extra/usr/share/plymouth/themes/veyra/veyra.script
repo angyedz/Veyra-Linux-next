@@ -1,0 +1,14 @@
+// Veyra minimal graphical boot splash.
+// Keep this theme intentionally lightweight: no animation loops or disk I/O.
+Window.SetBackgroundTopColor(0.027, 0.075, 0.129);
+Window.SetBackgroundBottomColor(0.043, 0.122, 0.200);
+
+title_image = Image.Text("VEYRA", 0.87, 0.96, 1.0);
+title_sprite = Sprite(title_image);
+title_sprite.SetX((Window.GetWidth() - title_image.GetWidth()) / 2);
+title_sprite.SetY((Window.GetHeight() - title_image.GetHeight()) / 2 - 14);
+
+subtitle_image = Image.Text("LINUX", 0.36, 0.70, 0.90);
+subtitle_sprite = Sprite(subtitle_image);
+subtitle_sprite.SetX((Window.GetWidth() - subtitle_image.GetWidth()) / 2);
+subtitle_sprite.SetY((Window.GetHeight() - subtitle_image.GetHeight()) / 2 + 26);
