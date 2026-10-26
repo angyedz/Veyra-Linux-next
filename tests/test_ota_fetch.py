@@ -24,6 +24,9 @@ class Response(io.BytesIO):
         self.status = status
         self.headers = headers or {}
 
+    def geturl(self):
+        return 'https://example.invalid/releases/asset'
+
 
 class FetchTests(unittest.TestCase):
     def setUp(self):
