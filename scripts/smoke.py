@@ -414,10 +414,17 @@ def main() -> int:
         "serial_console_diagnostics",
         "console=ttyS0,115200n8",
         "systemd.log_target=console",
+        "veyra_bios_ci=1",
         "mcopy",
     ):
         if expected not in bios_boot_test_content:
             return fail(f"the BIOS QEMU test must collect guest serial diagnostics ({expected!r})")
+    bios_ci_service = ROOT / "tests/fixtures/firmware/veyra-bios-ci.service"
+    if not bios_ci_service.is_file():
+        return fail("the BIOS QEMU test requires its CI-only boot-complete marker service")
+    bios_ci_service_content = bios_ci_service.read_text(encoding="utf-8")
+    if "ConditionKernelCommandLine=veyra_bios_ci=1" not in bios_ci_service_content:
+        return fail("the BIOS marker service must run only during the explicit BIOS diagnostic boot")
     if "test-bios-boot.py --image mkosi.output/veyra-next.raw" not in ci_workflow:
         return fail("CI must run the Legacy BIOS QEMU boot test against its built image")
     if 'sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw' not in ci_workflow:

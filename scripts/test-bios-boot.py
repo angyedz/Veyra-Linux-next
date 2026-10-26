@@ -41,7 +41,7 @@ def add_serial_diagnostics(grub_config: str) -> str:
     """Add CI-only serial boot logs to the stable and trial GRUB kernel entries."""
     diagnostic_arguments = (
         "console=tty0 console=ttyS0,115200n8 "
-        "systemd.show_status=1 systemd.log_target=console "
+        "systemd.show_status=1 systemd.log_target=console veyra_bios_ci=1 "
     )
     updated_lines: list[str] = []
     entries = 0

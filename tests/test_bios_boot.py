@@ -42,6 +42,7 @@ class BiosBootDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(result.count("console=ttyS0,115200n8"), 2)
         self.assertEqual(result.count("systemd.log_target=console"), 2)
+        self.assertEqual(result.count("veyra_bios_ci=1"), 2)
         self.assertIn("roothash=abc console=tty0 console=ttyS0,115200n8", result)
         self.assertIn("roothash=def console=tty0 console=ttyS0,115200n8", result)
 

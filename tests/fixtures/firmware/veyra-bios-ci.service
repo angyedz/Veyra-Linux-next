@@ -1,7 +1,7 @@
 [Unit]
 Description=Veyra Legacy BIOS boot acceptance marker
 After=graphical.target
-ConditionPathExists=!/sys/firmware/efi
+ConditionKernelCommandLine=veyra_bios_ci=1
 
 [Service]
 Type=oneshot

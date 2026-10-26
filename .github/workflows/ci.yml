@@ -245,9 +245,9 @@ jobs:
           sudo install -D -m 0644 tests/fixtures/firmware/veyra-bios-ci.service \
             mkosi.extra/usr/lib/systemd/system/veyra-bios-ci.service
           sudo install -d -m 0755 \
-            mkosi.extra/etc/systemd/system/graphical.target.wants
+            mkosi.extra/usr/lib/systemd/system/graphical.target.wants
           sudo ln -s /usr/lib/systemd/system/veyra-bios-ci.service \
-            mkosi.extra/etc/systemd/system/graphical.target.wants/veyra-bios-ci.service
+            mkosi.extra/usr/lib/systemd/system/graphical.target.wants/veyra-bios-ci.service
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
       - name: Gate root, UKI and core RPMs on Fedora 44
@@ -296,6 +296,9 @@ jobs:
           check veyra-sysext-level sh -eu -c "grep -Fxq SYSEXT_LEVEL=1 /etc/os-release && grep -Fxq SYSEXT_LEVEL=1 /usr/lib/os-release"
           check plasma-setup-enabled sh -eu -c "find /etc/systemd/system -type l -name plasma-setup.service -print -quit | grep -q ."
           check systemd-sysext-enabled sh -eu -c "find /etc/systemd/system -type l -name systemd-sysext.service -print -quit | grep -q ."
+          check bios-ci-service test -s /usr/lib/systemd/system/veyra-bios-ci.service
+          check bios-ci-service-enabled test -L /usr/lib/systemd/system/graphical.target.wants/veyra-bios-ci.service
+          check bios-ci-service-target test "$(readlink /usr/lib/systemd/system/graphical.target.wants/veyra-bios-ci.service)" = /usr/lib/systemd/system/veyra-bios-ci.service
           check vpkg-sync-service test -s /usr/lib/systemd/system/veyra-vpkg-sync.service
           check sysext-vpkg-ordering test -s /usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf
           VERIFY_PACKAGES
