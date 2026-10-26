@@ -60,3 +60,10 @@ these steps are verified with artifacts, timestamps and exact SHAs.
 
 A successful `livemedia-creator` run and ISO El Torito check are
 **necessary but not sufficient** to call the installer functional.
+
+## CI resource discipline
+
+Feature PR builds of the large Fedora disk image, signed RPM fixture and
+ISO diagnostic cancel obsolete revisions of **that same PR**, not builds
+from other PR numbers or main. Do not interpret a cancelled prior revision
+as a regression; inspect the exact latest head SHA and workflow conclusion.
