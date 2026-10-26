@@ -38,7 +38,9 @@ def collect(output: Path) -> None:
         raise ValueError("refusing symlink output directory")
     for name in COMMANDS:
         destination = output / name
-        if destination.is_symlink() or destination.exists():
+        if destination.is_symlink():
+            raise ValueError(f"refusing symlink report destination: {destination}")
+        if destination.exists():
             raise ValueError(f"refusing to overwrite existing report: {destination}")
     # Stage in the same directory and atomically rename each report.
     # No writes to system files or service configuration.
