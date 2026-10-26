@@ -1001,7 +1001,9 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
         try:
             run(["mount", "--make-rprivate", "/"])
             mount_at(lower, ["mount", "--bind", "/", str(lower)])
-            run(["mount", "-o", "remount,bind,ro", str(lower)])
+            # The verified lower is already a read-only EROFS mount, and a
+            # bind mount preserves its VFS flags. Avoid a second remount from
+            # the unprivileged mount namespace.
             options = f"lowerdir={lower},upperdir={metadata['upper']},workdir={metadata['work']}"
             mount_at(merged, ["mount", "-t", "overlay", "overlay", "-o", options, str(merged)])
             if metadata.get("project"):

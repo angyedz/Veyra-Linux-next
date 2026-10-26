@@ -451,6 +451,12 @@ class VforgeNativeTests(unittest.TestCase):
 
         unmounted = [command[-1] for command in commands if command[0] == "umount"]
         self.assertEqual(unmounted, list(reversed(mounted)), f"mounted={mounted!r}")
+        lower_remounts = [
+            command for command in commands
+            if command[:3] == ["mount", "-o", "remount,bind,ro"]
+            and command[-1].endswith("/lower")
+        ]
+        self.assertEqual(lower_remounts, [])
         self.assertEqual(list((runtime / "vforge").iterdir()), [])
 
     def test_bind_mount_pins_regular_files_and_rejects_symlinks(self) -> None:
