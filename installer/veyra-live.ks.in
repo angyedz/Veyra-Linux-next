@@ -57,7 +57,7 @@ set -euo pipefail
 source_root='__VEYRA_SOURCE_ROOT__'
 live_root="/mnt/sysimage"
 install -d -m 0755 "$live_root/usr/share/veyra/installer/source" \
-  "$live_root/usr/share/veyra/installer/assets" \
+  "$live_root/usr/share/veyra/installer/source/assets" \
   "$live_root/usr/share/veyra/installer/source/installer" \
   "$live_root/usr/share/applications" "$live_root/usr/libexec" \
   "$live_root/etc/calamares/modules" \
@@ -80,7 +80,7 @@ install -m 0644 "$source_root/installer/calamares/branding/veyra/branding.desc" 
 install -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$live_root/etc/calamares/branding/veyra/veyra-logo.svg"
 install -m 0644 "$source_root/build/recovery-uki/veyra-recovery.efi" \
-  "$live_root/usr/share/veyra/installer/assets/veyra-recovery.efi"
+  "$live_root/usr/share/veyra/installer/source/assets/veyra-recovery.efi"
 install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$live_root/usr/share/veyra/branding/veyra-logo.svg"
 if [ -f "$live_root/etc/os-release" ]; then
