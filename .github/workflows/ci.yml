@@ -38,5 +38,13 @@ jobs:
           test -s /usr/share/veyra/branding/veyra-logo.svg
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
           '
+      - name: Verify Veyra Plymouth theme in the built image
+        run: |
+          sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
+            rpm -q plymouth plymouth-plugin-script
+            test -s /usr/share/plymouth/themes/veyra/veyra.plymouth
+            test -s /usr/share/plymouth/themes/veyra/veyra.script
+            plymouth-set-default-theme | grep -Fx veyra
+          '
       - name: Check that mkosi produced a disk image
         run: test -s mkosi.output/veyra-next.raw
