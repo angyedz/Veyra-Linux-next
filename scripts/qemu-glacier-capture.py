@@ -55,7 +55,7 @@ def qemu_command(image: Path, code: Path, variables: Path, monitor: Path,
         "qemu-system-x86_64", "-machine", "q35,accel=tcg",
         "-cpu", "max", "-smp", "2", "-m", str(ram),
         "-display", "none", "-vga", "std", "-nic", "none",
-        "-monitor", f"unix:{monitor},server=on,wait=off",
+        "-qmp", f"unix:{monitor},server=on,wait=off",
         "-serial", f"file:{serial}", "-no-reboot",
         "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
         "-drive", f"if=pflash,format=raw,unit=1,file={variables}",
@@ -91,23 +91,51 @@ def ppm_to_png(source: Path, destination: Path) -> tuple[int, int]:
     return w, h
 
 
+def _qmp_request(sock: socket.socket, source, name: str,
+                 arguments: dict | None = None) -> dict:
+    """Send one QMP request and wait for its matching acknowledgement."""
+    request = {"execute": name, "id": f"veyra-{name}"}
+    if arguments is not None:
+        request["arguments"] = arguments
+    sock.sendall((json.dumps(request) + "\r\n").encode("utf-8"))
+    # QMP can emit asynchronous events between replies.
+    for _ in range(50):
+        line = source.readline()
+        if not line:
+            raise RuntimeError(f"QMP disconnected during {name}")
+        response = json.loads(line)
+        if response.get("id") != request["id"]:
+            continue
+        if "error" in response:
+            raise RuntimeError(f"QMP {name} failed: {response['error']}")
+        if "return" not in response:
+            raise RuntimeError(f"Unexpected QMP {name} response: {response}")
+        return response
+    raise RuntimeError(f"Too many asynchronous QMP events during {name}")
+
+
 def screendump(monitor: Path, destination: Path, timeout_seconds: int = 15) -> None:
     deadline = time.monotonic() + timeout_seconds
     while not monitor.exists() and time.monotonic() < deadline:
         time.sleep(0.2)
     if not monitor.exists():
-        raise RuntimeError("QEMU monitor socket unavailable")
+        raise RuntimeError("QEMU QMP monitor socket unavailable")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(5)
+        sock.settimeout(timeout_seconds)
         sock.connect(str(monitor))
-        # HMP socket, not QMP. Absolute file path is inside our new report directory.
-        sock.sendall(f"screendump {destination}\n".encode("utf-8"))
+        with sock.makefile("rb") as incoming:
+            handshake = json.loads(incoming.readline())
+            if "QMP" not in handshake:
+                raise RuntimeError(f"Missing QMP greeting: {handshake}")
+            _qmp_request(sock, incoming, "qmp_capabilities")
+            _qmp_request(sock, incoming, "screendump",
+                         {"filename": str(destination)})
+    # QMP reply confirms completion, but still validate actual artifact.
     while time.monotonic() < deadline:
         if destination.is_file() and destination.stat().st_size > 64:
             return
         time.sleep(0.25)
-    raise RuntimeError(f"QEMU failed to write screenshot: {destination.name}")
-
+    raise RuntimeError(f"QMP acknowledged screenshot without file: {destination.name}")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -123,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
     if not 1024 <= args.memory <= 8192:
         parser.error("--memory must be 1024..8192 MiB")
-    image = Path(args.image).resolve(strict=True)
+    try:
+        image = Path(args.image).resolve(strict=True)
+    except FileNotFoundError:
+        parser.error("--image not found")
     if not image.is_file() or image.stat().st_size == 0:
         parser.error("--image must be a nonempty disk image")
     dest = Path(args.output).absolute()
@@ -148,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         tempdir = Path(temp)
         vars_copy = tempdir / "OVMF_VARS.fd"
         shutil.copyfile(vars_template, vars_copy)
-        monitor = tempdir / "hmp.sock"
+        monitor = tempdir / "qmp.sock"
         command = qemu_command(image, code, vars_copy, monitor,
                                dest / "serial.log", args.memory)
         with (dest / "qemu.stdout").open("wb") as stdout, (dest / "qemu.stderr").open("wb") as stderr:
