@@ -35,6 +35,11 @@ class GrubOtaTests(unittest.TestCase):
         self.assertIn("/VEYRA/veyra-next_${veyra_trial_version}.vmlinuz", config)
         self.assertIn("/VEYRA/veyra-next_${veyra_trial_version}.initrd", config)
         self.assertIn("veyra.image_version=${veyra_trial_version}", config)
+        bios_kernel_entries = [
+            line for line in config.splitlines() if line.lstrip().startswith("if linux ")
+        ]
+        self.assertEqual(len(bios_kernel_entries), 2)
+        self.assertTrue(all("systemd.firstboot=no" in line for line in bios_kernel_entries))
         self.assertIn("veyra_stable_version=1.0.0", config)
         self.assertIn("veyra_stable_roothash=" + "a" * 64, config)
 
