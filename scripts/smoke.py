@@ -127,6 +127,14 @@ def main() -> int:
         if not (ROOT / relative).is_file():
             return fail(f"missing inherited branding file: {relative}")
 
+    # These files are mirrored into the image. Checking only their existence
+    # can silently ship stale branding after the canonical copy changes.
+    for relative in ("fastfetch/config.jsonc", "fastfetch/logo.txt"):
+        canonical = ROOT / "branding" / relative
+        installed = ROOT / "mkosi.extra/usr/share/veyra" / relative
+        if canonical.read_bytes() != installed.read_bytes():
+            return fail(f"installed {relative} must match the canonical branding file")
+
     print("Veyra Next image source smoke checks passed.")
     return 0
 
