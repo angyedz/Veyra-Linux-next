@@ -12,10 +12,28 @@ def main() -> int:
     config = json.load(sys.stdin)
     image_id = config.get("image_id")
     image_version = config.get("image_version")
-    if image_id == "veyra-next" and image_version:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", image_version):
+    if image_id == "veyra-next":
+        if (
+            not isinstance(image_version, str)
+            or not image_version
+            or len(image_version) > 64
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", image_version)
+        ):
             raise ValueError(f"unsafe ImageVersion for UKI filename: {image_version!r}")
         config["unified_kernel_image_format"] = f"{image_id}_{image_version}"
+        kernel_command_line = config.get("kernel_command_line")
+        if not isinstance(kernel_command_line, list) or not all(
+            isinstance(value, str) for value in kernel_command_line
+        ):
+            raise ValueError("KernelCommandLine must be a list of strings.")
+        identity_argument = f"veyra.image_version={image_version}"
+        existing_identity_arguments = [
+            value for value in kernel_command_line if value.startswith("veyra.image_version=")
+        ]
+        if existing_identity_arguments not in ([], [identity_argument]):
+            raise ValueError("veyra.image_version conflicts with ImageVersion.")
+        if not existing_identity_arguments:
+            config["kernel_command_line"] = [*kernel_command_line, identity_argument]
     json.dump(config, sys.stdout)
     return 0
 

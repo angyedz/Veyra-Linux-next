@@ -404,20 +404,24 @@ def main() -> int:
     if not initrd_wants.is_symlink() or initrd_wants.readlink().as_posix() != "../veyra-vpkg-generations.service":
         return fail("the initrd root-fs target must require vpkg generation selection")
     initrd_config_content = initrd_config.read_text(encoding="utf-8")
-    if any(package not in initrd_config_content for package in ("Packages=python3", "Packages=systemd-boot-unsigned")):
-        return fail("the initrd generation selector needs Python and bootctl in the initrd")
+    if "Packages=python3" not in initrd_config_content:
+        return fail("the initrd generation selector needs Python in the initrd")
     if "KernelModules=*/kernel/fs/overlayfs/overlay.ko*" not in initrd_config_content:
         return fail("the initrd must include Fedora's OverlayFS kernel module")
     initrd_unit_content = initrd_unit.read_text(encoding="utf-8")
     for expected in (
         "After=sysroot.mount sysroot-etc.mount sysroot-var.mount",
         "Requires=sysroot.mount sysroot-etc.mount sysroot-var.mount",
-        "RequiresMountsFor=/sysefi",
         "Before=initrd-root-fs.target",
         "/usr/libexec/veyra-vpkg-initrd.py",
     ):
         if expected not in initrd_unit_content:
             return fail(f"the vpkg OverlayFS selector must run after existing persistent mounts: {expected!r}")
+    if "bootctl" in initrd_helper.read_text(encoding="utf-8"):
+        return fail("the initrd generation selector must not depend on EFI variable access through bootctl")
+    configure_content = (ROOT / "mkosi.configure").read_text(encoding="utf-8")
+    if "veyra.image_version=" not in configure_content:
+        return fail("the UKI must embed its image version in the kernel command line")
     boot_test = ROOT / "scripts/test-ab-boot.py"
     if not boot_test.is_file():
         return fail("CI must boot a staged A/B update and exercise boot-count rollback")

@@ -1,0 +1,25 @@
+name: Vpkg source checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Fedora 44 Python bindings
+        run: dnf5 install --assumeyes python3 python3-libdnf5
+      - name: Check image configuration invariants
+        run: python3 scripts/smoke.py
+      - name: Test vpkg and initrd generation behavior
+        run: python3 -m unittest discover --start-directory tests --pattern 'test_vpkg*.py' --verbose
+      - name: Test UKI identity configuration and OTA fixtures
+        run: |
+          python3 -m unittest discover --start-directory tests --pattern 'test_mkosi_configure.py' --verbose
+          python3 -m unittest discover --start-directory tests --pattern 'test_sysupdate_image.py' --verbose
