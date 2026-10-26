@@ -1,0 +1,25 @@
+name: Installer safety unit tests
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/veyra-install.py'
+      - 'tests/test_veyra_installer.py'
+      - 'installer/veyra-live.ks.in'
+      - 'docs/prototype-installer.md'
+      - '.github/workflows/installer-preflight-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Python compilation
+        run: python3 -m py_compile scripts/veyra-install.py tests/test_veyra_installer.py
+      - name: Run installer unit tests (no block devices)
+        run: python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
+      - name: Check mkosi source configuration
+        run: python3 scripts/smoke.py
