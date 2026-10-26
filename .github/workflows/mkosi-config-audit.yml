@@ -1,0 +1,27 @@
+name: Mkosi configuration audit
+
+on:
+  pull_request:
+    paths:
+      - 'mkosi.conf'
+      - 'scripts/audit_mkosi_config.py'
+      - 'tests/test_mkosi_config_audit.py'
+      - '.github/workflows/mkosi-config-audit.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mkosi.conf'
+      - 'scripts/audit_mkosi_config.py'
+      - 'tests/test_mkosi_config_audit.py'
+      - '.github/workflows/mkosi-config-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/audit_mkosi_config.py
+      - run: python3 -m unittest discover -s tests -p 'test_mkosi_config_audit.py' -v
