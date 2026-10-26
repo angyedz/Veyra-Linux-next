@@ -14,6 +14,8 @@ complete=/var/lib/veyra/vpkg-ci-complete
 
 report_failure() {
     local status=$?
+    printf 'VEYRA_VPKG_CI_FAILURE status=%s line=%s\n' \
+        "$status" "${BASH_LINENO[0]:-unknown}" >/dev/console || true
     echo "Veyra vpkg CI failed at line ${BASH_LINENO[0]}: ${BASH_COMMAND} (status ${status})" >&2
     systemd-sysext status >&2 || true
     exit "$status"
