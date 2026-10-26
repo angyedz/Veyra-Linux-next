@@ -512,6 +512,22 @@ jobs:
             build/fedora-netinst/SHA256SUMS)"
           test -n "$checksum_line"
           (cd build/fedora-netinst && printf '%s\n' "$checksum_line" | sha256sum --check --status)
+      - name: Prepare loop devices for Lorax in the job container
+        shell: bash
+        run: |
+          set -euo pipefail
+          for minor in {0..15}; do
+            device="/dev/loop$minor"
+            if [[ ! -b "$device" ]]; then
+              mknod -m 0660 "$device" b 7 "$minor"
+            fi
+          done
+          probe="$(mktemp)"
+          trap 'if [[ -n "${loop_device:-}" ]]; then losetup -d "$loop_device" || true; fi; rm -f "$probe"' EXIT
+          truncate -s 1M "$probe"
+          loop_device="$(losetup --find --show "$probe")"
+          losetup -d "$loop_device"
+          loop_device=
       - name: Build one Live Installer ISO and enforce the 8 GiB limit
         env:
           VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
