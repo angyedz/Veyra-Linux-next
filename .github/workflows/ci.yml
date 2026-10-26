@@ -197,9 +197,8 @@ jobs:
   build:
     needs: vpkg-image-fixture
     runs-on: ubuntu-24.04
-    container:
-      image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
-      options: --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+    env:
+      VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -207,16 +206,21 @@ jobs:
         with:
           name: veyra-vpkg-image-fixture
           path: build/vpkg-site
-      - name: Verify the pinned Fedora 44 build container before using DNF
+      - name: Gate the Ubuntu runner and Fedora 44 mkosi tools tree
         run: bash scripts/check-build-environment.sh
-      - name: Install image builder dependencies
-        run: |
-          dnf5 install --assumeyes \
-            btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs erofs-utils \
-            fdisk git gnupg2 kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
-            cryptsetup sudo systemd-container systemd-ukify uv xz zstd
-      - name: Gate the build container and Fedora 44 repositories
+      - name: Verify the Ubuntu runner and pinned Fedora 44 tools tree
         run: python3 scripts/check-build-environment.py
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install image builder dependencies on the Ubuntu runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            btrfs-progs ca-certificates cpio curl cryptsetup-bin dosfstools e2fsprogs \
+            erofs-utils fdisk git gnupg kmod mtools openssl ovmf python3 \
+            qemu-system-x86 squashfs-tools sudo systemd-container systemd-ukify \
+            xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
       - name: Add the CI-only vpkg boot test to this disposable image
@@ -236,7 +240,7 @@ jobs:
           sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery \
             mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
       - name: Build the Fedora KDE disk image
-        run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
+        run: scripts/mkosi.sh --force build
       - name: Gate root, UKI and core RPMs on Fedora 44
         run: |
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
@@ -244,7 +248,7 @@ jobs:
           test -s mkosi.output/veyra-next.manifest
           test -s "mkosi.output/veyra-next_${version}.efi"
           python3 scripts/check-image.py mkosi.output/veyra-next.raw
-          sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
+          scripts/mkosi.sh shell -- sh -eu -c '
           grep -Fxq VERSION_ID=44 /usr/lib/os-release
           rpm -q --qf "%{EVR}\\n" fedora-release | grep -Eq "^44-"
           for package in systemd systemd-udev kernel-core; do
@@ -253,7 +257,7 @@ jobs:
           '
       - name: Verify the packages inside the built image
         run: |
-          sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
+          scripts/mkosi.sh shell -- sh -eu -c '
           check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
