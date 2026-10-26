@@ -260,7 +260,7 @@ jobs:
           '
       - name: Verify the packages inside the built image
         run: |
-          sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c '
+          sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c "$(cat <<'VERIFY_PACKAGES'
           check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
@@ -291,7 +291,8 @@ jobs:
           check systemd-sysext-enabled sh -eu -c "find /etc/systemd/system -type l -name systemd-sysext.service -print -quit | grep -q ."
           check vpkg-sync-service test -s /usr/lib/systemd/system/veyra-vpkg-sync.service
           check sysext-vpkg-ordering test -s /usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf
-          '
+          VERIFY_PACKAGES
+          )"
       - name: Check that mkosi produced update assets
         run: |
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
