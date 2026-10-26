@@ -48,12 +48,12 @@ class VpkgInitrdGenerationTests(unittest.TestCase):
             for command_line in (
                 "quiet",
                 "roothash=" + "a" * 64 + " roothash=" + "b" * 64
-                " veyra.image_version=0.1.7",
+                + " veyra.image_version=0.1.7",
                 "roothash=invalid veyra.image_version=0.1.7",
                 "roothash=" + "a" * 64,
                 "roothash=" + "a" * 64 + " veyra.image_version=bad/version",
                 "roothash=" + "a" * 64 + " veyra.image_version=0.1.7"
-                " veyra.image_version=0.1.8",
+                + " veyra.image_version=0.1.8",
             ):
                 with self.subTest(command_line=command_line), self.assertRaises(initrd.InitrdError):
                     initrd.deployment_identity(command_line, sysroot)
