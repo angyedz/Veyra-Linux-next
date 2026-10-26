@@ -1,0 +1,8 @@
+NAME="Veyra Next"
+VERSION="0.1.0 (Fedora 44 base)"
+ID=veyra
+ID_LIKE=fedora
+VERSION_ID=44
+PRETTY_NAME="Veyra Next 0.1.0 (Fedora 44 base)"
+ANSI_COLOR="0;38;2;85;184;255"
+PLATFORM_ID="platform:f44"
