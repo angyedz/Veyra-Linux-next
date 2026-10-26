@@ -70,7 +70,7 @@ def png_chunk(name: bytes, body: bytes) -> bytes:
 def ppm_to_png(source: Path, destination: Path) -> tuple[int, int]:
     """Convert QEMU P6 RGB screendump with stdlib only; reject truncated files."""
     raw = source.read_bytes()
-    match = re.match(rb"\\AP6[ \t\r\n]+([0-9]+)[ \t\r\n]+([0-9]+)[ \t\r\n]+255[ \t\r\n]", raw)
+    match = re.match(rb"^P6\s+([0-9]+)\s+([0-9]+)\s+255\s", raw)
     if match is None:
         raise ValueError("QEMU screendump is not a supported P6/8-bit PPM")
     w, h = (int(match.group(1)), int(match.group(2)))
@@ -80,10 +80,10 @@ def ppm_to_png(source: Path, destination: Path) -> tuple[int, int]:
     if len(pixels) != w * h * 3:
         raise ValueError("truncated or malformed screenshot pixel data")
     row_bytes = w * 3
-    scanlines = b"".join(b"\\x00" + pixels[y * row_bytes:(y + 1) * row_bytes]
+    scanlines = b"".join(bytes((0,)) + pixels[y * row_bytes:(y + 1) * row_bytes]
                          for y in range(h))
     header = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
-    png = (b"\\x89PNG\r\n\x1a\n"
+    png = (bytes.fromhex("89504e470d0a1a0a")
            + png_chunk(b"IHDR", header)
            + png_chunk(b"IDAT", zlib.compress(scanlines, 6))
            + png_chunk(b"IEND", b""))
