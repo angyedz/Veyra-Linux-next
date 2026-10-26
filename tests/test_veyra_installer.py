@@ -153,10 +153,10 @@ Packages=systemd
         source = (ROOT / "scripts/veyra-install.py").read_text()
         self.assertIn('parser.add_argument("--preflight"', source)
         self.assertIn('print("Preflight only: no disk changes were made.")', source)
-        self.assertLess(source.index("validate_installer_assets(source)\\n    version"),
-                        source.index('command([\\n            "systemd-repart"'))
+        self.assertLess(source.index("validate_installer_assets(source)"),
+                        source.index('"systemd-repart", "--dry-run=no"'))
         self.assertLess(source.index("assert_target_identity_unchanged(candidate, refreshed)"),
-                        source.index('command([\\n            "systemd-repart"'))
+                        source.index('"systemd-repart", "--dry-run=no"'))
 
     def test_live_media_device_is_mapped_to_its_whole_disk(self) -> None:
         devices = [{
