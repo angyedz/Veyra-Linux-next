@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sys
@@ -120,12 +121,74 @@ def main() -> int:
     for relative in (
         "branding/fastfetch/config.jsonc",
         "branding/fastfetch/logo.txt",
+        "branding/fetch/logo.txt",
+        "branding/neofetch/logo.txt",
+        "branding/screenfetch/logo.sh",
+        "scripts/generate-fetch-logos.py",
         "branding/grub/theme.txt",
         "mkosi.extra/usr/share/veyra/fastfetch/config.jsonc",
         "mkosi.extra/usr/share/veyra/fastfetch/logo.txt",
+        "mkosi.extra/usr/share/veyra/branding/fetch-logo.txt",
+        "mkosi.extra/usr/share/veyra/neofetch/logo.txt",
+        "mkosi.extra/usr/share/veyra/screenfetch/logo.sh",
+        "mkosi.extra/etc/xdg/fastfetch/config.jsonc",
+        "mkosi.extra/etc/skel/.config/neofetch/config.conf",
+        "mkosi.extra/etc/skel/.config/hyfetch.json",
+        "mkosi.extra/etc/profile.d/veyra-fetch.sh",
+        "mkosi.extra/usr/lib/veyra/os-release",
     ):
         if not (ROOT / relative).is_file():
             return fail(f"missing inherited branding file: {relative}")
+
+    fastfetch_config = json.loads((ROOT / "branding/fastfetch/config.jsonc").read_text(encoding="utf-8"))
+    if set(fastfetch_config) != {"$schema", "logo"}:
+        return fail("Fastfetch branding must change only its logo and retain its default information layout")
+    installed_fastfetch_config = ROOT / "mkosi.extra/usr/share/veyra/fastfetch/config.jsonc"
+    xdg_fastfetch_config = ROOT / "mkosi.extra/etc/xdg/fastfetch/config.jsonc"
+    if fastfetch_config != json.loads(installed_fastfetch_config.read_text(encoding="utf-8")):
+        return fail("the installed Fastfetch config must match the source config")
+    if fastfetch_config != json.loads(xdg_fastfetch_config.read_text(encoding="utf-8")):
+        return fail("the system Fastfetch config must match the source config")
+    if fastfetch_config["logo"]["source"] != "/usr/share/veyra/fastfetch/logo.txt":
+        return fail("Fastfetch must point at the installed Veyra ASCII logo")
+
+    matching_assets = (
+        ("branding/fetch/logo.txt", "mkosi.extra/usr/share/veyra/branding/fetch-logo.txt"),
+        ("branding/fastfetch/logo.txt", "mkosi.extra/usr/share/veyra/fastfetch/logo.txt"),
+        ("branding/neofetch/logo.txt", "mkosi.extra/usr/share/veyra/neofetch/logo.txt"),
+        ("branding/screenfetch/logo.sh", "mkosi.extra/usr/share/veyra/screenfetch/logo.sh"),
+    )
+    for source, installed in matching_assets:
+        if (ROOT / source).read_bytes() != (ROOT / installed).read_bytes():
+            return fail(f"installed ASCII artwork must match {source}")
+
+    neofetch_config = (ROOT / "mkosi.extra/etc/skel/.config/neofetch/config.conf").read_text(encoding="utf-8")
+    if 'image_source="/usr/share/veyra/neofetch/logo.txt"' not in neofetch_config:
+        return fail("new user profiles must point Neofetch at the Veyra logo")
+    if "print_info" in neofetch_config or "info \"" in neofetch_config:
+        return fail("Neofetch branding must leave its default system information untouched")
+
+    hyfetch_config = json.loads((ROOT / "mkosi.extra/etc/skel/.config/hyfetch.json").read_text(encoding="utf-8"))
+    if hyfetch_config.get("custom_ascii_path") != "/usr/share/veyra/neofetch/logo.txt":
+        return fail("new user profiles must point HyFetch at the shared Veyra logo")
+    if hyfetch_config.get("backend") != "fastfetch":
+        return fail("HyFetch must use Fastfetch's default information layout")
+    if hyfetch_config.get("custom_presets", {}).get("veyra") != ["#55B8FF", "#EAF8FF"]:
+        return fail("HyFetch must color only the shared logo with Veyra's SVG colors")
+
+    screenfetch_integration = (ROOT / "mkosi.extra/etc/profile.d/veyra-fetch.sh").read_text(encoding="utf-8")
+    if "screenfetch -a /usr/share/veyra/screenfetch/logo.sh" not in screenfetch_integration:
+        return fail("Screenfetch should use the shared Veyra logo by default")
+
+    release = (ROOT / "mkosi.extra/usr/lib/veyra/os-release").read_text(encoding="utf-8")
+    for expected in ('NAME="Veyra Next"', "ID=veyra", "ID_LIKE=fedora", "VERSION_ID=44"):
+        if expected not in release:
+            return fail(f"Veyra os-release must preserve {expected!r}")
+    release_link = ROOT / "mkosi.extra/etc/os-release"
+    if not release_link.is_symlink() or release_link.readlink().as_posix() != "../usr/lib/veyra/os-release":
+        return fail("/etc/os-release must resolve to Veyra's Fedora-compatible release metadata")
+    if "Packages=fastfetch" not in content:
+        return fail("Fastfetch must be available in the default image")
 
     print("Veyra Next image source smoke checks passed.")
     return 0

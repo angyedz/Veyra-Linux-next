@@ -32,10 +32,24 @@ jobs:
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
           rpm -q \
             glibc systemd plasma-workspace plasma-login-manager plasma-setup \
-            flatpak gcc git cmake python3 nodejs22
+            flatpak gcc git cmake python3 nodejs22 fastfetch
           test -x /usr/bin/startplasma-wayland
           node --version
           test -s /usr/share/veyra/branding/veyra-logo.svg
+          test -s /usr/share/veyra/branding/fetch-logo.txt
+          test -s /usr/share/veyra/neofetch/logo.txt
+          test -s /usr/share/veyra/screenfetch/logo.sh
+          test -s /etc/xdg/fastfetch/config.jsonc
+          test -s /etc/skel/.config/neofetch/config.conf
+          test -s /etc/skel/.config/hyfetch.json
+          test -s /etc/profile.d/veyra-fetch.sh
+          bash -n /usr/share/veyra/screenfetch/logo.sh /etc/profile.d/veyra-fetch.sh
+          grep -Fqx ID=veyra /etc/os-release
+          grep -Fqx ID_LIKE=fedora /etc/os-release
+          grep -Fqx VERSION_ID=44 /etc/os-release
+          fastfetch --show-errors --pipe false > /tmp/veyra-fastfetch.txt
+          grep -Fq "Veyra Next 0.1.0 (Fedora 44 base)" /tmp/veyra-fastfetch.txt
+          grep -Fq '#######  ###############' /tmp/veyra-fastfetch.txt
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
           '
       - name: Check that mkosi produced a disk image

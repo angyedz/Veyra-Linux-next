@@ -1,0 +1,11 @@
+{
+  "preset": "veyra",
+  "mode": "8bit",
+  "light_dark": "dark",
+  "color_align": {"mode": "custom"},
+  "backend": "fastfetch",
+  "custom_ascii_path": "/usr/share/veyra/neofetch/logo.txt",
+  "custom_presets": {
+    "veyra": ["#55B8FF", "#EAF8FF"]
+  }
+}
