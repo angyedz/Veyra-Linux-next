@@ -25,6 +25,7 @@ PROJECT_CONFIG = ".vforge.toml"
 PERMISSION_FILE = "approved-mounts.json"
 FEDORA_RELEASE = "44"
 VEYRA_IMAGE_ID = "veyra-next"
+VFORGE_BASE_ROOT = "/run/veyra/vforge/base"
 
 
 class VforgeError(Exception):
@@ -543,6 +544,33 @@ def verify_immutable_root_mount(mountinfo: str) -> None:
         raise VforgeError("Vforge requires the active Veyra EROFS root to be mounted read-only")
 
 
+def verify_vforge_base_mount(mountinfo: str) -> None:
+    verify_immutable_root_mount(mountinfo)
+    root_devices = set()
+    base_mounts = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) < 10 or "-" not in fields:
+            continue
+        separator = fields.index("-")
+        if separator + 1 >= len(fields):
+            continue
+        mount_options = fields[5].split(",")
+        filesystem = fields[separator + 1]
+        if fields[4] == "/" and filesystem == "erofs" and "ro" in mount_options:
+            root_devices.add(fields[2])
+        if fields[4] == VFORGE_BASE_ROOT:
+            base_mounts.append((fields[2], fields[3], mount_options, filesystem))
+    if (len(root_devices) != 1 or len(base_mounts) != 1
+            or base_mounts[0][0] not in root_devices
+            or base_mounts[0][1] != "/"
+            or "ro" not in base_mounts[0][2]
+            or base_mounts[0][3] != "erofs"):
+        raise VforgeError(
+            f"Vforge requires a read-only Veyra EROFS base mount at {VFORGE_BASE_ROOT}, bound from the active root"
+        )
+
+
 def ensure_vpkg_state(root: Path) -> None:
     database = root / "usr/lib/sysimage/rpm"
     if database.is_symlink() or not database.is_dir() or database.resolve(strict=True) != database:
@@ -568,7 +596,8 @@ def ensure_vpkg_state(root: Path) -> None:
 def run_environment(path: Path, command: Sequence[str]) -> int:
     metadata = environment_metadata(path)
     verify_project_mount_approvals(metadata)
-    verify_immutable_root_mount(Path("/proc/self/mountinfo").read_text(encoding="utf-8"))
+    mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    verify_vforge_base_mount(mountinfo)
     runtime_root = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     if not runtime_root.is_absolute():
         raise VforgeError("XDG_RUNTIME_DIR must be an absolute path")
@@ -593,8 +622,8 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
             # would copy persistent host mountpoints such as /etc, /var, and
             # /home into this less-privileged namespace, where inherited
             # mounts cannot safely be detached one by one.
-            mount_at(lower, ["mount", "--bind", "/", str(lower)])
-            options = f"lowerdir={lower},upperdir={metadata['upper']},workdir={metadata['work']}"
+            mount_at(lower, ["mount", "--bind", VFORGE_BASE_ROOT, str(lower)])
+            options = f"userxattr,lowerdir={lower},upperdir={metadata['upper']},workdir={metadata['work']}"
             mount_at(merged, ["mount", "-t", "overlay", "overlay", "-o", options, str(merged)])
             if metadata.get("project"):
                 workspace = merged / "workspace"

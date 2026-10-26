@@ -281,6 +281,9 @@ jobs:
           check no-podman-cli sh -eu -c "! command -v podman"
           check veyra-update test -x /usr/bin/veyra-update
           check veyra-update-help /usr/bin/veyra-update --help
+          check vforge-base-service test -s /usr/lib/systemd/system/veyra-vforge-base.service
+          check vforge-base-service-enabled test -L /usr/lib/systemd/system/multi-user.target.wants/veyra-vforge-base.service
+          check vforge-base-service-target test "$(readlink /usr/lib/systemd/system/multi-user.target.wants/veyra-vforge-base.service)" = /usr/lib/systemd/system/veyra-vforge-base.service
           check plasma-wayland test -x /usr/bin/startplasma-wayland
           node --version
           check branding test -s /usr/share/veyra/branding/veyra-logo.svg
