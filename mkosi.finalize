@@ -9,7 +9,7 @@ case "${IMAGE_ID:-}" in
     veyra-next)
         python3 "$SRCDIR/scripts/install_recovery_uki.py" \
             --root "$BUILDROOT" \
-            --output-dir "$OUTPUTDIR"
+            --output-dir "$SRCDIR/mkosi.output"
         release="$BUILDROOT/usr/lib/veyra/os-release"
         sed -i '/^IMAGE_ID=/d; /^IMAGE_VERSION=/d' "$release"
         printf 'IMAGE_ID="%s"\nIMAGE_VERSION="%s"\n' \
