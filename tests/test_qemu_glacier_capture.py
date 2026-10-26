@@ -34,10 +34,10 @@ class QemuGlacierTests(unittest.TestCase):
     def test_ppm_to_png_exact_decode(self):
         with tempfile.TemporaryDirectory() as temp:
             src, dst = Path(temp) / "sample.ppm", Path(temp) / "sample.png"
-            src.write_bytes(b"P6\\n64 64\\n255\\n" + b"\\x11\\x33\\x55" * (64 * 64))
+            src.write_bytes(b"P6" + bytes((10,)) + b"64 64" + bytes((10,)) + b"255" + bytes((10,)) + bytes((0x11, 0x33, 0x55)) * (64 * 64))
             self.assertEqual(module.ppm_to_png(src, dst), (64, 64))
             self.assertTrue(dst.read_bytes().startswith(bytes.fromhex("89504e470d0a1a0a")))
-            src.write_bytes(b"P6\\n64 64\\n255\\n" + b"\\x11" * 10)
+            src.write_bytes(b"P6" + bytes((10,)) + b"64 64" + bytes((10,)) + b"255" + bytes((10,)) + bytes((0x11,)) * 10)
             with self.assertRaises(ValueError):
                 module.ppm_to_png(src, dst)
 
