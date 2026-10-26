@@ -105,17 +105,17 @@ def descendants(device: dict) -> list[dict]:
 def live_media_parent(source: pathlib.Path | None, devices: list[dict]) -> str | None:
     if source is None:
         return None
-    source_name = str(source)
+    source_name = os.path.realpath(str(source))
     for device in devices:
         for child in descendants(device):
-            if child.get("path") == source_name or child.get("name") == source.name:
+            if os.path.realpath(str(child.get("path") or "")) == source_name or child.get("name") == source.name:
                 return device.get("path")
     return source_name if source_name.startswith("/dev/") else None
 
 
 def list_installable_disks() -> tuple[list[dict], list[tuple[str, str]]]:
     raw = command(
-        ["lsblk", "--json", "--bytes", "--paths", "--output", "PATH,NAME,TYPE,SIZE,MODEL,RM,RO,PKNAME,MOUNTPOINTS"],
+        ["lsblk", "--json", "--bytes", "--paths", "--output", "PATH,NAME,TYPE,SIZE,MODEL,RM,RO,PKNAME,MOUNTPOINTS,MAJ:MIN,SERIAL,WWN"],
         capture=True,
     )
     devices = json.loads(raw).get("blockdevices", [])
@@ -250,7 +250,7 @@ def install_initrd_module(root: pathlib.Path, source: pathlib.Path) -> None:
 
 def write_recovery_uki(esp: pathlib.Path, source: pathlib.Path) -> None:
     recovery = source / "assets/veyra-recovery.efi"
-    if not recovery.is_file() or recovery.stat().st_size == 0:
+    if recovery.is_symlink() or not recovery.is_file() or recovery.stat().st_size == 0:
         raise InstallError("the Live ISO does not contain Veyra Recovery UKI")
     destination = esp / "EFI/Linux/veyra-recovery.efi"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -284,6 +284,31 @@ def package_manifest(source: pathlib.Path) -> tuple[str, list[str]]:
     if not {"libdnf5", "python3-libdnf5"}.issubset(packages):
         raise InstallError("the target package manifest must retain libdnf5 for vpkg")
     return version, packages
+
+
+
+def validate_installer_assets(source: pathlib.Path) -> None:
+    """Fail before any disk modifications when the Live ISO is incomplete."""
+    required = (
+        "mkosi.conf",
+        "mkosi.extra/usr/lib/veyra/grub_ota.py",
+        "installer/dracut/99veyra-sysroot/module-setup.sh",
+        "assets/veyra-recovery.efi",
+    )
+    for relative in required:
+        path = source / relative
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise InstallError(f"Live installer missing or invalid required asset: {relative}")
+    definitions = source / "mkosi.repart"
+    if not definitions.is_dir() or not list(definitions.glob("*.conf")):
+        raise InstallError("Live installer has no mkosi.repart partition definitions")
+
+
+def assert_target_identity_unchanged(original: dict, refreshed: dict) -> None:
+    """Prevent simple removable-device and mount-state races before repartition."""
+    for key in ("path", "size", "model", "maj:min", "serial", "wwn"):
+        if str(original.get(key) or "").strip() != str(refreshed.get(key) or "").strip():
+            raise InstallError(f"target disk identity changed during confirmation ({key})")
 
 
 def choose_device(choices: list[dict], excluded: list[tuple[str, str]]) -> pathlib.Path:
@@ -346,6 +371,7 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
     if os.geteuid() != 0:
         raise InstallError("run the installer with administrator privileges")
     source = source.resolve(strict=True)
+    validate_installer_assets(source)
     version, packages = package_manifest(source)
     candidate, required = validate_target(target, source)
     disk = pathlib.Path(candidate["path"]).resolve(strict=True)
@@ -362,6 +388,12 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         confirmation = input(f"Type ERASE {disk} to continue: ").strip()
     if confirmation != f"ERASE {disk}":
         raise InstallError("confirmation did not match; no disk changes were made")
+    # Mounts or physical devices can change while the user reads the warning.
+    # Never use the stale eligibility/identity decision for destructive repart.
+    refreshed, required_again = validate_target(disk, source)
+    assert_target_identity_unchanged(candidate, refreshed)
+    if required_again != required:
+        raise InstallError("required partition size changed during confirmation")
 
     scratch_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-scratch-repart-"))
     final_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-final-repart-"))
@@ -508,10 +540,20 @@ def main() -> int:
     parser.add_argument("--target", type=pathlib.Path)
     parser.add_argument("--confirm-device", help=argparse.SUPPRESS)
     parser.add_argument("--list-disks", action="store_true", help="show eligible target disks")
+    parser.add_argument("--preflight", action="store_true", help="validate installation assets and space without changing disks")
     args = parser.parse_args()
 
     try:
         source = args.source_root.resolve(strict=True)
+        if args.preflight:
+            validate_installer_assets(source)
+            version, packages = package_manifest(source)
+            minimum = minimum_disk_size(source / "mkosi.repart")
+            if args.target is not None:
+                validate_target(args.target, source)
+            print(f"Veyra Next {version}: {len(packages)} packages; minimum target capacity {minimum / 1024**3:.1f} GiB")
+            print("Preflight only: no disk changes were made.")
+            return 0
         if args.list_disks:
             choices, excluded = list_installable_disks()
             for disk in choices:
