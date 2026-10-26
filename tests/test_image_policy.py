@@ -59,7 +59,7 @@ class ImagePolicyContract(unittest.TestCase):
 
     def test_builder_pinned_to_full_commit(self):
         script = (ROOT / "scripts/mkosi.sh").read_text(encoding="utf-8")
-        self.assertRegex(script, r"git\\+https://github\\.com/systemd/mkosi@[0-9a-f]{40}")
+        self.assertRegex(script, r"git\+https://github\.com/systemd/mkosi@[0-9a-f]{40}")
         self.assertIn('mkosi "$@"', script)
 
     def test_flathub_source_is_vendored(self):
@@ -69,7 +69,7 @@ class ImagePolicyContract(unittest.TestCase):
         source = (ROOT / "mkosi.extra/usr/share/veyra/flathub.flatpakrepo").read_text(encoding="utf-8")
         self.assertIn("[Flatpak Repo]", source)
         self.assertIn("Url=https://dl.flathub.org/repo/", source)
-        self.assertRegex(source, r"(?m)^GPGKey=\\S+")
+        self.assertRegex(source, r"(?m)^GPGKey=\S+")
 
 
 if __name__ == "__main__":
