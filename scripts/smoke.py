@@ -119,19 +119,17 @@ def main() -> int:
     if logo.read_bytes() != installed_logo.read_bytes():
         return fail("the installed Veyra SVG must match the canonical source artwork")
     for relative in (
-        "branding/fastfetch/config.jsonc",
         "branding/fastfetch/logo.txt",
         "branding/fetch/logo.txt",
         "branding/neofetch/logo.txt",
         "branding/screenfetch/logo.sh",
         "scripts/generate-fetch-logos.py",
         "branding/grub/theme.txt",
-        "mkosi.extra/usr/share/veyra/fastfetch/config.jsonc",
         "mkosi.extra/usr/share/veyra/fastfetch/logo.txt",
         "mkosi.extra/usr/share/veyra/branding/fetch-logo.txt",
         "mkosi.extra/usr/share/veyra/neofetch/logo.txt",
         "mkosi.extra/usr/share/veyra/screenfetch/logo.sh",
-        "mkosi.extra/etc/xdg/fastfetch/config.jsonc",
+        "mkosi.extra/usr/local/bin/fastfetch",
         "mkosi.extra/etc/skel/.config/neofetch/config.conf",
         "mkosi.extra/etc/skel/.config/hyfetch.json",
         "mkosi.extra/etc/profile.d/veyra-fetch.sh",
@@ -140,17 +138,14 @@ def main() -> int:
         if not (ROOT / relative).is_file():
             return fail(f"missing inherited branding file: {relative}")
 
-    fastfetch_config = json.loads((ROOT / "branding/fastfetch/config.jsonc").read_text(encoding="utf-8"))
-    if set(fastfetch_config) != {"$schema", "logo"}:
-        return fail("Fastfetch branding may configure only its logo, leaving default output untouched")
-    installed_fastfetch_config = ROOT / "mkosi.extra/usr/share/veyra/fastfetch/config.jsonc"
-    xdg_fastfetch_config = ROOT / "mkosi.extra/etc/xdg/fastfetch/config.jsonc"
-    if fastfetch_config != json.loads(installed_fastfetch_config.read_text(encoding="utf-8")):
-        return fail("the installed Fastfetch config must match the source config")
-    if fastfetch_config != json.loads(xdg_fastfetch_config.read_text(encoding="utf-8")):
-        return fail("the system Fastfetch config must match the source config")
-    if fastfetch_config["logo"]["source"] != "/usr/share/veyra/fastfetch/logo.txt":
-        return fail("Fastfetch must point at the installed Veyra ASCII logo")
+    fastfetch_wrapper = ROOT / "mkosi.extra/usr/local/bin/fastfetch"
+    expected_wrapper = (
+        "#!/usr/bin/bash\n"
+        "exec /usr/bin/fastfetch --logo-type file --logo "
+        "/usr/share/veyra/fastfetch/logo.txt \"$@\"\n"
+    )
+    if fastfetch_wrapper.read_text(encoding="utf-8") != expected_wrapper:
+        return fail("the Fastfetch wrapper must add only the Veyra logo and preserve caller options")
 
     matching_assets = (
         ("branding/fetch/logo.txt", "mkosi.extra/usr/share/veyra/branding/fetch-logo.txt"),

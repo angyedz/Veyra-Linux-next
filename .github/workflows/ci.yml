@@ -39,7 +39,8 @@ jobs:
           test -s /usr/share/veyra/branding/fetch-logo.txt
           test -s /usr/share/veyra/neofetch/logo.txt
           test -s /usr/share/veyra/screenfetch/logo.sh
-          test -s /etc/xdg/fastfetch/config.jsonc
+          test -x /usr/local/bin/fastfetch
+          test -x /usr/bin/fastfetch
           test -s /etc/skel/.config/neofetch/config.conf
           test -s /etc/skel/.config/hyfetch.json
           test -s /etc/profile.d/veyra-fetch.sh
@@ -48,13 +49,15 @@ jobs:
           grep -Fqx ID_LIKE=fedora /etc/os-release
           grep -Fqx VERSION_ID=44 /etc/os-release
           # Keep the captured output plain so module labels remain searchable.
-          fastfetch --show-errors --pipe true > /tmp/veyra-fastfetch.txt
+          /usr/local/bin/fastfetch --show-errors --pipe true > /tmp/veyra-fastfetch.txt
           grep -Fq "Veyra Next" /tmp/veyra-fastfetch.txt || {
             cat /tmp/veyra-fastfetch.txt
             exit 1
           }
           grep -Fq 'OS:' /tmp/veyra-fastfetch.txt
           grep -Fq 'Kernel:' /tmp/veyra-fastfetch.txt
+          grep -Fq 'CPU:' /tmp/veyra-fastfetch.txt
+          grep -Fq 'Memory:' /tmp/veyra-fastfetch.txt
           grep -Fq "#######  ###############" /tmp/veyra-fastfetch.txt
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
           '
