@@ -11,7 +11,9 @@ distribution root or use a container engine.
 ```sh
 vforge create backend
 vforge enter backend
+vpkg install htop
 vforge exec backend -- rpm -q bash
+vforge exec backend -- vpkg install htop
 vforge list
 vforge delete backend
 ```
@@ -97,3 +99,7 @@ identity, and namespace selection. GitHub Actions runs those checks and builds t
 image directly. A Fedora 44 Veyra guest run
 has not yet confirmed namespace creation, OverlayFS mount, package installation,
 or persistence across process restarts.
+
+Inside the environment, `vpkg install`, `remove`, and `upgrade` act on that
+environment's private RPM database and OverlayFS upper. See
+[`vpkg-vforge.md`](vpkg-vforge.md) for package command behavior.

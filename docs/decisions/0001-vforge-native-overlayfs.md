@@ -12,7 +12,7 @@ boundary; PID and network namespaces are also created, with networking disabled
 by default.
 
 Vforge verifies the Fedora 44 Veyra image identity and the active dm-verity root
-hash before creating the read-only marker consumed by `vpkg container`. Vpkg
+hash before creating the read-only marker consumed by `vpkg`. Vpkg
 uses libdnf5 against the environment's merged root and private RPM database.
 
 This removes the separate Fedora root image, archive import flow, and container

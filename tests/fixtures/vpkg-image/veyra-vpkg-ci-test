@@ -77,7 +77,7 @@ vforge exec vpkg-ci -- grep -Fxq "private vforge upper" /etc/veyra-vforge-ci-mar
 test ! -e /etc/veyra-vforge-ci-marker
 
 host_htop_before="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
-vforge exec vpkg-ci -- vpkg container install htop
+vforge exec vpkg-ci -- vpkg install htop
 vforge exec vpkg-ci -- rpm -q htop
 vforge exec vpkg-ci -- htop --version
 vforge exec vpkg-ci -- test -x /usr/bin/htop
