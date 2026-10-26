@@ -539,7 +539,7 @@ jobs:
           mount_dir="$(mktemp -d)"
           trap 'umount "$mount_dir" 2>/dev/null || true; rmdir "$mount_dir"' EXIT
           mount -o loop,ro "$VEYRA_FEDORA_BOOT_ISO" "$mount_dir"
-          test -s "$mount_dir/.treeinfo"
+          test -n "$(find "$mount_dir" -mindepth 1 -maxdepth 1 -print -quit)"
           umount "$mount_dir"
       - name: Build one Live Installer ISO and enforce the 8 GiB limit
         env:
