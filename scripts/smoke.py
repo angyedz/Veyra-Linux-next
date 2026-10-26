@@ -56,7 +56,8 @@ def main() -> int:
         return fail(f"{config.name} must build through mkosi's isolated tools tree")
     if "Firmware=uefi" not in runtime:
         return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
-    if "KernelCommandLine=systemd.unit=graphical.target" not in content:
+    kernel_lines = [line.partition("=")[2].split() for line in content if line.startswith("KernelCommandLine=")]
+    if len(kernel_lines) != 1 or "systemd.unit=graphical.target" not in kernel_lines[0]:
         return fail("the image must boot into the graphical desktop target")
 
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
