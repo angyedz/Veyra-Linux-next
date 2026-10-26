@@ -279,6 +279,12 @@ def boot_until(
             except FileNotFoundError:
                 log = ""
             normalized = normalize_log(log)
+            if "VEYRA_VPKG_CI_FAILURE" in normalized:
+                excerpt = "\n".join(normalized.splitlines()[-100:])
+                raise RuntimeError(
+                    "guest Vforge/Vpkg integration test failed before completing:\n"
+                    f"{excerpt}"
+                )
             if "VEYRA_OTA_BOOTCOUNT_DIAGNOSTICS_FAIL" in normalized:
                 excerpt = "\n".join(normalized.splitlines()[-80:])
                 raise RuntimeError(
