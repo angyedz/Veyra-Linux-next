@@ -1,0 +1,49 @@
+name: Veyra Glacier visual QEMU capture (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      screenshots:
+        description: 'Capture seconds after VM starts (1–3, between 10 and 300)'
+        required: false
+        default: '25,80'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install mkosi, firmware and emulator prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
+            debian-archive-keyring gpg kmod mtools openssl python3 qemu-system-x86 \
+            ovmf squashfs-tools systemd-container systemd-ukify xz-utils zstd
+      - name: Validate image sources and theme sources
+        run: |
+          python3 scripts/smoke.py
+          python3 -m unittest discover -s tests -p 'test_glacier*.py' -v
+      - name: Build disposable test disk
+        run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
+      - name: Capture guest screen at selected stages
+        run: |
+          python3 scripts/qemu-glacier-capture.py \
+            --image mkosi.output/veyra-next.raw \
+            --output qemu-glacier-visual-report \
+            --at "${{ inputs.screenshots }}"
+      - name: Attach VM screenshots and diagnostics (not visual QA approval)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-glacier-qemu-screens
+          path: qemu-glacier-visual-report/
+          if-no-files-found: warn
+          retention-days: 7

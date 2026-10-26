@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <title>Veyra Glacier Light — Ice Flow</title>
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF6FF"/>
+      <stop offset=".58" stop-color="#D5E6F7"/>
+      <stop offset="1" stop-color="#ABC8E2"/>
+    </linearGradient>
+    <radialGradient id="aurora" cx=".74" cy=".46" r=".72">
+      <stop offset="0" stop-color="#A2D5F6" stop-opacity=".54"/>
+      <stop offset=".55" stop-color="#A2D5F6" stop-opacity=".14"/>
+      <stop offset="1" stop-color="#A2D5F6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ice" x1=".15" y1="1" x2=".95" y2="0">
+      <stop offset="0" stop-color="#93C8ED" stop-opacity=".14"/>
+      <stop offset=".53" stop-color="#A2D5F6" stop-opacity=".53"/>
+      <stop offset="1" stop-color="#D8F3FF" stop-opacity=".31"/>
+    </linearGradient>
+    <linearGradient id="ridge" x1=".1" y1="1" x2=".85" y2=".2">
+      <stop offset="0" stop-color="#B0D0EC" stop-opacity=".05"/>
+      <stop offset="1" stop-color="#FBFDFF" stop-opacity=".6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#base)"/>
+  <rect width="1920" height="1080" fill="url(#aurora)"/>
+  <!-- Large sweeping crystalline shapes leave the left third calm for desktop icons. -->
+  <path d="M620 1080 C910 810 1030 630 1220 480 C1450 300 1650 250 1920 100
+           L1920 1080 Z" fill="url(#ice)"/>
+  <path d="M830 1080 C1100 740 1240 580 1410 430 C1610 260 1800 205 1920 180
+           L1920 1080 Z" fill="url(#ridge)"/>
+  <path d="M1180 1080 C1380 860 1510 720 1650 530 C1730 430 1820 320 1920 260"
+        fill="none" stroke="#D8F3FF" stroke-opacity=".49" stroke-width="3"/>
+  <path d="M600 1080 C780 900 860 750 1020 620 C1260 420 1490 410 1780 180"
+        fill="none" stroke="#FBFDFF" stroke-opacity=".35" stroke-width="2"/>
+  <path d="M1200 1080 C1430 900 1680 800 1920 690
+           L1920 1080 Z" fill="#D8F3FF" fill-opacity=".08"/>
+</svg>

@@ -1,0 +1,19 @@
+{
+  "KPackageStructure": "Plasma/LookAndFeel",
+  "KPlugin": {
+    "Id": "org.veyra.glacier.light",
+    "Name": "Veyra Glacier Light",
+    "Description": "Calm Fluent-inspired Veyra desktop with native KDE window controls",
+    "Version": "0.3.0",
+    "License": "GPL-3.0-or-later",
+    "Category": "Plasma Look And Feel",
+    "ServiceTypes": [
+      "Plasma/LookAndFeel"
+    ],
+    "Authors": [
+      {
+        "Name": "Veyra Linux contributors"
+      }
+    ]
+  }
+}

@@ -1,0 +1,3 @@
+# Plasma's style default for new users; per-user plasmarc takes precedence.
+[Theme]
+name=veyra-glacier-dark

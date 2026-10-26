@@ -1,0 +1,14 @@
+[Settings]
+FallbackTheme=default
+
+[BlurBehindEffect]
+enabled=false
+
+[ContrastEffect]
+enabled=false
+
+[Wallpaper]
+defaultWallpaperTheme=VeyraGlacier
+defaultFileSuffix=.svg
+defaultWidth=1920
+defaultHeight=1080

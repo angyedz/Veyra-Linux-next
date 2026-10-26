@@ -1,0 +1,16 @@
+{
+  "KPlugin": {
+    "Id": "veyra-glacier-light",
+    "Name": "Veyra Glacier Light",
+    "Description": "Ice-blue, minimal, native Plasma surfaces for Veyra Next",
+    "Version": "0.3.0",
+    "License": "GPL-3.0-or-later",
+    "Category": "Plasma Theme",
+    "Authors": [
+      {
+        "Name": "Veyra Linux contributors"
+      }
+    ]
+  },
+  "X-Plasma-API": "5.0"
+}

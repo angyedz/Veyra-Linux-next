@@ -1,10 +1,10 @@
-# Distribution-level defaults only; users may override in ~/.config/kdeglobals.
+# Veyra system defaults. User ~/.config/kdeglobals overrides these.
 [General]
 ColorScheme=VeyraGlacier
-Name=Veyra Glacier
+Name=Veyra Glacier Dark
 
 [KDE]
-LookAndFeelPackage=org.kde.breezedark.desktop
+LookAndFeelPackage=org.veyra.glacier.dark
 widgetStyle=Breeze
 
 [Icons]
