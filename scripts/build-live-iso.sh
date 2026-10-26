@@ -49,9 +49,25 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     break
   fi
 
+  # Lorax's generic log sometimes only says "Failed to download packages".
+  # Preserve the underlying Anaconda packaging logs on the disposable CI job
+  # to identify which repository or RPM actually failed.
+  attempt_details="$attempt_logs/attempt-$attempt"
+  mkdir -p "$attempt_details"
   if [[ -f "$log_file" ]]; then
     cp -- "$log_file" "$attempt_logs/livemedia-attempt-$attempt.log"
   fi
+  for install_log in \
+      /tmp/anaconda.log /tmp/packaging.log /tmp/dnf.log /tmp/program.log \
+      /var/log/anaconda/anaconda.log /var/log/anaconda/packaging.log \
+      /var/log/anaconda/dnf.log /var/log/anaconda/program.log; do
+    if [[ -f "$install_log" && ! -L "$install_log" ]]; then
+      safe_name="${install_log#/}"
+      safe_name="${safe_name//\//_}"
+      # Bound GitHub artifact sizes; never archive the entire build root.
+      tail -c 1048576 -- "$install_log" > "$attempt_details/$safe_name" || true
+    fi
+  done
   if ((attempt >= max_attempts)); then
     echo "Live ISO build failed after $attempt attempts; see $attempt_logs." >&2
     exit 1

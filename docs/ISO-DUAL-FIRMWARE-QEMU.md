@@ -67,3 +67,12 @@ The test suite `tests/test_live_iso_retry.py` uses a fake offline Lorax
 process to verify the retry budget, network error recognition, failure
 propagation and preservation of logs; no real disks are touched.
 This does not solve all transient mirror errors or prove ISO boot success.
+
+## Detailed failed-install diagnostics
+
+If Anaconda fails while downloading Fedora packages, the builder copies
+available /tmp and /var/log/anaconda package logs into the per-attempt
+`build/iso-attempt-logs/attempt-N/` directory. The captured tail of each
+log is capped at 1 MiB to avoid huge CI artifacts; a missing optional
+log never masks the original ISO failure. The generic Lorax log is
+preserved separately and included in the failed-job artifact.
