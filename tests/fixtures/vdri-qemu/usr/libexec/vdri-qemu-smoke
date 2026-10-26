@@ -1,0 +1,24 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+status=$(/usr/bin/v-dri status --json)
+printf 'VDRI_QEMU_JSON=%s\n' "$status" >/dev/console
+/usr/bin/python3 - "$status" <<'PY'
+import json
+import sys
+
+result = json.loads(sys.argv[1])
+devices = result.get("devices", [])
+if result.get("schema") != 2:
+    raise SystemExit("unexpected v-dri JSON schema")
+if result.get("module_signature_enforcement") != "enforced":
+    raise SystemExit("module signature enforcement is not active")
+if not any(
+    device.get("driver") == "virtio_gpu" and device.get("status") == "bound"
+    for device in devices
+):
+    raise SystemExit("QEMU virtio_gpu is not bound to a DRM device")
+PY
+printf 'VDRI_QEMU_PASS\n' >/dev/console
+/usr/bin/sleep 1
+/usr/bin/systemctl poweroff --no-block

@@ -18,6 +18,9 @@ SPEC.loader.exec_module(vdri)
 
 class VdriStatusTests(unittest.TestCase):
     def make_device(self, root: Path, *, taint: str = "", driver: str | None = "virtio_gpu") -> None:
+        signature_parameter = root / "module/module/parameters/sig_enforce"
+        signature_parameter.parent.mkdir(parents=True)
+        signature_parameter.write_text("Y\n", encoding="ascii")
         device = root / "devices/pci0000:00/0000:00:02.0"
         device.mkdir(parents=True)
         (device / "vendor").write_text("0x1af4\n", encoding="ascii")
@@ -42,9 +45,10 @@ class VdriStatusTests(unittest.TestCase):
 
             result = vdri.collect_status(root, kernel="6.15.0-veyra")
 
-        self.assertEqual(result["schema"], 1)
+        self.assertEqual(result["schema"], 2)
         self.assertEqual(result["kernel"], "6.15.0-veyra")
         self.assertEqual(result["driver_policy"], "fedora-in-tree-only")
+        self.assertEqual(result["module_signature_enforcement"], "enforced")
         self.assertEqual(result["devices"], [{
             "name": "card0",
             "vendor_id": "1af4",
@@ -63,6 +67,28 @@ class VdriStatusTests(unittest.TestCase):
             result = vdri.collect_status(root)
 
         self.assertEqual(result["devices"][0]["status"], "external-module-detected")
+
+    def test_reports_permissive_module_signature_policy_as_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_device(root)
+            (root / "module/module/parameters/sig_enforce").write_text("N\n", encoding="ascii")
+
+            result = vdri.collect_status(root)
+
+        self.assertEqual(result["module_signature_enforcement"], "permissive")
+        self.assertTrue(vdri._has_problem(result))
+
+    def test_reports_unavailable_module_signature_state_as_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_device(root)
+            (root / "module/module/parameters/sig_enforce").unlink()
+
+            result = vdri.collect_status(root)
+
+        self.assertEqual(result["module_signature_enforcement"], "unavailable")
+        self.assertTrue(vdri._has_problem(result))
 
     def test_marks_device_without_bound_driver_unbound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -92,9 +118,10 @@ class VdriStatusTests(unittest.TestCase):
             result = vdri.collect_status(root, kernel="6.15.0-veyra")
 
         self.assertEqual(result, {
-            "schema": 1,
+            "schema": 2,
             "kernel": "6.15.0-veyra",
             "driver_policy": "fedora-in-tree-only",
+            "module_signature_enforcement": "unavailable",
             "devices": [],
         })
 

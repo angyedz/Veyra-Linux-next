@@ -97,10 +97,19 @@ def collect_status(sysfs_root: Path = SYSFS_ROOT, kernel: str | None = None) -> 
     for card in cards:
         devices.append(_device_status(card, root))
 
+    signature_parameter = root / "module/module/parameters/sig_enforce"
+    try:
+        signature_value = signature_parameter.read_text(encoding="ascii").strip().lower()
+    except (OSError, UnicodeError):
+        signature_enforcement = "unavailable"
+    else:
+        signature_enforcement = "enforced" if signature_value in {"y", "1"} else "permissive"
+
     return {
-        "schema": 1,
+        "schema": 2,
         "kernel": kernel or os.uname().release,
         "driver_policy": "fedora-in-tree-only",
+        "module_signature_enforcement": signature_enforcement,
         "devices": devices,
     }
 
@@ -108,6 +117,8 @@ def collect_status(sysfs_root: Path = SYSFS_ROOT, kernel: str | None = None) -> 
 def _has_problem(result: dict[str, object]) -> bool:
     devices = result["devices"]
     if not isinstance(devices, list) or not devices:
+        return True
+    if result.get("module_signature_enforcement") != "enforced":
         return True
     return any(not isinstance(device, dict) or device.get("status") != "bound" for device in devices)
 
@@ -131,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         print("No DRM graphics devices were found.")
     else:
         print(f"Kernel: {result['kernel']}")
+        print(f"Module signature enforcement: {result['module_signature_enforcement']}")
         for device in result["devices"]:
             assert isinstance(device, dict)
             ids = " ".join(

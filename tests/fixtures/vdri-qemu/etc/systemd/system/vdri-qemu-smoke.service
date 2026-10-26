@@ -1,0 +1,13 @@
+[Unit]
+Description=Veyra v-dri Fedora 44 QEMU smoke check
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/vdri-qemu-smoke
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,7 @@ This repository is building its first bootable Fedora 44 + KDE image with `mkosi
 
 This is an image-building prototype, not a usable installer or pre-alpha release yet. The first-boot account flow is configured but still needs VM validation. A/B updates, verified boot, automatic rollback, Recovery and Developer Mode are not implemented. It has not been tested on real hardware. Steam/Proton, Discord screen sharing and NVIDIA/AMD compatibility are not yet qualified.
 
-The first `v-dri` slice provides read-only DRM/driver diagnostics and reports out-of-tree module taint; it does not install drivers or enforce module-signing policy. See [the v-dri status](docs/v-dri.md).
+The first `v-dri` slice provides read-only DRM/driver diagnostics, reports out-of-tree module taint, and checks that the Fedora kernel enforces module signatures. It does not install drivers. See [the v-dri status](docs/v-dri.md).
 
 The test image uses unsigned UKIs and therefore boots with Secure Boot disabled. Secure Boot enrollment and signed boot artifacts remain future work.
 
