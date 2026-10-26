@@ -56,8 +56,23 @@ def main() -> int:
         return fail(f"{config.name} must build through mkosi's isolated tools tree")
     if "Firmware=uefi" not in runtime:
         return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
-    if "KernelCommandLine=systemd.unit=graphical.target" not in content:
-        return fail("the image must boot into the graphical desktop target")
+    kernel_command_line = next((line for line in content if line.startswith("KernelCommandLine=")), "")
+    for argument in ("systemd.unit=graphical.target", "module.sig_enforce=1", "console=ttyS0,115200n8"):
+        if argument not in kernel_command_line:
+            return fail(f"the kernel command line must include {argument!r}")
+
+    vdri = ROOT / "mkosi.extra/usr/bin/v-dri"
+    if not vdri.is_file() or not vdri.stat().st_mode & 0o111:
+        return fail("the read-only v-dri status command must be installed as an executable")
+    vdri_content = vdri.read_text(encoding="utf-8")
+    if (
+        '"driver_policy": "fedora-in-tree-only"' not in vdri_content
+        or '"module_signature_enforcement": signature_enforcement' not in vdri_content
+        or "external-module-detected" not in vdri_content
+    ):
+        return fail("v-dri must expose the Fedora driver policy, signature enforcement, and taint diagnostics")
+    if "subprocess" in vdri_content or "modprobe" in vdri_content:
+        return fail("the v-dri status command must not run or activate host driver commands")
 
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
