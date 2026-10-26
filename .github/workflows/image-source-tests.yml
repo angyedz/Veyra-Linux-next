@@ -1,0 +1,27 @@
+name: Image source contract tests
+
+on:
+  pull_request:
+    paths:
+      - 'mkosi.conf'
+      - 'scripts/smoke.py'
+      - 'tests/test_smoke_contract.py'
+      - '.github/workflows/image-source-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mkosi.conf'
+      - 'scripts/smoke.py'
+      - 'tests/test_smoke_contract.py'
+      - '.github/workflows/image-source-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check source contract and negative regression cases
+        run: python3 -m unittest discover -s tests -p 'test_smoke_contract.py' -v
