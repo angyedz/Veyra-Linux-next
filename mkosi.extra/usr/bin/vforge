@@ -25,6 +25,8 @@ PROJECT_CONFIG = ".vforge.toml"
 PERMISSION_FILE = "approved-mounts.json"
 FEDORA_RELEASE = "44"
 VEYRA_IMAGE_ID = "veyra-next"
+PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_.-]{0,254}$")
+MAX_PROJECT_PACKAGES = 128
 
 
 class VforgeError(Exception):
@@ -417,12 +419,27 @@ def create(
     return path
 
 
-def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str]:
+def project_packages(value: object) -> list[str]:
+    if not isinstance(value, dict) or set(value) - {"system"}:
+        raise VforgeError("[packages] must be a table containing only system")
+    requested = value.get("system", [])
+    if not isinstance(requested, list) or len(requested) > MAX_PROJECT_PACKAGES:
+        raise VforgeError(f"packages.system must be a list of at most {MAX_PROJECT_PACKAGES} RPM package names")
+    if any(not isinstance(name, str) or not PACKAGE_NAME_RE.fullmatch(name) for name in requested):
+        raise VforgeError("packages.system entries must be valid RPM package names")
+    if len(set(requested)) != len(requested):
+        raise VforgeError("packages.system must not contain duplicate package names")
+    if any(name.startswith("veyra-") for name in requested):
+        raise VforgeError("packages.system can contain Fedora or RPM Fusion packages, not Veyra system extensions")
+    return requested
+
+
+def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str, list[str]]:
     config = project / PROJECT_CONFIG
     try:
         descriptor = os.open(config, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
-        return project.name.lower().replace(" ", "-")[:55] or "project", [], "isolated"
+        return project.name.lower().replace(" ", "-")[:55] or "project", [], "isolated", []
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise VforgeError("project Vforge configuration may not be a symlink") from error
@@ -440,6 +457,7 @@ def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str]:
             os.close(descriptor)
     environment = value.get("environment", {})
     permissions = value.get("permissions", {})
+    packages = value.get("packages", {})
     if not isinstance(environment, dict) or not isinstance(permissions, dict):
         raise VforgeError("[environment] and [permissions] must be tables")
     name = validate_name(str(environment.get("name", project.name.lower().replace(" ", "-")[:55])))
@@ -452,13 +470,27 @@ def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str]:
     network = permissions.get("network", "isolated")
     if not isinstance(network, str) or network not in {"isolated", "shared"}:
         raise VforgeError("permissions.network must be isolated or shared")
-    return name, mounts, network
+    return name, mounts, network, project_packages(packages)
+
+
+def project_environment(cwd: Path) -> tuple[Path, list[str]]:
+    project = cwd.resolve()
+    name, mounts, network, packages = project_settings(project)
+    return create(name, project=project, mounts=mounts, network=network), packages
 
 
 def project_up(cwd: Path) -> Path:
-    project = cwd.resolve()
-    name, mounts, network = project_settings(project)
-    return create(name, project=project, mounts=mounts, network=network)
+    path, packages = project_environment(cwd)
+    if packages:
+        status = namespace_command(path, ["vpkg", "install", *packages])
+        if status:
+            metadata = environment_metadata(path)
+            hint = (
+                ' Request [permissions].network = "shared" if the packages need to be downloaded.'
+                if metadata.get("network", "isolated") == "isolated" else ""
+            )
+            raise VforgeError(f"could not install project packages (vpkg exited with status {status}).{hint}")
+    return path
 
 
 def namespace_command(path: Path, command: Sequence[str]) -> int:
@@ -484,7 +516,7 @@ def verify_project_mount_approvals(metadata: dict) -> None:
     if project is None:
         return
     project_path = Path(project)
-    _, configured_mounts, configured_network = project_settings(project_path)
+    _, configured_mounts, configured_network, _ = project_settings(project_path)
     if configured_mounts != metadata.get("mounts", []) or configured_network != metadata.get("network", "isolated"):
         raise VforgeError("project Vforge permissions changed; run `vforge up` to review and apply them")
     approved = project_mount_approvals(project_path)
@@ -792,7 +824,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(selected)
             return 0
         if args.action == "enter" and args.name is None:
-            path = project_up(Path.cwd())
+            path, _ = project_environment(Path.cwd())
             return namespace_command(path, [])
         if args.name is None:
             raise VforgeError("environment name is required")

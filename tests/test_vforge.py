@@ -87,12 +87,52 @@ class VforgeNativeTests(unittest.TestCase):
     def test_project_network_is_isolated_unless_shared_is_requested(self) -> None:
         project = self.root / "source"
         project.mkdir()
-        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated"))
+        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated", []))
 
         (project / ".vforge.toml").write_text(
             '[environment]\nname = "backend"\n[permissions]\nnetwork = "shared"\n'
         )
-        self.assertEqual(vforge.project_settings(project), ("backend", [], "shared"))
+        self.assertEqual(vforge.project_settings(project), ("backend", [], "shared", []))
+
+    def test_project_package_requests_are_validated(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        config = project / ".vforge.toml"
+        config.write_text(
+            '[packages]\nsystem = ["python3", "nodejs", "git"]\n',
+            encoding="utf-8",
+        )
+
+        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated", ["python3", "nodejs", "git"]))
+
+        config.write_text('[packages]\nsystem = ["--installroot=/"]\n', encoding="utf-8")
+        with self.assertRaisesRegex(vforge.VforgeError, "package name"):
+            vforge.project_settings(project)
+
+    def test_project_up_installs_declared_packages_inside_the_environment(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text(
+            '[environment]\nname = "backend"\n[packages]\nsystem = ["python3", "git"]\n',
+            encoding="utf-8",
+        )
+
+        with patch.object(vforge, "namespace_command", return_value=0) as command:
+            path = vforge.project_up(project)
+
+        command.assert_called_once_with(path, ["vpkg", "install", "python3", "git"])
+
+    def test_project_up_reports_package_install_failure(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text(
+            '[packages]\nsystem = ["python3"]\n',
+            encoding="utf-8",
+        )
+
+        with patch.object(vforge, "namespace_command", return_value=1):
+            with self.assertRaisesRegex(vforge.VforgeError, "project packages"):
+                vforge.project_up(project)
 
     def test_project_rejects_unknown_network_permission(self) -> None:
         project = self.root / "source"

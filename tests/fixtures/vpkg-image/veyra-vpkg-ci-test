@@ -86,6 +86,35 @@ test "$host_htop_after" = "$host_htop_before"
 echo "VEYRA_VFORGE_VPKG_CI_PASS"
 echo "Veyra QEMU test: vpkg installed htop only in the persistent native environment"
 
+project=/var/lib/veyra/vforge-project-ci
+install -d -m 0700 "$project"
+cat > "$project/.vforge.toml" <<'EOF'
+[environment]
+name = "vpkg-project-ci"
+isolation = "integrated"
+EOF
+(cd "$project" && vforge up)
+project_env="$project/.vforge/vpkg-project-ci"
+project_upper="$project_env/upper"
+install -d -m 0755 "$project_upper/etc/yum.repos.d" \
+    "$project_upper/var/lib/veyra/vpkg-ci-repo"
+: > "$project_upper/etc/yum.repos.d/fedora.repo"
+: > "$project_upper/etc/yum.repos.d/fedora-updates.repo"
+: > "$project_upper/etc/yum.repos.d/rpmfusion.repo"
+cp /etc/yum.repos.d/veyra-vpkg-ci-upstream.repo "$project_upper/etc/yum.repos.d/"
+cp -a "$repo/local-upstream" "$project_upper/var/lib/veyra/vpkg-ci-repo/"
+cat >> "$project/.vforge.toml" <<'EOF'
+
+[packages]
+system = ["htop"]
+EOF
+host_htop_before="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+(cd "$project" && vforge up)
+test -x "$project_upper/usr/bin/htop"
+host_htop_after="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+test "$host_htop_after" = "$host_htop_before"
+echo "Veyra QEMU test: vforge up installed its declared project package through vpkg"
+
 echo "Veyra vpkg VM test: run package safety unit tests"
 python3 -m unittest discover \
     --start-directory /var/lib/veyra/vpkg-ci-tests/repo/tests \

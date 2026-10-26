@@ -40,6 +40,9 @@ Example configuration:
 name = "backend"
 isolation = "integrated"
 
+[packages]
+system = ["python3", "nodejs", "git"]
+
 [permissions]
 network = "shared"
 
@@ -64,6 +67,12 @@ stored outside the project. Shared networking lets the environment reach the
 internet and local network services. Removing the request in `.vforge.toml`
 revokes it the next time the project is refreshed with `vforge up`.
 
+`vforge up` installs each package listed in `[packages].system` by running the
+regular `vpkg install` command inside the environment. Package names are
+validated and limited to Fedora/RPM Fusion packages. Removing a name from the
+list does not automatically uninstall it yet; use `vpkg remove` inside the
+environment.
+
 ## Isolation and limits
 
 Vforge starts user, mount, PID, and network namespaces. Networking is isolated
@@ -80,7 +89,7 @@ to commands; only locale and terminal settings are retained.
 This is an early native implementation. Only the `integrated` project profile
 is accepted today. GPU, Wayland, PipeWire, D-Bus, capability selection, seccomp
 policy, SELinux policy, snapshot/rollback, automatic base compatibility
-management, and project package reconciliation are not implemented. Package
+management, and package removal reconciliation are not implemented. Package
 installation and real OverlayFS behavior have not yet
 been validated in a Veyra guest. A user namespace and rootless OverlayFS
 supporting the host kernel/storage filesystem are required; Vforge reports the
