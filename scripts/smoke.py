@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sys
@@ -138,7 +139,6 @@ def main() -> int:
         "systemd-sysext",
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
         "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
-        "BLOCKED_PACKAGE_PREFIXES",
         "check_user_app_base_conflicts",
         "Refusing non-Veyra RPM",
         "System files must be delivered by an A/B OS update",
@@ -147,6 +147,18 @@ def main() -> int:
     ):
         if expected not in vpkg_content:
             return fail(f"vpkg safety contract must include {expected!r}")
+    if 'commands.add_parser("container"' in vpkg_content:
+        policy = ROOT / "mkosi.extra/usr/share/veyra/vpkg/protected-core.json"
+        try:
+            policy_data = json.loads(policy.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return fail("container Vpkg must install a valid protected-core policy")
+        if not isinstance(policy_data, dict) or not all(
+            token in vpkg_content for token in ("container_protected_packages()", "validate_container_root(")
+        ):
+            return fail("container Vpkg must enforce protected-core policy and validate its Veyra root")
+    elif "BLOCKED_PACKAGE_PREFIXES" not in vpkg_content:
+        return fail("Vpkg must enforce its protected-package policy")
     backend = ROOT / "mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"
     if not backend.is_file():
         return fail("vpkg must install its libdnf5 API adapter")
