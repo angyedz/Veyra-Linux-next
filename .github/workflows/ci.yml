@@ -273,6 +273,8 @@ jobs:
             mkosi.extra/usr/lib/systemd/system/systemd-bless-boot.service.d/veyra-vpkg-ci.conf
           sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-ci-test \
             mkosi.extra/usr/libexec/veyra-vpkg-ci-test
+          sudo install -D -m 0755 tests/fixtures/vpkg-image/vforge-desktop-sockets-ci.py \
+            mkosi.extra/usr/libexec/vforge-desktop-sockets-ci.py
           sudo install -D -m 0755 tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery \
             mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
       - name: Build the Fedora KDE disk image

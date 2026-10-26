@@ -64,8 +64,10 @@ environment location, and blocks use after a Veyra base change until
 `vforge upgrade` succeeds. Fedora 44 QEMU validation for namespace creation,
 rootless OverlayFS, package operations, snapshot rollback, and OTA compatibility
 is running; these runtime behaviors remain unverified until that guest check
-passes. GPU, Wayland, PipeWire, D-Bus, seccomp, and SELinux integration remain
-incomplete. See [the vforge implementation and limits](docs/vforge.md).
+passes. Project GPU, Wayland, PipeWire, and system D-Bus access now have
+explicit opt-in permissions; Fedora guest and real hardware checks are still
+pending. Seccomp and SELinux policies remain incomplete. See
+[the vforge implementation and limits](docs/vforge.md).
 
 ## Architectural direction
 

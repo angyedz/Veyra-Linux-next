@@ -430,10 +430,19 @@ def main() -> int:
     if (not vforge_guest_test.is_file()
             or "VEYRA_VFORGE_VPKG_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
             or "VEYRA_VFORGE_ROOTLESS_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
+            or "VEYRA_VFORGE_DESKTOP_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
             or "VEYRA_VFORGE_VPKG_CI_PASS" not in boot_test_content):
-        return fail("QEMU CI must prove native Vforge package and rootless environment behavior")
+        return fail("QEMU CI must prove native Vforge package, rootless environment, and desktop resource behavior")
     if "VEYRA_VFORGE_ROOTLESS_CI_PASS" not in boot_test_content:
         return fail("QEMU CI must wait for the normal-user Vforge OverlayFS test to pass")
+    if "VEYRA_VFORGE_DESKTOP_CI_PASS" not in boot_test_content:
+        return fail("QEMU CI must wait for the approved Vforge desktop-socket test to pass")
+    desktop_socket_fixture = ROOT / "tests/fixtures/vpkg-image/vforge-desktop-sockets-ci.py"
+    ci_workflow = ROOT / ".github/workflows/ci.yml"
+    if (not desktop_socket_fixture.is_file()
+            or "def connect_from_environment" not in desktop_socket_fixture.read_text(encoding="utf-8")
+            or "vforge-desktop-sockets-ci.py" not in ci_workflow.read_text(encoding="utf-8")):
+        return fail("QEMU CI must install a fixture that connects to the approved Wayland and audio sockets")
     update_image_test = ROOT / "scripts/test-sysupdate-image.py"
     if not update_image_test.is_file():
         return fail("CI must create the signed A/B test update")

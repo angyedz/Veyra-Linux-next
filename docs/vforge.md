@@ -49,6 +49,10 @@ system = ["python3", "nodejs", "git"]
 
 [permissions]
 network = "shared"
+gpu = false
+wayland = false
+audio = false
+system_bus = false
 
 [permissions.home]
 mode = "project-only"
@@ -84,6 +88,21 @@ stored outside the project. Shared networking lets the environment reach the
 internet and local network services. Removing the request in `.vforge.toml`
 revokes it the next time the project is refreshed with `vforge up`.
 
+Project desktop access is disabled by default. Set `gpu`, `wayland`, `audio`,
+or `system_bus` to `true` under `[permissions]` to request only those resources.
+Vforge asks for interactive approval the first time a project requests them and
+stores the grant in the user's private Vforge configuration, outside the
+project. It checks that the saved grant still matches `.vforge.toml` before
+each entry. Removing a setting and running `vforge up` revokes its grant.
+
+`wayland` exposes the selected Wayland socket; `audio` exposes available
+PipeWire and PulseAudio user sockets; `gpu` exposes `/dev/dri` only when the
+current user can access a DRM device; and `system_bus` exposes the host system
+D-Bus socket. These switches allow the environment to communicate with those
+host services, so grant them only to project code you trust. The system bus
+can offer privileged host services. None of these sockets or devices are
+mounted when their setting is false.
+
 `vforge install`, `vforge remove`, `vforge search`, and `vforge info` run the
 matching regular `vpkg` command inside the selected environment. Use
 `--environment NAME` for a named environment; without it, Vforge targets the
@@ -110,8 +129,10 @@ provided privately for the process. Host environment variables are not passed
 to commands; only locale and terminal settings are retained.
 
 This is an early native implementation. Only the `integrated` project profile
-is accepted today. GPU, Wayland, PipeWire, D-Bus, capability selection, seccomp
-policy, SELinux policy, and package removal reconciliation are not implemented.
+is accepted today. The four desktop permission switches are implemented, but
+their socket and device access still needs to pass the Fedora 44 guest workflow
+and real compositor/GPU hardware checks. Capability selection, seccomp policy,
+SELinux policy, and package removal reconciliation are not implemented.
 Snapshots copy the persistent OverlayFS upper into the same user-selected
 storage, using filesystem reflinks when available and a regular copy otherwise.
 They do not reserve disk space on a separate partition.
@@ -134,14 +155,17 @@ Vforge reports the kernel or mount error when those prerequisites are missing.
 ## Verification status
 
 Source tests cover persistent upper/work layout, project state placement,
-read-only explicit mounts, network approval, reserved targets, Veyra root
-identity, namespace selection, snapshot restore, and package command routing.
+read-only explicit mounts, network and desktop-resource approval, reserved
+targets, Veyra root identity, namespace selection, snapshot restore, and package
+command routing.
 GitHub Actions runs those checks and builds the installed Veyra image directly.
 The Fedora 44 QEMU guest scenario now checks package installation and project
 packages, then runs environment creation, namespace creation, OverlayFS writes,
 and snapshot rollback as an unprivileged guest UID. It also checks that those
-writes do not reach the host root. These runtime behaviors remain unverified
-until the current guest workflow passes.
+writes do not reach the host root. The desktop-resource scenario connects from
+inside a rootless project environment to disposable Wayland, PipeWire, and
+PulseAudio sockets. These runtime behaviors remain unverified until the current
+guest workflow passes.
 
 Inside the environment, `vpkg install`, `remove`, and `upgrade` act on that
 environment's private RPM database and OverlayFS upper. See

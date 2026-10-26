@@ -5,6 +5,7 @@ import json
 import os
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -54,12 +55,14 @@ class VforgeNativeTests(unittest.TestCase):
         metadata = json.loads(metadata_path.read_text())
         metadata["root_id"] = "c" * 32
         metadata.pop("home_mode")
+        metadata.pop("resources")
         metadata_path.write_text(json.dumps(metadata))
 
         migrated = vforge.environment_metadata(path)
 
         self.assertEqual(migrated["schema"], 2)
         self.assertEqual(migrated["home_mode"], "none")
+        self.assertEqual(migrated["resources"], [])
         self.assertEqual(migrated["root_id"], "c" * 32)
 
     def test_namespace_entry_binds_to_the_current_veyra_base_and_rejects_changed_base(self) -> None:
@@ -214,12 +217,156 @@ class VforgeNativeTests(unittest.TestCase):
     def test_project_network_is_isolated_unless_shared_is_requested(self) -> None:
         project = self.root / "source"
         project.mkdir()
-        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated", "project-only", []))
+        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated", "project-only", [], []))
 
         (project / ".vforge.toml").write_text(
             '[environment]\nname = "backend"\n[permissions]\nnetwork = "shared"\n'
         )
-        self.assertEqual(vforge.project_settings(project), ("backend", [], "shared", "project-only", []))
+        self.assertEqual(vforge.project_settings(project), ("backend", [], "shared", "project-only", [], []))
+
+    def test_project_desktop_permissions_are_parsed_as_opt_in_resources(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text(
+            "[permissions]\n"
+            "gpu = true\n"
+            "wayland = false\n"
+            "audio = true\n"
+            "system_bus = true\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            vforge.project_settings(project),
+            ("source", [], "isolated", "project-only", [], ["audio", "gpu", "system_bus"]),
+        )
+
+    def test_project_permissions_reject_unknown_keys_and_non_boolean_resources(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        config = project / ".vforge.toml"
+        config.write_text("[permissions]\nsecret_host_access = true\n", encoding="utf-8")
+        with self.assertRaisesRegex(vforge.VforgeError, "unsupported permission"):
+            vforge.project_settings(project)
+
+        config.write_text('[permissions]\ngpu = "yes"\n', encoding="utf-8")
+        with self.assertRaisesRegex(vforge.VforgeError, "permissions.gpu must be true or false"):
+            vforge.project_settings(project)
+
+    def test_project_desktop_permissions_require_and_store_separate_approval(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text("[permissions]\ngpu = true\n", encoding="utf-8")
+
+        with patch.object(vforge, "confirm_resource_permissions") as confirm:
+            path, packages = vforge.project_environment(project)
+
+        self.assertEqual(packages, [])
+        confirm.assert_called_once_with("source", ["gpu"])
+        self.assertEqual(vforge.environment_metadata(path)["resources"], ["gpu"])
+        self.assertEqual(vforge.project_resource_approvals(project), ["gpu"])
+        approval_path = vforge.config_directory() / vforge.PERMISSION_FILE
+        self.assertTrue(approval_path.is_file())
+        self.assertFalse(approval_path.is_relative_to(project))
+
+    def test_project_desktop_permissions_fail_closed_without_interactive_approval(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text("[permissions]\naudio = true\n", encoding="utf-8")
+
+        with (
+            patch.object(vforge.sys.stdin, "isatty", return_value=False),
+            self.assertRaisesRegex(vforge.VforgeError, "requires interactive approval"),
+        ):
+            vforge.project_environment(project)
+
+        self.assertFalse((project / ".vforge" / "source").exists())
+
+    def test_desktop_resource_mounts_only_requested_host_sockets(self) -> None:
+        runtime = self.root / "run/user/1000"
+        (runtime / "pulse").mkdir(parents=True)
+        runtime.chmod(0o700)
+        sockets = []
+        for path in (runtime / "wayland-0", runtime / "pipewire-0", runtime / "pulse/native"):
+            endpoint = socket.socket(socket.AF_UNIX)
+            endpoint.bind(str(path))
+            sockets.append(endpoint)
+        system_bus = self.root / "run/dbus/system_bus_socket"
+        system_bus.parent.mkdir(parents=True)
+        bus = socket.socket(socket.AF_UNIX)
+        bus.bind(str(system_bus))
+        sockets.append(bus)
+        self.addCleanup(lambda: [endpoint.close() for endpoint in sockets])
+        merged = self.root / "merged"
+        (merged / "run").mkdir(parents=True)
+        (merged / "dev").mkdir()
+        mountpoints: list[str] = []
+
+        with (
+            patch.object(vforge, "mount_in_namespace") as bind,
+            patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}),
+        ):
+            environment = vforge.mount_desktop_resources(
+                ["audio", "system_bus", "wayland"], merged, runtime, mountpoints,
+                system_bus_socket=system_bus,
+            )
+
+        self.assertEqual(environment, {
+            "XDG_RUNTIME_DIR": str(runtime),
+            "PULSE_SERVER": f"unix:{runtime}/pulse/native",
+            "PIPEWIRE_REMOTE": "pipewire-0",
+            "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=/run/dbus/system_bus_socket",
+            "WAYLAND_DISPLAY": "wayland-0",
+        })
+        bindings = [(call.args[0], call.args[1]) for call in bind.call_args_list]
+        self.assertCountEqual(bindings, [
+            (str(runtime / "pipewire-0"), str(merged / str(runtime).lstrip("/") / "pipewire-0")),
+            (str(runtime / "pulse/native"), str(merged / str(runtime).lstrip("/") / "pulse/native")),
+            (str(system_bus), str(merged / "run/dbus/system_bus_socket")),
+            (str(runtime / "wayland-0"), str(merged / str(runtime).lstrip("/") / "wayland-0")),
+        ])
+
+    def test_desktop_resource_mounts_reject_invalid_or_missing_sockets(self) -> None:
+        runtime = self.root / "run/user/1000"
+        runtime.mkdir(parents=True)
+        runtime.chmod(0o700)
+        merged = self.root / "merged"
+        merged.mkdir()
+        with patch.dict(os.environ, {"WAYLAND_DISPLAY": "../host-socket"}):
+            with self.assertRaisesRegex(vforge.VforgeError, "safe Wayland socket name"):
+                vforge.mount_desktop_resources(["wayland"], merged, runtime, [])
+
+        with self.assertRaisesRegex(vforge.VforgeError, "Wayland socket is unavailable"):
+            vforge.mount_desktop_resources(["wayland"], merged, runtime, [])
+
+    def test_gpu_permission_requires_drm_devices_accessible_to_the_user(self) -> None:
+        runtime = self.root / "run/user/1000"
+        runtime.mkdir(parents=True)
+        runtime.chmod(0o700)
+        dri = self.root / "dev/dri"
+        dri.mkdir(parents=True)
+        merged = self.root / "merged"
+        (merged / "dev").mkdir(parents=True)
+
+        with self.assertRaisesRegex(vforge.VforgeError, "no DRM device nodes"):
+            vforge.mount_desktop_resources(
+                ["gpu"], merged, runtime, [], gpu_root=dri,
+            )
+
+    def test_revoked_project_desktop_permission_stops_environment_entry(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        config = project / ".vforge.toml"
+        config.write_text("[permissions]\nwayland = true\n", encoding="utf-8")
+        with patch.object(vforge, "confirm_resource_permissions"):
+            path, _ = vforge.project_environment(project)
+        config.write_text("[permissions]\nwayland = false\n", encoding="utf-8")
+
+        with patch.object(vforge.subprocess, "run") as run:
+            with self.assertRaisesRegex(vforge.VforgeError, "permissions changed"):
+                vforge.namespace_command(path, ["/bin/true"])
+
+        run.assert_not_called()
 
     def test_project_package_requests_are_validated(self) -> None:
         project = self.root / "source"
@@ -230,7 +377,7 @@ class VforgeNativeTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated", "project-only", ["python3", "nodejs", "git"]))
+        self.assertEqual(vforge.project_settings(project), ("source", [], "isolated", "project-only", ["python3", "nodejs", "git"], []))
 
         config.write_text('[packages]\nsystem = ["--installroot=/"]\n', encoding="utf-8")
         with self.assertRaisesRegex(vforge.VforgeError, "package name"):

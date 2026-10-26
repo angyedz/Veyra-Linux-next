@@ -11,6 +11,7 @@ import os
 import pwd
 import re
 import shlex
+import socket
 import shutil
 import stat
 import subprocess
@@ -34,6 +35,7 @@ SNAPSHOT_ID_RE = re.compile(r"^[0-9]{10,}-[0-9a-f]{8}$")
 MAX_PROJECT_PACKAGES = 128
 HOME_MODES = {"none", "project-only", "read-only", "read-write"}
 PRIVILEGED_HOME_MODES = {"read-only", "read-write"}
+RESOURCE_PERMISSIONS = ("audio", "gpu", "system_bus", "wayland")
 HOST_HOME_NAME_ENV = "VEYRA_VFORGE_HOST_HOME_NAME"
 HOST_HOME_PATH_ENV = "VEYRA_VFORGE_HOST_HOME_PATH"
 
@@ -198,6 +200,12 @@ def environment_metadata(path: Path) -> dict:
     verify_private_directory(path / "upper", "OverlayFS upper directory")
     verify_private_directory(path / "work", "OverlayFS work directory")
     validate_mount_records(value.get("mounts", []))
+    missing_resources = "resources" not in value
+    resources = value.setdefault("resources", [])
+    if (not isinstance(resources, list)
+            or any(not isinstance(resource, str) or resource not in RESOURCE_PERMISSIONS for resource in resources)
+            or resources != sorted(set(resources))):
+        raise VforgeError("environment metadata has invalid desktop resource permissions")
     network = value.setdefault("network", "isolated")
     if not isinstance(network, str) or network not in {"isolated", "shared"}:
         raise VforgeError("environment metadata has an invalid network permission")
@@ -230,7 +238,7 @@ def environment_metadata(path: Path) -> dict:
         value["schema"] = 2
         value["root_id"] = root_id or uuid.uuid4().hex
         write_metadata(path, value)
-    elif missing_home_mode:
+    elif missing_home_mode or missing_resources:
         write_metadata(path, value)
     return value
 
@@ -354,15 +362,17 @@ def project_permission_state() -> dict:
     approval_path = config_directory() / PERMISSION_FILE
     state = read_private_json_optional(
         approval_path, "Vforge permission approvals",
-        {"schema": 1, "projects": {}, "network_projects": {}, "home_projects": {}},
+        {"schema": 1, "projects": {}, "network_projects": {}, "home_projects": {}, "resource_projects": {}},
     )
     if (not isinstance(state, dict) or state.get("schema") != 1
             or not isinstance(state.get("projects"), dict)
             or not isinstance(state.get("network_projects", {}), dict)
-            or not isinstance(state.get("home_projects", {}), dict)):
+            or not isinstance(state.get("home_projects", {}), dict)
+            or not isinstance(state.get("resource_projects", {}), dict)):
         raise VforgeError("Vforge permission approval state is malformed")
     state.setdefault("network_projects", {})
     state.setdefault("home_projects", {})
+    state.setdefault("resource_projects", {})
     for project_name in state["projects"]:
         if not isinstance(project_name, str) or not Path(project_name).is_absolute():
             raise VforgeError("Vforge permission approval state contains an invalid project path")
@@ -378,6 +388,13 @@ def project_permission_state() -> dict:
         if (not isinstance(project_name, str) or not Path(project_name).is_absolute()
                 or not isinstance(mode, str) or mode not in PRIVILEGED_HOME_MODES):
             raise VforgeError("Vforge permission approval state contains an invalid Home grant")
+    resource_projects = state["resource_projects"]
+    for project_name, resources in resource_projects.items():
+        if (not isinstance(project_name, str) or not Path(project_name).is_absolute()
+                or not isinstance(resources, list)
+                or any(not isinstance(resource, str) or resource not in RESOURCE_PERMISSIONS for resource in resources)
+                or resources != sorted(set(resources))):
+            raise VforgeError("Vforge permission approval state contains an invalid desktop resource grant")
     return state
 
 
@@ -393,12 +410,17 @@ def project_home_approval(project: Path) -> str:
     return project_permission_state()["home_projects"].get(str(project), "project-only")
 
 
+def project_resource_approvals(project: Path) -> list[str]:
+    return project_permission_state()["resource_projects"].get(str(project), [])
+
+
 def authorize_project_permissions(
     name: str,
     project: Path,
     requested_mounts: list[dict[str, str]],
     requested_network: str,
     requested_home_mode: str,
+    requested_resources: list[str],
 ) -> None:
     approval_path = config_directory() / PERMISSION_FILE
     state = project_permission_state()
@@ -418,6 +440,11 @@ def authorize_project_permissions(
     else:
         state["home_projects"].pop(project_key, None)
 
+    approved_resources = state["resource_projects"].get(project_key, [])
+    added_resources = [resource for resource in requested_resources if resource not in approved_resources]
+    if added_resources:
+        confirm_resource_permissions(name, added_resources)
+
     if requested_mounts:
         state["projects"][project_key] = requested_mounts
     else:
@@ -426,6 +453,10 @@ def authorize_project_permissions(
         state["network_projects"][project_key] = "shared"
     else:
         state["network_projects"].pop(project_key, None)
+    if requested_resources:
+        state["resource_projects"][project_key] = requested_resources
+    else:
+        state["resource_projects"].pop(project_key, None)
     write_private_json(approval_path, state, "Vforge permission approvals")
 
 
@@ -458,6 +489,22 @@ def confirm_home_permission(name: str, mode: str) -> None:
         raise VforgeError("host Home access was not granted")
 
 
+def confirm_resource_permissions(name: str, resources: list[str]) -> None:
+    descriptions = {
+        "audio": "connect to the host PipeWire/PulseAudio user sockets",
+        "gpu": "open host DRM render and graphics devices",
+        "system_bus": "connect to the host system D-Bus and its exposed services",
+        "wayland": "connect to the host Wayland compositor socket",
+    }
+    print(f"Environment '{name}' requests these host desktop resources:")
+    for resource in resources:
+        print(f"  - {resource}: {descriptions[resource]}")
+    if not sys.stdin.isatty():
+        raise VforgeError("desktop resource access requires interactive approval")
+    if input("Allow these desktop resources? [y/N] ").strip().lower() not in {"y", "yes"}:
+        raise VforgeError("desktop resource access was not granted")
+
+
 def create(
     name: str,
     *,
@@ -465,6 +512,7 @@ def create(
     mounts: list[dict[str, str]] | None = None,
     network: str = "isolated",
     home_mode: str | None = None,
+    resources: list[str] | None = None,
 ) -> Path:
     validate_name(name)
     if not isinstance(network, str) or network not in {"isolated", "shared"}:
@@ -474,15 +522,25 @@ def create(
     if (not isinstance(home_mode, str) or home_mode not in HOME_MODES
             or project is None and home_mode == "project-only"):
         raise VforgeError("project-only Home mode requires a project environment")
+    if resources is None:
+        requested_resources = []
+    elif (not isinstance(resources, list)
+            or any(not isinstance(resource, str) or resource not in RESOURCE_PERMISSIONS for resource in resources)
+            or len(set(resources)) != len(resources)):
+        raise VforgeError("desktop resources must be unique supported permission names")
+    else:
+        requested_resources = sorted(resources)
     if project is not None:
         project = project.resolve(strict=True)
         if not project.is_dir():
             raise VforgeError("project path must be a directory")
         ensure_private_directory(project / ".vforge")
         requested = validate_mount_records(mounts or [])
-        authorize_project_permissions(name, project, requested, network, home_mode)
+        authorize_project_permissions(name, project, requested, network, home_mode, requested_resources)
     else:
         requested = validate_mount_records(mounts or [])
+        if requested_resources:
+            raise VforgeError("desktop resource permissions can only be configured for project environments")
         if requested:
             raise VforgeError("host mounts can only be configured in a project .vforge.toml file")
         ensure_private_directory(store_root())
@@ -510,10 +568,12 @@ def create(
         previous = current.get("mounts", [])
         previous_network = current.get("network", "isolated")
         previous_home_mode = current.get("home_mode", "project-only" if project else "none")
-        if requested != previous or previous_network != network or previous_home_mode != home_mode:
+        if (requested != previous or previous_network != network or previous_home_mode != home_mode
+                or current.get("resources", []) != requested_resources):
             current["mounts"] = requested
             current["network"] = network
             current["home_mode"] = home_mode
+            current["resources"] = requested_resources
             write_metadata(path, current)
         print(f"Environment '{name}' already exists at {path}")
         return path
@@ -533,6 +593,7 @@ def create(
         "mounts": requested,
         "network": network,
         "home_mode": home_mode,
+        "resources": requested_resources,
         "base_identity": None,
     }
     write_metadata(path, metadata)
@@ -555,12 +616,12 @@ def project_packages(value: object) -> list[str]:
     return requested
 
 
-def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str, str, list[str]]:
+def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str, str, list[str], list[str]]:
     config = project / PROJECT_CONFIG
     try:
         descriptor = os.open(config, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
-        return project.name.lower().replace(" ", "-")[:55] or "project", [], "isolated", "project-only", []
+        return project.name.lower().replace(" ", "-")[:55] or "project", [], "isolated", "project-only", [], []
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise VforgeError("project Vforge configuration may not be a symlink") from error
@@ -581,6 +642,11 @@ def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str, str
     packages = value.get("packages", {})
     if not isinstance(environment, dict) or not isinstance(permissions, dict):
         raise VforgeError("[environment] and [permissions] must be tables")
+    unsupported_permissions = set(permissions) - {"home", "mounts", "network", *RESOURCE_PERMISSIONS}
+    if unsupported_permissions:
+        raise VforgeError(
+            "unsupported permission setting(s): " + ", ".join(sorted(unsupported_permissions))
+        )
     name = validate_name(str(environment.get("name", project.name.lower().replace(" ", "-")[:55])))
     if environment.get("isolation", "integrated") != "integrated":
         raise VforgeError("native Vforge currently supports only the integrated isolation profile")
@@ -594,13 +660,23 @@ def project_settings(project: Path) -> tuple[str, list[dict[str, str]], str, str
     network = permissions.get("network", "isolated")
     if not isinstance(network, str) or network not in {"isolated", "shared"}:
         raise VforgeError("permissions.network must be isolated or shared")
-    return name, mounts, network, home_mode, project_packages(packages)
+    resources = []
+    for resource in RESOURCE_PERMISSIONS:
+        requested = permissions.get(resource, False)
+        if not isinstance(requested, bool):
+            raise VforgeError(f"permissions.{resource} must be true or false")
+        if requested:
+            resources.append(resource)
+    return name, mounts, network, home_mode, project_packages(packages), resources
 
 
 def project_environment(cwd: Path) -> tuple[Path, list[str]]:
     project = cwd.resolve()
-    name, mounts, network, home_mode, packages = project_settings(project)
-    return create(name, project=project, mounts=mounts, network=network, home_mode=home_mode), packages
+    name, mounts, network, home_mode, packages, resources = project_settings(project)
+    return create(
+        name, project=project, mounts=mounts, network=network,
+        home_mode=home_mode, resources=resources,
+    ), packages
 
 
 def project_up(cwd: Path) -> Path:
@@ -677,10 +753,11 @@ def verify_project_mount_approvals(metadata: dict) -> None:
     if project is None:
         return
     project_path = Path(project)
-    _, configured_mounts, configured_network, configured_home, _ = project_settings(project_path)
+    _, configured_mounts, configured_network, configured_home, _, configured_resources = project_settings(project_path)
     if (configured_mounts != metadata.get("mounts", [])
             or configured_network != metadata.get("network", "isolated")
-            or configured_home != metadata.get("home_mode", "project-only")):
+            or configured_home != metadata.get("home_mode", "project-only")
+            or configured_resources != metadata.get("resources", [])):
         raise VforgeError("project Vforge permissions changed; run `vforge up` to review and apply them")
     approved = project_mount_approvals(project_path)
     if any(mount not in approved for mount in metadata.get("mounts", [])):
@@ -692,6 +769,9 @@ def verify_project_mount_approvals(metadata: dict) -> None:
     if (home_mode == "read-write" and approved_home != "read-write"
             or home_mode == "read-only" and approved_home not in PRIVILEGED_HOME_MODES):
         raise VforgeError("host Home permission is not approved; review .vforge.toml with `vforge up`")
+    approved_resources = project_resource_approvals(project_path)
+    if any(resource not in approved_resources for resource in configured_resources):
+        raise VforgeError("desktop resource access is not approved; review .vforge.toml with `vforge up`")
 
 
 def current_host_home() -> tuple[str, Path]:
@@ -761,6 +841,125 @@ def mount_in_namespace(
         raise VforgeError(f"cannot safely open mount source {source}: {error}") from error
     finally:
         os.close(descriptor)
+
+
+def require_host_socket(path: Path, description: str) -> None:
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current = current / component
+        if current.is_symlink():
+            raise VforgeError(f"{description} may not traverse symlinks: {path}")
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError as error:
+        raise VforgeError(f"{description} is unavailable: {path}") from error
+    except OSError as error:
+        raise VforgeError(f"cannot inspect {description} {path}: {error}") from error
+    if not stat.S_ISSOCK(mode):
+        raise VforgeError(f"{description} is not a Unix socket: {path}")
+
+
+def mount_host_socket(source: Path, target: Path, mountpoints: list[str], description: str) -> None:
+    require_host_socket(source, description)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise VforgeError(f"Vforge runtime target already exists: {target}")
+    try:
+        endpoint = socket.socket(socket.AF_UNIX)
+        try:
+            endpoint.bind(str(target))
+        finally:
+            endpoint.close()
+        mount_in_namespace(str(source), str(target), mountpoints=mountpoints)
+    except OSError as error:
+        raise VforgeError(f"cannot expose {description} inside the environment: {error}") from error
+
+
+def mount_desktop_resources(
+    resources: list[str],
+    merged: Path,
+    runtime_directory: Path,
+    mountpoints: list[str],
+    *,
+    gpu_root: Path = Path("/dev/dri"),
+    system_bus_socket: Path = Path("/run/dbus/system_bus_socket"),
+) -> dict[str, str]:
+    if (not isinstance(resources, list)
+            or any(not isinstance(resource, str) or resource not in RESOURCE_PERMISSIONS for resource in resources)
+            or len(set(resources)) != len(resources)):
+        raise VforgeError("environment has invalid desktop resource permissions")
+
+    environment: dict[str, str] = {}
+    runtime_target = merged / str(runtime_directory).lstrip("/")
+    if "gpu" in resources:
+        try:
+            info = gpu_root.lstat()
+        except OSError as error:
+            raise VforgeError(f"GPU access requested but {gpu_root} is unavailable: {error}") from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise VforgeError(f"GPU access requires a real DRM device directory at {gpu_root}")
+        try:
+            devices = [
+                Path(entry.path)
+                for entry in os.scandir(gpu_root)
+                if re.fullmatch(r"(?:card[0-9]+|renderD[0-9]+|controlD[0-9]+)", entry.name)
+                and entry.is_char_device(follow_symlinks=False)
+            ]
+        except OSError as error:
+            raise VforgeError(f"cannot inspect GPU devices in {gpu_root}: {error}") from error
+        if not devices:
+            raise VforgeError(f"GPU access requested but no DRM device nodes are available in {gpu_root}")
+        if not any(os.access(device, os.R_OK | os.W_OK) for device in devices):
+            raise VforgeError("GPU access requested but the current user cannot open any DRM device")
+        target = merged / "dev/dri"
+        target.mkdir(parents=True, exist_ok=True)
+        mount_in_namespace(str(gpu_root), str(target), mountpoints=mountpoints)
+
+    if "wayland" in resources or "audio" in resources:
+        if not runtime_directory.is_absolute() or ".." in runtime_directory.parts:
+            raise VforgeError("XDG_RUNTIME_DIR must be an absolute safe path for desktop resource access")
+        try:
+            canonical_runtime = runtime_directory.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise VforgeError(f"the host runtime directory is unavailable: {runtime_directory}") from error
+        if canonical_runtime != runtime_directory:
+            raise VforgeError("XDG_RUNTIME_DIR must not traverse symlinks")
+        verify_private_directory(runtime_directory, "host runtime directory")
+        runtime_target.mkdir(parents=True, exist_ok=True)
+        environment["XDG_RUNTIME_DIR"] = str(runtime_directory)
+
+    if "wayland" in resources:
+        display = os.environ.get("WAYLAND_DISPLAY") or "wayland-0"
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", display) or display in {".", ".."}:
+            raise VforgeError("WAYLAND_DISPLAY must be a safe Wayland socket name")
+        source = runtime_directory / display
+        target = runtime_target / display
+        mount_host_socket(source, target, mountpoints, "host Wayland socket")
+        environment["WAYLAND_DISPLAY"] = display
+
+    if "audio" in resources:
+        audio_sockets = (
+            (runtime_directory / "pipewire-0", runtime_target / "pipewire-0", "host PipeWire socket"),
+            (runtime_directory / "pulse/native", runtime_target / "pulse/native", "host PulseAudio socket"),
+        )
+        found_audio_socket = False
+        for source, target, description in audio_sockets:
+            if source.exists() or source.is_symlink():
+                mount_host_socket(source, target, mountpoints, description)
+                if source.name == "native":
+                    environment["PULSE_SERVER"] = f"unix:/{target.relative_to(merged)}"
+                elif source.name == "pipewire-0":
+                    environment["PIPEWIRE_REMOTE"] = "pipewire-0"
+                found_audio_socket = True
+        if not found_audio_socket:
+            raise VforgeError("audio access requested but no host PipeWire or PulseAudio socket is available")
+
+    if "system_bus" in resources:
+        target = merged / "run/dbus/system_bus_socket"
+        mount_host_socket(system_bus_socket, target, mountpoints, "host system D-Bus socket")
+        environment["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+
+    return environment
 
 
 def unmount_all(mountpoints: Sequence[str]) -> list[str]:
@@ -1092,6 +1291,13 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
     if not runtime_root.is_absolute():
         raise VforgeError("XDG_RUNTIME_DIR must be an absolute path")
     verify_private_directory(runtime_root, "user runtime directory")
+    try:
+        canonical_runtime = runtime_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise VforgeError("the user runtime directory is unavailable") from error
+    if canonical_runtime != runtime_root:
+        raise VforgeError("XDG_RUNTIME_DIR must not traverse symlinks")
+    runtime_root = canonical_runtime
     runtime_parent = runtime_root / "vforge"
     ensure_private_directory(runtime_parent)
     with tempfile.TemporaryDirectory(prefix=f"{metadata['name']}-", dir=runtime_parent) as temporary:
@@ -1106,6 +1312,7 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
             mountpoints.append(str(target))
 
         operation_error: BaseException | None = None
+        resource_environment: dict[str, str] = {}
         try:
             run(["mount", "--make-rprivate", "/"])
             # Bind only the active EROFS root filesystem. A recursive bind
@@ -1150,6 +1357,9 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
             mount_at(merged / "tmp", ["mount", "-t", "tmpfs", "-o", "mode=1777,nosuid,nodev", "tmpfs", str(merged / "tmp")])
             mount_at(merged / "run", ["mount", "-t", "tmpfs", "-o", "mode=755,nosuid,nodev", "tmpfs", str(merged / "run")])
             mount_at(merged / "home", ["mount", "-t", "tmpfs", "-o", "mode=755,nosuid,nodev", "tmpfs", str(merged / "home")])
+            resource_environment = mount_desktop_resources(
+                metadata.get("resources", []), merged, runtime_root, mountpoints,
+            )
             home_mode = metadata.get("home_mode", "project-only" if metadata.get("project") else "none")
             home_name = None
             if home_mode in PRIVILEGED_HOME_MODES:
@@ -1178,6 +1388,7 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
                     for key, value in os.environ.items():
                         if key == "TERM" or key == "LANG" or key.startswith("LC_"):
                             safe_environment[key] = value
+                    safe_environment.update(resource_environment)
                     if home_mode in PRIVILEGED_HOME_MODES and home_name is not None:
                         safe_environment["HOME"] = f"/home/{home_name}"
                     elif home_mode == "project-only" and metadata.get("project"):
@@ -1215,7 +1426,7 @@ def environment_target(name: str | None, cwd: Path) -> Path:
     if name is not None:
         return environment_path(name)
     project = cwd.resolve()
-    project_name, _, _, _, _ = project_settings(project)
+    project_name, _, _, _, _, _ = project_settings(project)
     return environment_path(project_name, project=project)
 
 

@@ -14,6 +14,10 @@ complete=/var/lib/veyra/vpkg-ci-complete
 
 report_failure() {
     local status=$?
+    if [[ -n "${desktop_socket_server:-}" ]]; then
+        kill "$desktop_socket_server" 2>/dev/null || true
+        wait "$desktop_socket_server" 2>/dev/null || true
+    fi
     echo "Veyra vpkg CI failed at line ${BASH_LINENO[0]}: ${BASH_COMMAND} (status ${status})" >&2
     systemd-sysext status >&2 || true
     exit "$status"
@@ -128,6 +132,56 @@ vforge_as_unprivileged vforge exec rootless-ci -- \
     grep -Fxq "rootless vforge upper" /etc/veyra-vforge-rootless-marker
 test ! -e /etc/veyra-vforge-rootless-marker
 echo "VEYRA_VFORGE_ROOTLESS_CI_PASS"
+
+# Prove the approved desktop permissions reach real Unix sockets, not just the
+# Vforge configuration. A fixture-owned project keeps this test rootless.
+desktop_project="$vforge_ci_home/vforge-desktop-ci"
+vforge_as_unprivileged install -d -m 0700 "$desktop_project"
+cat > "$desktop_project/.vforge.toml" <<'EOF'
+[environment]
+name = "desktop-ci"
+isolation = "integrated"
+
+[permissions]
+audio = true
+wayland = true
+EOF
+vforge_as_unprivileged install -d -m 0700 "$vforge_ci_home/.config/vforge"
+desktop_approvals="$vforge_ci_home/.config/vforge/approved-mounts.json"
+vforge_as_unprivileged python3 - "$desktop_project" "$desktop_approvals" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+project = str(Path(sys.argv[1]).resolve())
+approval_file = Path(sys.argv[2])
+approval_file.write_text(json.dumps({
+    "schema": 1,
+    "projects": {},
+    "network_projects": {},
+    "home_projects": {},
+    "resource_projects": {project: ["audio", "wayland"]},
+}) + "\n", encoding="utf-8")
+approval_file.chmod(0o600)
+PY
+desktop_ready="$vforge_ci_home/desktop-sockets-ready"
+rm -f "$desktop_ready"
+vforge_as_unprivileged python3 /usr/libexec/vforge-desktop-sockets-ci.py \
+    serve "$vforge_ci_runtime" "$desktop_ready" &
+desktop_socket_server=$!
+for _ in $(seq 1 100); do
+    if [[ -s "$desktop_ready" ]]; then
+        break
+    fi
+    sleep 0.1
+done
+grep -Fxq "ready" "$desktop_ready"
+(cd "$desktop_project" && vforge_as_unprivileged env WAYLAND_DISPLAY=wayland-0 vforge up)
+printf '%s\n' 'python3 /usr/libexec/vforge-desktop-sockets-ci.py client' \
+    | (cd "$desktop_project" && vforge_as_unprivileged env WAYLAND_DISPLAY=wayland-0 vforge enter)
+wait "$desktop_socket_server"
+grep -Fxq "complete" "$desktop_ready"
+echo "VEYRA_VFORGE_DESKTOP_CI_PASS"
 
 project=/var/lib/veyra/vforge-project-ci
 install -d -m 0700 "$project"
