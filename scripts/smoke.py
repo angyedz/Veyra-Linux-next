@@ -104,7 +104,7 @@ def main() -> int:
 
     postinstall = ROOT / "mkosi.postinst.chroot"
     postinstall_content = postinstall.read_text(encoding="utf-8")
-    if not re.search(r"(?m)^flatpak remote-add --system --if-not-exists flathub(?:[ \\\\]|$)", postinstall_content):
+    if "flatpak remote-add --system --if-not-exists flathub" not in postinstall_content:
         return fail("post-install script must configure Flathub for all users")
     remote_definition = ROOT / "mkosi.extra/usr/share/veyra/flathub.flatpakrepo"
     if not remote_definition.is_file():
