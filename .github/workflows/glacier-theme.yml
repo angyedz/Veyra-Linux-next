@@ -30,3 +30,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 -m unittest discover -s tests -p 'test_glacier*.py' -v
       - run: python3 scripts/smoke.py
+      - run: python3 -m unittest discover -s tests -p 'test_qemu_glacier_capture.py' -v
