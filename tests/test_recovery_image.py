@@ -34,7 +34,7 @@ class RecoveryUkiInstallTests(unittest.TestCase):
         self.assertIn("not mount or execute the installed Veyra root", recovery_doc)
 
         finalizer = (ROOT / "mkosi.finalize").read_text(encoding="utf-8")
-        self.assertIn('--output-dir "$SRCDIR/mkosi.output"', finalizer)
+        self.assertIn('--output-dir "$OUTPUTDIR"', finalizer)
 
     def test_installs_single_recovery_uki_into_esp_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
