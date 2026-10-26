@@ -5,9 +5,11 @@ on:
       - 'scripts/ota_chunks.py'
       - 'scripts/benchmark_ota.py'
       - 'scripts/ota_fetch.py'
+      - 'scripts/veyra-release.py'
       - 'tests/test_ota_chunks.py'
       - 'tests/test_ota_benchmark.py'
       - 'tests/test_ota_fetch.py'
+      - 'tests/test_release_builder.py'
       - 'tests/test_ota_manifest_validation.py'
       - 'docs/OTA-DELTA-TRANSPORT.md'
       - '.github/workflows/ota-chunks.yml'
@@ -17,9 +19,11 @@ on:
       - 'scripts/ota_chunks.py'
       - 'scripts/benchmark_ota.py'
       - 'scripts/ota_fetch.py'
+      - 'scripts/veyra-release.py'
       - 'tests/test_ota_chunks.py'
       - 'tests/test_ota_benchmark.py'
       - 'tests/test_ota_fetch.py'
+      - 'tests/test_release_builder.py'
       - 'tests/test_ota_manifest_validation.py'
       - 'docs/OTA-DELTA-TRANSPORT.md'
       - '.github/workflows/ota-chunks.yml'
@@ -34,4 +38,5 @@ jobs:
       - run: python3 -m unittest discover -s tests -p 'test_ota_benchmark.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_ota_manifest_validation.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_ota_fetch.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_release_builder.py' -v
 
