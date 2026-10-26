@@ -466,49 +466,6 @@ def mount_in_namespace(
         os.close(descriptor)
 
 
-def mountpoints_below(mountinfo: str, root: Path) -> list[str]:
-    root_path = root.as_posix().rstrip("/") or "/"
-    prefix = root_path if root_path == "/" else root_path + "/"
-    result = []
-    for line in mountinfo.splitlines():
-        fields = line.split(" - ", 1)[0].split()
-        if len(fields) < 6:
-            raise VforgeError("active Veyra mount table is malformed")
-        mountpoint = fields[4]
-        for escaped, value in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
-            mountpoint = mountpoint.replace(escaped, value)
-        if mountpoint != root_path and mountpoint.startswith(prefix):
-            result.append(mountpoint)
-    return sorted(result, key=lambda path: (path.count("/"), path))
-
-
-def unmount_inherited_submounts(
-    root: Path,
-    mountpoints: list[str],
-    mountinfo: str | None = None,
-) -> None:
-    if mountinfo is None:
-        try:
-            mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            raise VforgeError("cannot read the Vforge mount table") from error
-    inherited = mountpoints_below(mountinfo, root)
-    mountpoints.extend(inherited)
-    for target in reversed(inherited):
-        try:
-            run(["umount", "--", target])
-        except VforgeError:
-            # The parent detach or another cleanup may already have removed a
-            # nested mount. Keep failing if it remains in this lower tree.
-            try:
-                current_mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as error:
-                raise VforgeError("cannot recheck the Vforge mount table after unmount failed") from error
-            if target in mountpoints_below(current_mountinfo, root):
-                raise
-        mountpoints.remove(target)
-
-
 def unmount_all(mountpoints: Sequence[str]) -> list[str]:
     failed = []
     for target in reversed(mountpoints):
@@ -632,12 +589,11 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
         operation_error: BaseException | None = None
         try:
             run(["mount", "--make-rprivate", "/"])
-            # A non-recursive bind of a tree containing submounts is rejected
-            # in an unprivileged mount namespace. Clone the root mount tree,
-            # then detach inherited state mounts before using it as the CoW
-            # lower layer.
-            mount_at(lower, ["mount", "--rbind", "/", str(lower)])
-            unmount_inherited_submounts(lower, mountpoints)
+            # Bind only the active EROFS root filesystem. A recursive bind
+            # would copy persistent host mountpoints such as /etc, /var, and
+            # /home into this less-privileged namespace, where inherited
+            # mounts cannot safely be detached one by one.
+            mount_at(lower, ["mount", "--bind", "/", str(lower)])
             options = f"lowerdir={lower},upperdir={metadata['upper']},workdir={metadata['work']}"
             mount_at(merged, ["mount", "-t", "overlay", "overlay", "-o", options, str(merged)])
             if metadata.get("project"):

@@ -92,46 +92,6 @@ class VforgeNativeTests(unittest.TestCase):
                 "40 30 0:1 / / rw,relatime - overlay overlay rw\n"
             )
 
-    def test_unmount_inherited_submounts_before_using_veyra_root_as_lower(self) -> None:
-        lower = Path("/run/veyra-vforge/lower")
-        mountinfo = (
-            "40 30 0:1 / /run/veyra-vforge/lower ro,relatime - erofs /dev/root ro\n"
-            "41 40 0:2 / /run/veyra-vforge/lower/var ro,relatime - ext4 /dev/var ro\n"
-            "42 41 0:3 / /run/veyra-vforge/lower/var/lib rw,relatime - ext4 /dev/state rw\n"
-            "43 40 0:4 / /run/veyra-vforge/lower/home/Shared\\040Data rw,relatime - ext4 /dev/home rw\n"
-        )
-        mountpoints = [str(lower)]
-
-        with patch.object(vforge, "run") as run:
-            vforge.unmount_inherited_submounts(lower, mountpoints, mountinfo)
-
-        self.assertEqual(
-            [call.args[0][-1] for call in run.call_args_list],
-            [
-                str(lower / "var/lib"),
-                str(lower / "home/Shared Data"),
-                str(lower / "var"),
-            ],
-        )
-        self.assertEqual(mountpoints, [str(lower)])
-
-    def test_unmount_inherited_submounts_tolerates_an_already_detached_mount(self) -> None:
-        lower = Path("/run/veyra-vforge/lower")
-        initial_mountinfo = (
-            "40 30 0:1 / /run/veyra-vforge/lower ro,relatime - erofs /dev/root ro\n"
-            "41 40 0:2 / /run/veyra-vforge/lower/var ro,relatime - ext4 /dev/var ro\n"
-        )
-        current_mountinfo = "40 30 0:1 / /run/veyra-vforge/lower ro,relatime - erofs /dev/root ro\n"
-        mountpoints = [str(lower)]
-
-        with (
-            patch.object(vforge, "run", side_effect=vforge.VforgeError("already detached")),
-            patch.object(Path, "read_text", return_value=current_mountinfo),
-        ):
-            vforge.unmount_inherited_submounts(lower, mountpoints, initial_mountinfo)
-
-        self.assertEqual(mountpoints, [str(lower)])
-
     def test_vforge_marker_identifies_active_veyra_root_and_overlay(self) -> None:
         root = self.root / "root"
         (root / "usr/lib").mkdir(parents=True)
@@ -180,7 +140,7 @@ class VforgeNativeTests(unittest.TestCase):
         self.assertIn("--pid", command)
         self.assertIn("--net", command)
 
-    def test_environment_unmounts_private_mounts_before_removing_runtime_tree(self) -> None:
+    def test_environment_uses_a_nonrecursive_veyra_bind_as_overlay_lower(self) -> None:
         environment = vforge.create("backend")
         runtime = self.root / "runtime"
         runtime.mkdir(mode=0o700)
@@ -211,10 +171,13 @@ class VforgeNativeTests(unittest.TestCase):
 
         unmounted = [command[-1] for command in commands if command[0] == "umount"]
         self.assertEqual(unmounted, list(reversed(mounted)), f"mounted={mounted!r}")
-        self.assertEqual(
-            [command[:3] for command in commands if command[:2] == ["mount", "--rbind"]],
-            [["mount", "--rbind", "/"]],
-        )
+        lower_binds = [
+            command for command in commands
+            if command[:2] == ["mount", "--bind"] and command[2] == "/"
+            and command[-1].endswith("/lower")
+        ]
+        self.assertEqual(len(lower_binds), 1)
+        self.assertFalse(any(command[:2] == ["mount", "--rbind"] for command in commands))
         self.assertFalse(
             any(command[:3] == ["mount", "-o", "remount,bind,ro"] and command[-1].endswith("/lower")
                 for command in commands)
