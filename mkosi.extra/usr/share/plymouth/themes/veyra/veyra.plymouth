@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Veyra
+Description=Minimal glacier-blue Veyra boot screen
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/veyra
+ScriptFile=/usr/share/plymouth/themes/veyra/veyra.script
