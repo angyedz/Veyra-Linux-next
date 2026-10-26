@@ -96,6 +96,9 @@ def main() -> int:
     installer_script = ROOT / "scripts/veyra-install.py"
     if not installer_script.is_file():
         return fail("the Live ISO needs an installer that composes the target from Fedora packages")
+    live_kickstart = (ROOT / "installer/veyra-live.ks.in").read_text(encoding="utf-8")
+    if "dracut-live" not in live_kickstart:
+        return fail("the Live ISO Kickstart must include dracut-live for Lorax image composition")
 
     for expected in (
         "Distribution=fedora",

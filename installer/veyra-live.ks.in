@@ -21,6 +21,7 @@ cryptsetup
 dnf5
 dosfstools
 dracut
+dracut-live
 e2fsprogs
 erofs-utils
 flatpak
