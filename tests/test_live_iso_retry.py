@@ -73,6 +73,15 @@ printf '%s\\n' '-b images/eltorito.img -e images/efiboot.img'
             text=True, timeout=20,
         )
 
+    def test_kickstart_has_bounded_anaconda_download_retries(self):
+        kickstart = (ROOT / "installer/veyra-live.ks.in").read_text()
+        package_lines = [line.strip() for line in kickstart.splitlines()
+                         if line.startswith("%packages")]
+        self.assertEqual(len(package_lines), 1)
+        self.assertIn("--timeout=120", package_lines[0])
+        self.assertIn("--retries=20", package_lines[0])
+        self.assertIn("--excludedocs", package_lines[0])
+
     def test_download_failure_retries_once_and_keeps_log(self):
         result = self.run_builder("first-network")
         self.assertEqual(result.returncode, 0, result.stderr)
