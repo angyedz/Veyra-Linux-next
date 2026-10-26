@@ -92,6 +92,10 @@ def main() -> int:
         return fail("an ISO-only workflow dispatch must skip the expensive image and RPM fixture jobs")
     if "Prepare loop devices for Lorax in the job container" not in live_iso_job.group(1) or "losetup --find --show" not in live_iso_job.group(1):
         return fail("the Lorax container must create and verify loop device nodes before building the Live ISO")
+    if "Verify loop-backed Fedora ISO mounts in the job container" not in live_iso_job.group(1):
+        return fail("the Live ISO job must verify its loop mount capability before invoking Lorax")
+    if "veyra-live-iso-diagnostics" not in live_iso_job.group(1):
+        return fail("the Live ISO job must retain Lorax diagnostics after a failed build")
     live_iso_script = (ROOT / "scripts/build-live-iso.sh").read_text(encoding="utf-8")
     if 'rm -rf -- "$result_dir"' not in live_iso_script or 'mkdir -p "$result_dir"' in live_iso_script:
         return fail("livemedia-creator needs a result directory that does not exist before invocation")

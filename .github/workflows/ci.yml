@@ -528,10 +528,32 @@ jobs:
           loop_device="$(losetup --find --show "$probe")"
           losetup -d "$loop_device"
           loop_device=
+      - name: Verify loop-backed Fedora ISO mounts in the job container
+        env:
+          VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount_dir="$(mktemp -d)"
+          trap 'umount "$mount_dir" 2>/dev/null || true; rmdir "$mount_dir"' EXIT
+          mount -o loop,ro "$VEYRA_FEDORA_BOOT_ISO" "$mount_dir"
+          test -s "$mount_dir/.treeinfo"
+          umount "$mount_dir"
       - name: Build one Live Installer ISO and enforce the 8 GiB limit
         env:
           VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
         run: bash scripts/build-live-iso.sh
+      - name: Preserve Live ISO diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-live-iso-diagnostics
+          path: |
+            build/livemedia.log
+            build/live-media/anaconda/**
+            build/live-media/*.log
+          if-no-files-found: ignore
+          retention-days: 3
       - uses: actions/upload-artifact@v4
         with:
           name: veyra-next-prototype-live-iso
