@@ -17,7 +17,14 @@ SPEC.loader.exec_module(vdri)
 
 
 class VdriStatusTests(unittest.TestCase):
-    def make_device(self, root: Path, *, taint: str = "", driver: str | None = "virtio_gpu") -> None:
+    def make_device(
+        self,
+        root: Path,
+        *,
+        taint: str = "",
+        driver: str | None = "virtio_gpu",
+        transport: str = "virtio-pci",
+    ) -> None:
         signature_parameter = root / "module/module/parameters/sig_enforce"
         signature_parameter.parent.mkdir(parents=True)
         signature_parameter.write_text("Y\n", encoding="ascii")
@@ -29,14 +36,25 @@ class VdriStatusTests(unittest.TestCase):
         card = root / "class/drm/card0"
         card.mkdir(parents=True)
         (card / "device").symlink_to("../../../devices/pci0000:00/0000:00:02.0")
-        if driver is not None:
-            driver_path = root / "bus/pci/drivers" / driver
+
+        def add_driver(driver_name: str, bus: str, link: Path, *, module: bool = True) -> None:
+            driver_path = root / "bus" / bus / "drivers" / driver_name
             driver_path.mkdir(parents=True)
-            module_path = root / "module" / driver
-            module_path.mkdir(parents=True)
-            (module_path / "taint").write_text(taint, encoding="ascii")
-            (driver_path / "module").symlink_to(module_path)
-            (device / "driver").symlink_to(driver_path)
+            if module:
+                module_path = root / "module" / driver_name
+                module_path.mkdir(parents=True)
+                (module_path / "taint").write_text(taint, encoding="ascii")
+                (driver_path / "module").symlink_to(module_path)
+            link.symlink_to(driver_path)
+
+        if transport == "virtio-pci":
+            add_driver(transport, "pci", device / "driver", module=False)
+            if driver is not None:
+                virtio_device = device / "virtio0"
+                virtio_device.mkdir()
+                add_driver(driver, "virtio", virtio_device / "driver")
+        elif driver is not None:
+            add_driver(driver, "pci", device / "driver")
 
     def test_reports_bound_kernel_driver_and_hardware_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -58,6 +76,29 @@ class VdriStatusTests(unittest.TestCase):
             "module_taint": "",
             "status": "bound",
         }])
+
+    def test_reports_graphics_function_behind_virtio_pci_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_device(root)
+
+            device = root / "devices/pci0000:00/0000:00:02.0"
+            self.assertEqual((device / "driver").resolve().name, "virtio-pci")
+            self.assertEqual((device / "virtio0/driver").resolve().name, "virtio_gpu")
+            result = vdri.collect_status(root)
+
+        self.assertEqual(result["devices"][0]["driver"], "virtio_gpu")
+        self.assertEqual(result["devices"][0]["module"], "virtio_gpu")
+
+    def test_reports_direct_pci_graphics_driver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_device(root, driver="amdgpu", transport="pci")
+
+            result = vdri.collect_status(root)
+
+        self.assertEqual(result["devices"][0]["driver"], "amdgpu")
+        self.assertEqual(result["devices"][0]["module"], "amdgpu")
 
     def test_marks_externally_tainted_driver_unsupported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -99,6 +140,16 @@ class VdriStatusTests(unittest.TestCase):
 
         self.assertEqual(result["devices"][0]["status"], "unbound")
         self.assertIsNone(result["devices"][0]["module"])
+
+    def test_does_not_treat_unbound_virtio_gpu_transport_as_graphics_driver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_device(root, driver=None)
+
+            result = vdri.collect_status(root)
+
+        self.assertIsNone(result["devices"][0]["driver"])
+        self.assertEqual(result["devices"][0]["status"], "unbound")
 
     def test_ignores_drm_connector_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

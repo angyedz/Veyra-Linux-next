@@ -45,16 +45,41 @@ def _pci_id(device_path: Path, root: Path, attribute: str) -> str | None:
     return None
 
 
+def _drm_driver(device_path: Path, root: Path) -> Path | None:
+    """Resolve the graphics driver behind PCI transports such as virtio-pci."""
+    driver_link = device_path / "driver"
+    if not driver_link.exists() and not driver_link.is_symlink():
+        return None
+
+    driver_path = _path_in_sysfs(driver_link, root, "DRM device kernel driver")
+    if driver_path.name != "virtio-pci":
+        return driver_path
+
+    # virtio-pci only binds the PCI transport. The DRM function is a child
+    # virtio device whose driver link points at virtio_gpu.
+    for virtio_device in sorted(device_path.glob("virtio*")):
+        if not virtio_device.is_dir():
+            continue
+        function_driver = virtio_device / "driver"
+        if not function_driver.exists() and not function_driver.is_symlink():
+            continue
+        resolved = _path_in_sysfs(
+            function_driver, root, f"{virtio_device.name} graphics function driver"
+        )
+        if resolved.name == "virtio_gpu":
+            return resolved
+    return None
+
+
 def _device_status(card: Path, root: Path) -> dict[str, str | None]:
     device_path = _path_in_sysfs(card / "device", root, f"{card.name} device")
-    driver_link = device_path / "driver"
     driver_name: str | None = None
     module_name: str | None = None
     module_taint: str | None = None
     status = "unbound"
 
-    if driver_link.exists() or driver_link.is_symlink():
-        driver_path = _path_in_sysfs(driver_link, root, f"{card.name} kernel driver")
+    driver_path = _drm_driver(device_path, root)
+    if driver_path is not None:
         driver_name = driver_path.name
         module_link = driver_path / "module"
         if module_link.exists() or module_link.is_symlink():
