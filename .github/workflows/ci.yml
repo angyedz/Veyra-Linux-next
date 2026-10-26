@@ -57,6 +57,9 @@ jobs:
             QT_QPA_PLATFORM=offscreen plasma-apply-lookandfeel --list | tee /tmp/veyra-theme-list
             grep -Fx org.veyra.glacier.dark /tmp/veyra-theme-list
             grep -Fx org.veyra.glacier.light /tmp/veyra-theme-list
+            kreadconfig6 --file kdeglobals --group KDE --key LookAndFeelPackage | grep -Fx org.veyra.glacier.dark
+            kreadconfig6 --file kdeglobals --group General --key ColorScheme | grep -Fx VeyraGlacier
+            kreadconfig6 --file plasmarc --group Theme --key name | grep -Fx veyra-glacier-dark
           '
       - name: Check that mkosi produced a disk image
         run: test -s mkosi.output/veyra-next.raw
