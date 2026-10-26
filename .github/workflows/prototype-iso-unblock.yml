@@ -1,0 +1,97 @@
+# Short-lived standalone diagnostic. Uses prior trusted Recovery UKI (not a release pipeline).
+name: Prototype ISO-only unblock diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'installer/**'
+      - 'scripts/build-live-iso.sh'
+      - 'tests/test_veyra_installer.py'
+      - '.github/workflows/prototype-iso-unblock.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  iso-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
+      options: >-
+        --cap-add=SYS_ADMIN
+        --security-opt=seccomp=unconfined
+        --security-opt=apparmor=unconfined
+        --device=/dev/loop-control
+        --device-cgroup-rule="b 7:* rmw"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fedora 44 live ISO toolchain
+        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils python3 xorriso isomd5sum squashfs-tools
+      - name: Source and installer unit tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
+          python3 scripts/smoke.py
+      - name: Import trusted prior Recovery UKI (expires October 27)
+        uses: actions/download-artifact@v4
+        with:
+          name: veyra-recovery-uki
+          path: build/recovery-uki
+          run-id: 40362375406
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Require a nonempty Recovery UKI
+        run: test -s build/recovery-uki/veyra-recovery.efi
+      - name: Download and GPG-verify Fedora 44 netinst
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/fedora-netinst
+          base_url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/iso
+          iso_name=Fedora-Everything-netinst-x86_64-44-1.7.iso
+          curl --fail --location --retry 5 "$base_url/$iso_name" -o "build/fedora-netinst/$iso_name"
+          curl --fail --location --retry 5 "$base_url/Fedora-Everything-44-1.7-x86_64-CHECKSUM" -o build/fedora-netinst/CHECKSUM
+          curl --fail --location --retry 5 https://fedoraproject.org/fedora.gpg -o build/fedora-netinst/fedora.gpg
+          gpgv --keyring build/fedora-netinst/fedora.gpg --output build/fedora-netinst/SHA256SUMS build/fedora-netinst/CHECKSUM
+          checksum_line="$(awk -v file="$iso_name" '$1 == "SHA256" && $2 == "(" file ")" { print $4 " *" file }' build/fedora-netinst/SHA256SUMS)"
+          test -n "$checksum_line"
+          (cd build/fedora-netinst && printf '%s\n' "$checksum_line" | sha256sum --check --status)
+      - name: Provision temporary loop devices in disposable container
+        shell: bash
+        run: |
+          set -euo pipefail
+          for minor in {0..15}; do
+            test -b "/dev/loop$minor" || mknod -m 0660 "/dev/loop$minor" b 7 "$minor"
+          done
+          probe="$(mktemp)"
+          dev=""
+          trap 'if [[ -n "$dev" ]]; then losetup -d "$dev" || true; fi; rm -f "$probe"' EXIT
+          truncate -s 1M "$probe"
+          dev="$(losetup --find --show "$probe")"
+          losetup -d "$dev"
+          dev=""
+      - name: Assemble and verify one BIOS plus UEFI ISO (max 8 GiB)
+        env:
+          VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
+        run: bash scripts/build-live-iso.sh
+      - name: Preserve failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-uefi-unblock-logs
+          path: |
+            build/livemedia.log
+            build/live-media/anaconda/**
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Publish diagnostic prototype ISO and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-next-prototype-iso-unblock
+          path: |
+            build/live-iso/veyra-next-prototype-live.iso
+            build/live-iso/veyra-next-prototype-live.iso.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
