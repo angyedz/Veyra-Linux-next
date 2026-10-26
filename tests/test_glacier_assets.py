@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import configparser
 import json
+import struct
+import zlib
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import unittest
@@ -108,6 +110,28 @@ class GlacierAssetTests(unittest.TestCase):
             self.assertIn("Image=VeyraGlacier", package.read_text())
             style = SHARE / f"plasma/desktoptheme/veyra-glacier-{mode}/plasmarc"
             self.assertEqual(load_ini(style)["Wallpaper"]["defaultWallpaperTheme"], "VeyraGlacier")
+
+    def test_global_theme_preview_png_integrity(self):
+        for mode in ("dark", "light"):
+            image = SHARE / f"plasma/look-and-feel/org.veyra.glacier.{mode}/contents/previews/preview.png"
+            data = image.read_bytes()
+            self.assertTrue(data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"), mode)
+            offset, chunks, compressed = 8, [], bytearray()
+            while offset < len(data):
+                size = struct.unpack(">I", data[offset:offset + 4])[0]
+                name = data[offset + 4:offset + 8]
+                payload = data[offset + 8:offset + 8 + size]
+                checksum = struct.unpack(">I", data[offset + 8 + size:offset + 12 + size])[0]
+                self.assertEqual(zlib.crc32(name + payload), checksum, (mode, name))
+                chunks.append(name)
+                if name == b"IDAT":
+                    compressed.extend(payload)
+                offset += 12 + size
+            self.assertEqual(chunks[0], b"IHDR")
+            self.assertEqual(chunks[-1], b"IEND")
+            pixels = zlib.decompress(compressed)
+            self.assertEqual(len(pixels), 264 * (420 + 1))
+            self.assertEqual(offset, len(data))
 
     def test_safe_selector(self):
         selector = (ROOT / "mkosi.extra/usr/bin/veyra-theme").read_text()
