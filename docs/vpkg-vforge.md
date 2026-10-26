@@ -1,50 +1,54 @@
-# Vpkg inside Vforge
+# Vforge package commands
 
-The package-facing interface starts with `vforge`:
+Vforge is the package interface for named and project environments. These
+commands act on the selected environment's private OverlayFS state, not on the
+host system:
 
 ```sh
 cd /path/to/project
 vforge up
-vforge install htop                         # current project environment
+vforge install htop
 vforge remove htop
 vforge search htop
 vforge info htop
+```
+
+The current project's environment is selected by default. A project can declare
+its initial packages in `.vforge.toml`:
+
+```toml
+[packages]
+system = ["python3", "nodejs", "git"]
+```
+
+Run `vforge up` to create or refresh that environment and install the declared
+packages.
+
+Named environments use the same commands:
+
+```sh
 vforge create backend --network shared
 vforge install --environment backend htop
+vforge search --environment backend htop
 vforge upgrade backend
-```
-
-Vforge routes these operations through the regular `vpkg` program inside the
-environment. Entering an environment still lets you use `vpkg` directly:
-
-```sh
 vforge enter backend
-vpkg search htop
-vpkg install htop
-vpkg remove htop
-vpkg upgrade
+vforge exec backend -- rpm -q bash
 ```
 
-For a one-off command, run it through `vforge exec`:
+Vforge calls the `vpkg` package backend inside the selected environment. That
+backend uses libdnf5 to resolve Fedora 44 and RPM Fusion packages against the
+environment's private RPM database. It is not a separate container or
+environment manager; Vforge creates and owns the native OverlayFS environment.
+No Podman daemon is involved.
 
-```sh
-vforge exec backend -- vpkg install htop
-```
+The environment uses the active Veyra EROFS image as its read-only lower layer.
+Vforge and the package backend verify that the root marker matches the running
+Veyra image and dm-verity root hash. Package changes stay in the environment's
+persistent OverlayFS upper layer. Veyra system-extension packages and host
+management operations are not available inside an environment.
 
-Vpkg detects Vforge from its read-only root marker. Inside the environment,
-`install`, `remove`, and `upgrade` use libdnf5 against that environment's own
-RPM database and Fedora 44 / RPM Fusion repositories. Their writes go into
-Vforge's persistent OverlayFS upper layer. The host package state is not used.
-Veyra system-extension packages are not supported inside Vforge.
-
-The environment runs on the active Veyra EROFS image as a read-only lower
-layer. Vpkg checks that the marker matches the Veyra image and active dm-verity
-root hash, and rejects a separate mount over `/usr`, the RPM database, or its
-private state/cache. Invalid markers fail closed; they do not fall back to host
-package handling.
-
-An environment needs shared networking to download packages. For named
-environments, request it when creating the environment:
+An environment needs shared networking to download packages. For a named
+environment, request it when creating the environment:
 
 ```sh
 vforge create backend --network shared
@@ -56,7 +60,3 @@ Project environments can request it in `.vforge.toml`:
 [permissions]
 network = "shared"
 ```
-
-Package actions are limited to Fedora and RPM Fusion packages. Host-management
-commands such as `vpkg system`, `stage`, `rollback`, and `channel` are blocked
-inside Vforge.
