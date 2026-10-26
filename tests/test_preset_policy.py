@@ -18,14 +18,14 @@ class PresetValidationTests(unittest.TestCase):
     def test_current_preset_passes(self):
         self.assertEqual(smoke.main(), 0)
 
-    def test_disabled_service_is_not_accepted_as_enabled(self):
+    def test_commented_service_is_not_accepted_as_enabled(self):
         original = (ROOT / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset").read_text()
         with tempfile.TemporaryDirectory() as temp:
             fake_root = pathlib.Path(temp)
             fake_preset = fake_root / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset"
             fake_preset.parent.mkdir(parents=True)
             fake_preset.write_text(original.replace(
-                "enable NetworkManager.service", "disable NetworkManager.service"
+                "enable NetworkManager.service", "# enable NetworkManager.service"
             ), encoding="utf-8")
             with patch.object(smoke, "ROOT", fake_root):
                 original_read = pathlib.Path.read_text
