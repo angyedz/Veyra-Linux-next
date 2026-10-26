@@ -86,6 +86,13 @@ def main() -> int:
             return fail(f"the Live Installer job must include {expected!r}")
     if "always() && steps.image_assets.outcome == 'success'" not in build_job.group(1):
         return fail("the Recovery UKI must be uploaded after image composition even if an unrelated later test fails")
+    if "recovery_run_id" not in ci_workflow or "run-id: ${{ inputs.recovery_run_id || github.run_id }}" not in live_iso_job.group(1):
+        return fail("the Live Installer job must support an ISO-only rebuild from an existing Recovery UKI artifact")
+    if "if: ${{ github.event_name != 'workflow_dispatch' || inputs.recovery_run_id == '' }}" not in ci_workflow:
+        return fail("an ISO-only workflow dispatch must skip the expensive image and RPM fixture jobs")
+    live_iso_script = (ROOT / "scripts/build-live-iso.sh").read_text(encoding="utf-8")
+    if 'rm -rf -- "$result_dir"' not in live_iso_script or 'mkdir -p "$result_dir"' in live_iso_script:
+        return fail("livemedia-creator needs a result directory that does not exist before invocation")
     installer_script = ROOT / "scripts/veyra-install.py"
     if not installer_script.is_file():
         return fail("the Live ISO needs an installer that composes the target from Fedora packages")

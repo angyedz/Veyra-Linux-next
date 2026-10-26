@@ -7,6 +7,7 @@ workspace="${GITHUB_WORKSPACE:-$root}"
 result_dir="$root/build/live-media"
 output_dir="$root/build/live-iso"
 kickstart="$root/build/veyra-live.ks"
+log_file="$root/build/livemedia.log"
 max_bytes=$((8 * 1024 * 1024 * 1024))
 
 [[ -s "$boot_iso" ]] || { echo "Fedora 44 netinst ISO is missing: $boot_iso" >&2; exit 1; }
@@ -15,8 +16,8 @@ max_bytes=$((8 * 1024 * 1024 * 1024))
   exit 1
 }
 
-rm -rf -- "$result_dir" "$output_dir"
-mkdir -p "$result_dir" "$output_dir" "$(dirname -- "$kickstart")"
+rm -rf -- "$result_dir" "$output_dir" "$log_file"
+mkdir -p "$output_dir" "$(dirname -- "$kickstart")"
 sed "s|__VEYRA_SOURCE_ROOT__|$workspace|g" \
   "$root/installer/veyra-live.ks.in" > "$kickstart"
 
@@ -27,7 +28,7 @@ livemedia-creator \
   --ks="$kickstart" \
   --releasever=44 \
   --resultdir="$result_dir" \
-  --logfile="$result_dir/livemedia.log" \
+  --logfile="$log_file" \
   --iso-only \
   --iso-name=veyra-next-prototype-live.iso \
   --extra-boot-args="console=ttyS0,115200n8"
@@ -60,5 +61,5 @@ grep -Eq '(^|[[:space:]])-e[[:space:]]' "$output_dir/eltorito.txt" || {
   cd "$output_dir"
   sha256sum "$(basename -- "$iso")" > "$(basename -- "$iso").sha256"
 )
-rm -rf -- "$result_dir" "$kickstart"
+rm -rf -- "$result_dir" "$kickstart" "$log_file"
 printf 'Built one Live Installer ISO: %s (%s bytes)\n' "$iso" "$size"
