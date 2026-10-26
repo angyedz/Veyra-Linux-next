@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -439,3 +440,53 @@ jobs:
           path: build/bios-ota-logs/
           if-no-files-found: ignore
           retention-days: 3
+
+  prototype-artifact:
+    if: startsWith(github.head_ref, 'prototype/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    env:
+      VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install image builder dependencies on the Ubuntu runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            btrfs-progs ca-certificates cpio curl cryptsetup-bin dnf dosfstools e2fsprogs grub-common \
+            erofs-utils fdisk git gnupg kmod mtools openssl ovmf python3 qemu-system-x86 qemu-utils \
+            squashfs-tools sudo systemd-container systemd-ukify xz-utils zstd
+      - name: Gate the Ubuntu runner and Fedora 44 mkosi tools tree
+        run: bash scripts/check-build-environment.sh
+      - name: Verify Ubuntu DNF isolation and pinned Fedora 44 tools tree
+        run: sudo --preserve-env=VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS python3 scripts/check-build-environment.py
+      - name: Build clean Fedora 44 Veyra prototype disk
+        run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
+      - name: Validate the disk image
+        run: python3 scripts/check-image.py mkosi.output/veyra-next.raw
+      - name: Convert to a dynamically allocated QEMU disk
+        run: |
+          mkdir -p build/prototype-artifact
+          qemu-img convert -p -c -O qcow2 \
+            mkosi.output/veyra-next.raw \
+            build/prototype-artifact/veyra-next-prototype.qcow2
+          qemu-img info build/prototype-artifact/veyra-next-prototype.qcow2
+          du -h build/prototype-artifact/veyra-next-prototype.qcow2
+          cat > build/prototype-artifact/README.txt <<'EOF'
+          Veyra Next Prototype VM disk
+
+          Attach veyra-next-prototype.qcow2 as an existing disk in QEMU/KVM or GNOME Boxes.
+          The disk is dynamically allocated and does not consume its full virtual capacity up front.
+          This is a VM disk image, not an installer ISO. Secure Boot is not enabled for this prototype.
+          EOF
+      - name: Upload the prototype VM disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-next-prototype-disk
+          path: build/prototype-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
