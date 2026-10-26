@@ -39,10 +39,16 @@ longer runs are configurable up to 300s.
 
 ## GitHub Actions diagnostic
 
-Workflow: **Veyra Glacier visual QEMU capture (manual)**. Select the
-theme feature branch and trigger `workflow_dispatch`. It builds a
-fresh image, captures guest screenshots, and uploads an artifact even if
-the capture job errors.
+The **Fedora image** pull-request workflow captures and uploads QEMU VGA
+screenshots automatically for this Glacier feature branch, alongside the
+full image checks. Inspect the artifact named `glacier-qemu-vga` in its run.
+
+The optional workflow **Veyra Glacier visual QEMU capture (manual)** also
+supports `workflow_dispatch`, but GitHub normally exposes new manual
+workflows in the Actions UI only after the workflow file has been merged
+into the repository's default branch. Until then, use the existing PR image
+workflow and its screenshot artifact; do not claim manual dispatch already
+works from an unmerged feature branch.
 
 Once a human completes first boot in an interactive disposable QEMU,
 the acceptance checklist is:
