@@ -53,6 +53,22 @@ Packages=systemd
             with self.assertRaises(installer.InstallError):
                 installer.parse_mkosi_config(config)
 
+    def test_live_iso_has_both_firmware_bootloaders(self) -> None:
+        kickstart = (ROOT / "installer/veyra-live.ks.in").read_text()
+        packages = kickstart.split("%packages", 1)[1].split("%end", 1)[0]
+        names = {line.partition("#")[0].strip() for line in packages.splitlines()}
+        for pkg in ("grub2-efi-x64-cdboot", "grub2-efi-x64", "grub2-pc",
+                    "grub2-pc-modules", "dracut-config-generic", "dracut-live"):
+            with self.subTest(package=pkg):
+                self.assertIn(pkg, names)
+        self.assertIn("/boot/efi/EFI/fedora/gcdx64.efi", kickstart)
+        self.assertIn('rpm --root="$live_root" -q calamares', kickstart)
+
+    def test_live_iso_keeps_installer_dracut_directory(self) -> None:
+        kickstart = (ROOT / "installer/veyra-live.ks.in").read_text()
+        self.assertIn('"$live_root/usr/share/veyra/installer/source/installer"', kickstart)
+        self.assertIn('"$source_root/installer/dracut"', kickstart)
+
     def test_live_media_device_is_mapped_to_its_whole_disk(self) -> None:
         devices = [{
             "path": "/dev/sdb",
