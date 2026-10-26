@@ -487,6 +487,10 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - name: Install Fedora 44 Live ISO build tools
+        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils python3 xorriso isomd5sum squashfs-tools
+      - name: Check Live Installer source contract
+        run: python3 scripts/smoke.py
       - uses: actions/download-artifact@v4
         with:
           name: veyra-recovery-uki
@@ -494,9 +498,7 @@ jobs:
           run-id: ${{ inputs.recovery_run_id || github.run_id }}
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
-      - name: Install Fedora 44 Live ISO build tools
-        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils xorriso isomd5sum squashfs-tools
-      - name: Download and verify the Fedora 44 Anaconda boot ISO
+      - name: Download and verify the Fedora 44 netinst ISO
         shell: bash
         run: |
           set -euo pipefail

@@ -107,12 +107,43 @@ def main() -> int:
     live_kickstart = (ROOT / "installer/veyra-live.ks.in").read_text(encoding="utf-8")
     if "dracut-live" not in live_kickstart:
         return fail("the Live ISO Kickstart must include dracut-live for Lorax image composition")
+    for package in ("calamares", "calamares-interactiveterminal"):
+        if not re.search(rf"(?m)^{re.escape(package)}$", live_kickstart):
+            return fail(f"the Live ISO must install the Calamares package {package}")
+    if re.search(r"(?m)^anaconda(?:-[^\s]+)?$", live_kickstart):
+        return fail("Anaconda must not be installed in the Veyra Live ISO")
+    if "-anaconda*" not in live_kickstart:
+        return fail("the Live ISO package selection must explicitly exclude Anaconda packages")
     if "url --url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/" not in live_kickstart:
         return fail("the Fedora 44 Live ISO Kickstart must declare the network RPM source required by Lorax")
     if 'live_root="/mnt/sysimage"' not in live_kickstart or "${LIVE_ROOT" in live_kickstart:
-        return fail("the Lorax no-virt Kickstart must copy Live assets into Anaconda's /mnt/sysimage root")
+        return fail("the Lorax no-virt Kickstart must copy Live assets into its /mnt/sysimage staging root")
     if "policycoreutils" not in live_iso_job.group(1):
         return fail("the Lorax build container must provide load_policy for Anaconda cleanup")
+    if "rpm --root=\"$live_root\" -qa" not in live_kickstart or "Anaconda packages must not be included" not in live_kickstart:
+        return fail("the Live ISO must fail its build if an Anaconda package enters the runtime system")
+    calamares_settings = ROOT / "installer/calamares/settings.conf"
+    calamares_terminal = ROOT / "installer/calamares/modules/interactiveterminal.conf"
+    calamares_welcome = ROOT / "installer/calamares/modules/welcome.conf"
+    calamares_branding = ROOT / "installer/calamares/branding/veyra/branding.desc"
+    for path in (calamares_settings, calamares_terminal, calamares_welcome, calamares_branding):
+        if not path.is_file():
+            return fail(f"the Calamares installer is missing {path.relative_to(ROOT)}")
+    for expected in ("branding: veyra", "- interactiveterminal", "- finished"):
+        if expected not in calamares_settings.read_text(encoding="utf-8"):
+            return fail(f"Calamares settings must include {expected!r}")
+    if "command: /usr/libexec/veyra-installer" not in calamares_terminal.read_text(encoding="utf-8"):
+        return fail("Calamares must run the existing Veyra disk installer in its integrated terminal")
+    if 'Exec=sh -c "pkexec calamares"' not in (ROOT / "installer/veyra-installer.desktop").read_text(encoding="utf-8"):
+        return fail("the Live desktop installer must launch Calamares with root privileges")
+    for path in (
+        "installer/calamares/settings.conf",
+        "installer/calamares/modules/interactiveterminal.conf",
+        "installer/calamares/modules/welcome.conf",
+        "installer/calamares/branding/veyra/branding.desc",
+    ):
+        if path not in live_kickstart:
+            return fail(f"the Live ISO Kickstart must install {path}")
 
     for expected in (
         "Distribution=fedora",

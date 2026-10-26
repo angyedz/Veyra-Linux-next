@@ -16,8 +16,9 @@ part / --fstype=ext4 --size=16384
 
 %packages --excludedocs
 @^kde-desktop-environment
-anaconda-live
 btrfs-progs
+calamares
+calamares-interactiveterminal
 cryptsetup
 dnf5
 dosfstools
@@ -43,6 +44,7 @@ util-linux
 -@dial-up
 -@input-methods
 -@standard
+-anaconda*
 -gfs2-utils
 %end
 
@@ -52,7 +54,9 @@ source_root='__VEYRA_SOURCE_ROOT__'
 live_root="/mnt/sysimage"
 install -d -m 0755 "$live_root/usr/share/veyra/installer/source" \
   "$live_root/usr/share/veyra/installer/assets" \
-  "$live_root/usr/share/applications" "$live_root/usr/libexec"
+  "$live_root/usr/share/applications" "$live_root/usr/libexec" \
+  "$live_root/etc/calamares/modules" \
+  "$live_root/etc/calamares/branding/veyra"
 cp -a "$source_root/mkosi.conf" "$live_root/usr/share/veyra/installer/source/"
 cp -a "$source_root/mkosi.repart" "$live_root/usr/share/veyra/installer/source/"
 cp -a "$source_root/mkosi.extra" "$live_root/usr/share/veyra/installer/source/"
@@ -60,6 +64,16 @@ cp -a "$source_root/installer/dracut" "$live_root/usr/share/veyra/installer/sour
 install -m 0755 "$source_root/scripts/veyra-install.py" "$live_root/usr/libexec/veyra-installer"
 install -m 0644 "$source_root/installer/veyra-installer.desktop" \
   "$live_root/usr/share/applications/veyra-installer.desktop"
+install -m 0644 "$source_root/installer/calamares/settings.conf" \
+  "$live_root/etc/calamares/settings.conf"
+install -m 0644 "$source_root/installer/calamares/modules/interactiveterminal.conf" \
+  "$live_root/etc/calamares/modules/interactiveterminal.conf"
+install -m 0644 "$source_root/installer/calamares/modules/welcome.conf" \
+  "$live_root/etc/calamares/modules/welcome.conf"
+install -m 0644 "$source_root/installer/calamares/branding/veyra/branding.desc" \
+  "$live_root/etc/calamares/branding/veyra/branding.desc"
+install -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
+  "$live_root/etc/calamares/branding/veyra/veyra-logo.svg"
 install -m 0644 "$source_root/build/recovery-uki/veyra-recovery.efi" \
   "$live_root/usr/share/veyra/installer/assets/veyra-recovery.efi"
 install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
@@ -68,4 +82,9 @@ if [ -f "$live_root/etc/os-release" ]; then
   sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
   sed -i 's/^NAME=.*/NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
 fi
+if rpm --root="$live_root" -qa --qf '%{NAME}\n' | grep -Eq '(^|-)anaconda($|-)'; then
+  echo "Anaconda packages must not be included in the Veyra Live ISO." >&2
+  exit 1
+fi
+rpm --root="$live_root" -q calamares calamares-interactiveterminal
 %end

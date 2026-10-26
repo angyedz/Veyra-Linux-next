@@ -28,6 +28,8 @@ Produce one bootable Live ISO, no larger than 8 GiB, that lets someone try the V
 
 The Live environment and install-media build run only on GitHub Actions. The install flow must use the existing Veyra package manifest and boot/update definitions rather than a separately maintained package list. CI must verify both the ISO and the resulting installed system in disposable QEMU guests.
 
+The Live desktop launches the Qt 6 Calamares installer. Its Veyra-branded flow opens Calamares' KonsolePart terminal module and runs the existing `/usr/libexec/veyra-installer`, preserving its whole-disk checks and explicit erase confirmation. Anaconda packages are rejected from the built Live system. Lorax still uses Anaconda inside the isolated GitHub Actions builder to compose the ISO; those build-only packages are not part of the downloaded media.
+
 ## Open sizing decision
 
 The current partition definitions require at least 55.5 GiB for the installed disk. The installer must report the required capacity before allowing installation. Making the layout fit smaller target disks requires changing the partition sizing contract and is not implied by the 8 GiB ISO limit.

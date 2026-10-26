@@ -2,7 +2,7 @@
 Type=Application
 Name=Install Veyra Next Prototype
 Comment=Install Veyra Next onto a selected disk
-Exec=konsole -e pkexec /usr/libexec/veyra-installer
+Exec=sh -c "pkexec calamares"
 Icon=/usr/share/veyra/branding/veyra-logo.svg
 Terminal=false
-Categories=System;
+Categories=Qt;System;
