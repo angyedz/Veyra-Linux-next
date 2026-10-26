@@ -99,6 +99,65 @@ Packages=systemd
             with self.assertRaisesRegex(installer.InstallError, "Recovery UKI"):
                 installer.write_recovery_uki(base / "esp", base / "source")
 
+
+    def test_preflight_checks_complete_source_and_requires_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory)
+            for rel in (
+                "mkosi.conf",
+                "mkosi.extra/usr/lib/veyra/grub_ota.py",
+                "installer/dracut/99veyra-sysroot/module-setup.sh",
+                "assets/veyra-recovery.efi",
+                "mkosi.repart/11-root.conf",
+            ):
+                entry = source / rel
+                entry.parent.mkdir(parents=True, exist_ok=True)
+                entry.write_text("safe test fixture", encoding="utf-8")
+            installer.validate_installer_assets(source)
+            recovery = source / "assets/veyra-recovery.efi"
+            recovery.unlink()
+            with self.assertRaisesRegex(installer.InstallError, "assets/veyra-recovery"):
+                installer.validate_installer_assets(source)
+            external = source / "outside"
+            external.write_text("external", encoding="utf-8")
+            recovery.symlink_to(external)
+            with self.assertRaisesRegex(installer.InstallError, "assets/veyra-recovery"):
+                installer.validate_installer_assets(source)
+
+    def test_rejects_target_identity_change(self) -> None:
+        sample = {"path": "/dev/vda", "size": 64 * 1024**3, "model": "QEMU",
+                  "maj:min": "253:0", "serial": "disk-1", "wwn": ""}
+        installer.assert_target_identity_unchanged(sample, sample.copy())
+        for key, changed in (("path", "/dev/vdb"), ("size", 32 * 1024**3),
+                             ("model", "NEW"), ("maj:min", "253:1"),
+                             ("serial", "disk-2"), ("wwn", "different")):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                installer.InstallError, "identity changed"
+            ):
+                installer.assert_target_identity_unchanged(
+                    sample, {**sample, key: changed}
+                )
+
+    def test_rejects_symlinked_recovery_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            src = root / "source"
+            (src / "assets").mkdir(parents=True)
+            external = root / "outside.efi"
+            external.write_bytes(b"arbitrary")
+            (src / "assets/veyra-recovery.efi").symlink_to(external)
+            with self.assertRaisesRegex(installer.InstallError, "Recovery UKI"):
+                installer.write_recovery_uki(root / "esp", src)
+
+    def test_installer_exposes_nondestructive_preflight(self) -> None:
+        source = (ROOT / "scripts/veyra-install.py").read_text()
+        self.assertIn('parser.add_argument("--preflight"', source)
+        self.assertIn('print("Preflight only: no disk changes were made.")', source)
+        self.assertLess(source.index("validate_installer_assets(source)"),
+                        source.index('"systemd-repart", "--dry-run=no"'))
+        self.assertLess(source.index("assert_target_identity_unchanged(candidate, refreshed)"),
+                        source.index('"systemd-repart", "--dry-run=no"'))
+
     def test_live_media_device_is_mapped_to_its_whole_disk(self) -> None:
         devices = [{
             "path": "/dev/sdb",
