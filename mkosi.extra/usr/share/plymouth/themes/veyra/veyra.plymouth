@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Veyra Glacier
+Description=Minimal glacier-blue boot splash for Veyra Next
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/veyra
+ScriptFile=/usr/share/plymouth/themes/veyra/veyra.script
