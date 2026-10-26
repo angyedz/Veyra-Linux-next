@@ -104,6 +104,14 @@ jobs:
         run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
       - name: Validate OCI archive and Vpkg runtime
         run: |
+          python3 scripts/check-image.py mkosi.output/veyra-next.raw
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path("mkosi.output/veyra-next.manifest").read_text())
+          assert any(p.get("type") == "rpm" and p.get("name") == "e2fsprogs" for p in manifest["packages"])
+          print(f"Validated mkosi RPM manifest with {len(manifest['packages'])} packages.")
+          PY
           python3 scripts/check-vforge-oci-artifact.py \
             mkosi.output/veyra-next-vforge-base.tar --require-sources
           sudo podman load --input mkosi.output/veyra-next-vforge-base.tar

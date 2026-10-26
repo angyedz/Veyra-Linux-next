@@ -227,6 +227,15 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         self.assertIn("steps.vforge_tcg.outcome", contents)
         self.assertNotIn("was skipped because this GitHub runner has no accessible KVM", contents)
 
+    def test_mkosi_exports_the_manifest_consumed_by_the_guest_runner(self) -> None:
+        root = SCRIPT.parents[1]
+        config = (root / "mkosi.conf").read_text(encoding="utf-8")
+        workflow = (root / ".github/workflows/vforge-source-tests.yml").read_text(encoding="utf-8")
+
+        self.assertIn("ManifestFormat=json", config)
+        self.assertIn("scripts/check-image.py mkosi.output/veyra-next.raw", workflow)
+        self.assertIn("mkosi.output/veyra-next.manifest", workflow)
+
     def test_guest_fixture_loads_extensionless_vforge_executable_for_runtime_identity(self) -> None:
         with patch.object(fixture.shutil, "which", return_value=str(SCRIPT.parents[1] / "mkosi.extra/usr/bin/vforge")):
             module = fixture.load_vforge_module()

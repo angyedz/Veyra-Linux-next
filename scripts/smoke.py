@@ -53,6 +53,7 @@ def main() -> int:
         "ElTorito=no",
         "Output=veyra-next",
         "OutputDirectory=mkosi.output",
+        "ManifestFormat=json",
     ):
         if expected not in output:
             return fail(f"{config.name} must contain {expected!r} in [Output]")
