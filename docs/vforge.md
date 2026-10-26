@@ -162,11 +162,18 @@ environment's own root/RPM database and state, without writing host Veyra
 generations or relying on the DNF CLI. Vforge must retain the existing explicit
 permission model and tie each environment to the exact Veyra base it uses.
 
-Implementation choices for constructing and sharing that immutable runtime
-root remain open. Any candidate must be checked in QEMU for package installation
-through `vpkg`, full-root write isolation, persistence, project storage under
-`.vforge`, snapshot/rollback and compatibility after a Veyra OTA. Until those
-checks pass, describe the current code as a partial Fedora-based prototype.
+The proposed construction is a Veyra OCI base artifact built from the same
+Fedora 44 image definition and recorded deployment identity. Rootless Podman
+will use that base and keep each environment's persistent writable layer in the
+user-selected common store or project `.vforge/` directory. This uses ordinary
+free space and adds no partition. The OCI artifact must come from the image
+build tree, not by copying the running host's mutable `/etc`, `/var` or `/home`.
+See [ADR-0001](decisions/0001-vforge-veyra-oci-root.md). This proposal has not
+been implemented or accepted by runtime tests. The current code remains a
+partial Fedora-based prototype until Fedora 44 QEMU checks pass for rootfs
+identity, package installation through `vpkg`, full-root write isolation,
+persistence, project storage, snapshot/rollback and compatibility after a Veyra
+OTA.
 
 Integrated snapshots commit the container writable layer and freeze the
 current Veyra /usr and RPM database upper directories by same-store renames.
