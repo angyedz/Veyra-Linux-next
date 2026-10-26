@@ -24,6 +24,21 @@ Produce one bootable Live ISO, no larger than 8 GiB, that lets someone try the V
 - GitHub Actions enforces an ISO size ceiling of 8 GiB and boots the ISO, installs to a disposable QEMU disk, then boots the installed system.
 - No full image build runs on the user's computer.
 
+## ISO build troubleshooting
+
+Lorax's Fedora 44 `live/x86.tmpl` generates `EFI/BOOT` and its EFI
+boot image only when the installed live root contains
+`/boot/efi/EFI/*/gcdx64.efi`. Fedora supplies this file in
+`grub2-efi-x64-cdboot`. The earlier kickstart installed BIOS GRUB
+but omitted the EFI removable-media package, so CI run 40372875288
+failed at xorriso after spending time building SquashFS.
+
+The live package manifest now includes `grub2-efi-x64-cdboot` and
+`dracut-config-generic`, and the live post-install script verifies
+the EFI CD bootloader file before Lorax begins ISO assembly. This is
+an early source/builder check, **not** proof that UEFI, BIOS, Plasma,
+Calamares, or installed-system A/B boot succeeds.
+
 ## Implementation and verification
 
 The Live environment and install-media build run only on GitHub Actions. The install flow must use the existing Veyra package manifest and boot/update definitions rather than a separately maintained package list. CI must verify both the ISO and the resulting installed system in disposable QEMU guests.

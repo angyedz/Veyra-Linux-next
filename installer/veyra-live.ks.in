@@ -23,10 +23,14 @@ cryptsetup
 dnf5
 dosfstools
 dracut
+dracut-config-generic
 dracut-live
 e2fsprogs
 erofs-utils
 flatpak
+# Required for Lorax's EFI/BOOT ISO generation (gcdx64.efi).
+grub2-efi-x64
+grub2-efi-x64-cdboot
 grub2-pc
 grub2-pc-modules
 grub2-tools
@@ -53,7 +57,8 @@ set -euo pipefail
 source_root='__VEYRA_SOURCE_ROOT__'
 live_root="/mnt/sysimage"
 install -d -m 0755 "$live_root/usr/share/veyra/installer/source" \
-  "$live_root/usr/share/veyra/installer/assets" \
+  "$live_root/usr/share/veyra/installer/source/assets" \
+  "$live_root/usr/share/veyra/installer/source/installer" \
   "$live_root/usr/share/applications" "$live_root/usr/libexec" \
   "$live_root/etc/calamares/modules" \
   "$live_root/etc/calamares/branding/veyra"
@@ -75,7 +80,7 @@ install -m 0644 "$source_root/installer/calamares/branding/veyra/branding.desc" 
 install -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$live_root/etc/calamares/branding/veyra/veyra-logo.svg"
 install -m 0644 "$source_root/build/recovery-uki/veyra-recovery.efi" \
-  "$live_root/usr/share/veyra/installer/assets/veyra-recovery.efi"
+  "$live_root/usr/share/veyra/installer/source/assets/veyra-recovery.efi"
 install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$live_root/usr/share/veyra/branding/veyra-logo.svg"
 if [ -f "$live_root/etc/os-release" ]; then
@@ -86,5 +91,10 @@ if rpm --root="$live_root" -qa --qf '%{NAME}\n' | grep -Eq '(^|-)anaconda($|-)';
   echo "Anaconda packages must not be included in the Veyra Live ISO." >&2
   exit 1
 fi
-rpm --root="$live_root" -q calamares calamares-interactiveterminal
+rpm --root="$live_root" -q calamares calamares-interactiveterminal grub2-efi-x64-cdboot dracut-config-generic
+# Fail early if Lorax cannot find the EFI bootloader required by its ISO template.
+test -s "$live_root/boot/efi/EFI/fedora/gcdx64.efi" || {
+  echo "UEFI ISO bootloader missing: /boot/efi/EFI/fedora/gcdx64.efi" >&2
+  exit 1
+}
 %end
