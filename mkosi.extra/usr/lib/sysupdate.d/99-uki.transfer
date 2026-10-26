@@ -4,7 +4,7 @@ Verify=yes
 
 [Source]
 Type=url-file
-Path=https://github.com/angyedz/Veyra-next/releases/latest/download/
+Path=https://github.com/angyedz/Veyra-Linux-next/releases/latest/download/
 MatchPattern=veyra-next_@v.efi
 
 [Target]

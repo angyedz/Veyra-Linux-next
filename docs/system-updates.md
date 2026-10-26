@@ -1,5 +1,15 @@
 # Veyra system updates
 
+## Firmware support status
+
+The tested OTA path currently targets UEFI with systemd-boot and trial UKIs.
+Legacy BIOS is not an update-supported mode yet: `veyra-update` still selects
+the next boot with `bootctl`, and successful-boot confirmation relies on
+systemd-boot boot-count metadata. A GRUB BIOS image without an equivalent
+trial counter, blessing, and rollback path must not be shipped as supported.
+The BIOS image and QEMU boot work remains incomplete until those behaviors are
+implemented and verified under SeaBIOS.
+
 ## Transaction flow
 
 The image contains two root partitions, each paired with dm-verity data. A

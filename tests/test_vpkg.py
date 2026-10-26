@@ -33,6 +33,37 @@ def running_in_qemu_vm() -> bool:
     return result.returncode == 0 and result.stdout.strip() in {"qemu", "kvm"}
 
 
+class RunningIdentityTests(unittest.TestCase):
+    def test_legacy_bios_reads_version_from_the_verity_protected_os_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            os_release = Path(temporary) / "os-release"
+            os_release.write_text(
+                'ID=fedora\nVERSION_ID=44\nIMAGE_ID="veyra-next"\n'
+                'IMAGE_VERSION="1.2.3-test"\n',
+                encoding="utf-8",
+            )
+            with (
+                patch.object(vpkg, "SYS_FIRMWARE_EFI", Path(temporary) / "no-efi"),
+                patch.object(vpkg, "OS_RELEASE_FILE", os_release),
+            ):
+                self.assertEqual(vpkg.running_uki_version(), "1.2.3-test")
+
+    def test_legacy_bios_rejects_ambiguous_image_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            os_release = Path(temporary) / "os-release"
+            os_release.write_text(
+                'ID=fedora\nVERSION_ID=44\nIMAGE_ID="veyra-next"\n'
+                'IMAGE_VERSION="1.2.3"\nIMAGE_VERSION="1.2.4"\n',
+                encoding="utf-8",
+            )
+            with (
+                patch.object(vpkg, "SYS_FIRMWARE_EFI", Path(temporary) / "no-efi"),
+                patch.object(vpkg, "OS_RELEASE_FILE", os_release),
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "exactly one IMAGE_VERSION"):
+                    vpkg.running_uki_version()
+
+
 @unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
 class VpkgPolicyTests(unittest.TestCase):
     def test_generation_integrity_detects_payload_changes(self) -> None:
@@ -152,6 +183,8 @@ class VpkgPolicyTests(unittest.TestCase):
     def test_running_uki_version_is_read_from_its_osrel_section(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             uki = Path(temporary) / "current.efi"
+            efi_dir = Path(temporary) / "efi"
+            efi_dir.mkdir()
             image = bytearray(0x600)
             pe_offset = 0x80
             image[0:2] = b"MZ"
@@ -171,7 +204,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 vpkg,
                 "run",
                 return_value=subprocess.CompletedProcess([], 0, str(uki) + "\n", ""),
-            ):
+            ), patch.object(vpkg, "SYS_FIRMWARE_EFI", efi_dir):
                 self.assertEqual(vpkg.running_uki_version(), "1.2.3-test")
 
     def test_pending_completion_requires_exact_roothash_and_uki_version(self) -> None:

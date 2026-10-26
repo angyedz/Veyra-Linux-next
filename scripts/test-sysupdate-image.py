@@ -246,15 +246,21 @@ def write_test_definitions(
     expected = {
         "10-root-verity.transfer",
         "20-root.transfer",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
         "99-uki.transfer",
     }
     actual = {path.name for path in definitions.glob("*.transfer")}
     if actual != expected:
         raise RuntimeError(f"Unexpected system update transfer set: {sorted(actual)}")
-    for name in sorted(expected):
+    # This integration fixture exercises the UEFI/UKI path. Keep BIOS assets
+    # in the production transfer set, but do not let systemd-sysupdate stage
+    # them into a UEFI guest.
+    uefi_transfers = {"10-root-verity.transfer", "20-root.transfer", "99-uki.transfer"}
+    for name in sorted(uefi_transfers):
         content = (definitions / name).read_text(encoding="utf-8")
         content, replacements = re.subn(
-            r"(?m)^Path=https://github\.com/angyedz/Veyra-next/releases/latest/download/?[ \t]*$",
+            r"(?m)^Path=https://github\.com/angyedz/Veyra-Linux-next/releases/latest/download/?[ \t]*$",
             f"Path={base_url}",
             content,
         )

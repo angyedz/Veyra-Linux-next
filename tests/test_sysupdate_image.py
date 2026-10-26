@@ -47,6 +47,7 @@ class SysupdateImageTests(unittest.TestCase):
                 {path.name for path in definitions.iterdir()},
                 {"10-root-verity.conf", "20-root.conf", "99-uki.conf"},
             )
+            self.assertFalse(any("bios" in path.name for path in definitions.iterdir()))
             for path in definitions.glob("*.conf"):
                 content = path.read_text(encoding="utf-8")
                 self.assertIn("Path=http://127.0.0.1:8765/", content)

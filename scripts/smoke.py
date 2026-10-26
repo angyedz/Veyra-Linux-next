@@ -94,6 +94,7 @@ def main() -> int:
     for expected in (
         "Bootable=yes",
         "Bootloader=systemd-boot",
+        "BiosBootloader=grub",
         "UnifiedKernelImages=unsigned",
         "Initrds=%O/initrd",
     ):
@@ -109,6 +110,8 @@ def main() -> int:
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
         "kernel",
+        "grub2-pc",
+        "grub2-tools-minimal",
         "libdnf5",
         "util-linux",
         "systemd-udev",
@@ -301,6 +304,18 @@ def main() -> int:
     for expected in ("Type=root-verity", "Verity=hash", "VerityMatchKey=root"):
         if expected not in verity_partition:
             return fail(f"the active verity partition must include {expected!r}")
+    bios_partition = repart / "05-bios.conf"
+    if not bios_partition.is_file():
+        return fail("Legacy BIOS images must include a GRUB BIOS Boot Partition")
+    bios_partition_content = bios_partition.read_text(encoding="utf-8")
+    for expected in (
+        "Type=21686148-6449-6e6f-744e-656564454649",
+        "Format=no",
+        "SizeMinBytes=1M",
+        "SizeMaxBytes=1M",
+    ):
+        if expected not in bios_partition_content:
+            return fail(f"the BIOS Boot Partition must include {expected!r}")
     for relative in (
         "20-empty-root-verity.conf",
         "21-empty-root.conf",
@@ -326,8 +341,14 @@ def main() -> int:
 
     transfer_dir = ROOT / "mkosi.extra/usr/lib/sysupdate.d"
     transfer_names = sorted(path.name for path in transfer_dir.glob("*.transfer"))
-    if transfer_names != ["10-root-verity.transfer", "20-root.transfer", "99-uki.transfer"]:
-        return fail("systemd-sysupdate transfers must stage verity, root, then the UKI commit entry")
+    if transfer_names != [
+        "10-root-verity.transfer",
+        "20-root.transfer",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
+        "99-uki.transfer",
+    ]:
+        return fail("systemd-sysupdate transfers must stage root, BIOS boot assets, then the UEFI commit entry")
     for name in transfer_names:
         transfer = (transfer_dir / name).read_text(encoding="utf-8")
         for expected in ("Verify=yes", "ProtectVersion=%A", "Type=url-file"):
@@ -336,6 +357,8 @@ def main() -> int:
     expected_sources = {
         "10-root-verity.transfer": "veyra-next_@v_@u.root-verity.raw.zst",
         "20-root.transfer": "veyra-next_@v_@u.root.raw.zst",
+        "80-bios-kernel.transfer": "veyra-next_@v.vmlinuz",
+        "90-bios-initrd.transfer": "veyra-next_@v.initrd.zst",
         "99-uki.transfer": "veyra-next_@v.efi",
     }
     for name, pattern in expected_sources.items():
@@ -348,12 +371,28 @@ def main() -> int:
             return fail(f"{name} must preserve the split UUID required by the dm-verity root hash")
         if "ReadOnly=1" not in transfer:
             return fail(f"{name} must mark updated root and verity partitions read-only")
+    for name in ("80-bios-kernel.transfer", "90-bios-initrd.transfer"):
+        transfer = (transfer_dir / name).read_text(encoding="utf-8")
+        for expected in ("Path=/VEYRA", "PathRelativeTo=boot", "Mode=0444", "InstancesMax=2"):
+            if expected not in transfer:
+                return fail(f"{name} must install versioned BIOS boot assets on the ESP ({expected!r})")
     uki_transfer = (transfer_dir / "99-uki.transfer").read_text(encoding="utf-8")
     for expected in ("TriesLeft=3", "TriesDone=0", "InstancesMax=2", "PathRelativeTo=boot"):
         if expected not in uki_transfer:
             return fail(f"UKI transfer must include {expected!r}")
     if not (ROOT / "mkosi.postoutput").is_file():
         return fail("mkosi must prepare versioned update assets after image output")
+    artifact_preparer = (ROOT / "scripts/prepare-update-artifacts.py").read_text(encoding="utf-8")
+    for expected in ("extract_uki_section", "write_bios_boot_files", "grub_ota.render_grub_config", ".vmlinuz", ".initrd.zst"):
+        if expected not in artifact_preparer:
+            return fail(f"the post-output artifact step must prepare BIOS boot files ({expected!r})")
+    if not (ROOT / "mkosi.extra/usr/lib/veyra/grub_ota.py").is_file():
+        return fail("the image must include the GRUB A/B update-state helper")
+    grub_bless_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-grub-bless.service"
+    if not grub_bless_service.is_file():
+        return fail("Legacy BIOS trial updates must be blessed after the boot health checks")
+    if "veyra-grub-bless.service" not in (ROOT / "mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra.conf").read_text(encoding="utf-8"):
+        return fail("boot-complete.target must wait for the GRUB trial health decision")
     if not (ROOT / "mkosi.configure").is_file():
         return fail("the initial UKI filename must use the same version as the root slot")
     if not (ROOT / "scripts/check-image.py").is_file():
@@ -379,7 +418,10 @@ def main() -> int:
         "prepare-for-base",
         "bind-generation",
         "--definitions=\"$root_definitions\" update",
-        "--definitions=\"$uki_definitions\" update",
+        "--definitions=\"$boot_definitions\" update",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
+        "GRUB_OTA_HELPER",
         "veritysetup verify",
         "cancel-pending",
         "--version \"$version\"",
