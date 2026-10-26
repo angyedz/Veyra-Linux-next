@@ -1,0 +1,39 @@
+name: Vforge native source checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/vforge-source-tests.yml'
+      - 'mkosi.conf'
+      - 'mkosi.extra/usr/bin/vforge'
+      - 'scripts/**'
+      - 'tests/test_vforge.py'
+      - 'docs/vforge.md'
+  push:
+    branches: [feature/ota]
+    paths:
+      - '.github/workflows/vforge-source-tests.yml'
+      - 'mkosi.conf'
+      - 'mkosi.extra/usr/bin/vforge'
+      - 'scripts/**'
+      - 'tests/test_vforge.py'
+      - 'docs/vforge.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run source and policy tests
+        run: python3 -m unittest discover -s tests -q
+      - name: Run repository smoke checks
+        run: python3 scripts/smoke.py
+      - name: Check Python syntax and whitespace
+        run: |
+          python3 -m py_compile mkosi.extra/usr/bin/vforge scripts/check-build-environment.py
+          git diff --check

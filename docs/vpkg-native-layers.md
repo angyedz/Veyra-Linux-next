@@ -19,9 +19,9 @@ remove, scriptlet rejection, systemd unit discovery, app rollback, immutable
 base RPM database, candidate conflict preservation, pinned request
 re-resolution, pending locks, and pair-keyed deployment bindings. These
 scenarios have not yet been run in a valid Fedora 44 guest. The previous image
-reports Fedora 46 while the build configuration says Release 44 and is not valid
-evidence. The runtime image uses Python bindings and the library, not the DNF5
-CLI. Build-only containers may still use that CLI.
+reports a different Fedora release than the build configuration and is not
+valid evidence. The runtime image uses Python bindings and the library, not the
+DNF5 CLI. Build-only containers may still use that CLI.
 
 vpkg reads `ID` and `VERSION_ID` from the selected base root's
 `/usr/lib/os-release`, resolving symlinks within that root without sourcing or

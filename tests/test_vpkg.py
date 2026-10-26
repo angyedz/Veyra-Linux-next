@@ -382,12 +382,12 @@ class VpkgPolicyTests(unittest.TestCase):
                 )
             self.assertEqual(session.call_args.kwargs["releasever"], "44")
 
-    def test_fedora_46_candidate_is_rejected_before_generation_creation(self) -> None:
+    def test_non_target_fedora_candidate_is_rejected_before_generation_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "usr/lib").mkdir(parents=True)
             (root / "usr/lib/os-release").write_text(
-                'ID=fedora\nVERSION_ID="46"\n', encoding="utf-8"
+                'ID=fedora\nVERSION_ID="45"\n', encoding="utf-8"
             )
             layer_dir = root / "app-layers"
             layer_dir.mkdir()

@@ -50,14 +50,14 @@ These checks protect different stages. A signed manifest alone does not authenti
 
 The base image carries the coherent kernel, graphics stack, KDE session, display manager, audio and portal services. Discover and Flatpak provide desktop applications independently of the base OS. The user can install Steam and Discord through the app catalog without launching another distribution. Proton and Wayland sharing still require real application and hardware tests.
 
-The default image includes common native development tools. The planned `vforge`
-tool will support two optional workflows: project-local environments described
-by a configuration file, and persistent named environments that users can
-create, enter, modify, and remove independently of a project. The project-local
-configuration makes an environment reproducible; a named environment keeps its
-own installed tools and state between sessions. Neither workflow is mandatory:
-everyday coding must still work directly in the host account. See
-[`vforge` design](vforge.md). The manager is not implemented yet.
+The default image includes common native development tools. An early native
+`vforge` implementation supports project-local environments described by a
+configuration file and persistent named environments. Each environment uses
+the active read-only Veyra EROFS root as its OverlayFS lower and keeps its own
+writable upper. Everyday coding remains available directly in the host
+account. Vforge has not yet passed a Veyra guest runtime test; package
+generations, snapshots, network approval, and OTA compatibility are pending.
+See [`vforge` implementation and limits](vforge.md).
 
 ## Persistent state — initial layout configured
 

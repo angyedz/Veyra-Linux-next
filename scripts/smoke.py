@@ -110,8 +110,7 @@ def main() -> int:
     required_packages = {
         "kernel",
         "libdnf5",
-        "podman",
-        "fuse-overlayfs",
+        "util-linux",
         "systemd-udev",
         "NetworkManager",
         "firewalld",
