@@ -1,0 +1,29 @@
+name: Image overlay symlink audit
+
+on:
+  pull_request:
+    paths:
+      - 'mkosi.extra/**'
+      - 'scripts/audit_image_symlinks.py'
+      - 'tests/test_image_symlinks.py'
+      - '.github/workflows/image-symlinks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mkosi.extra/**'
+      - 'scripts/audit_image_symlinks.py'
+      - 'tests/test_image_symlinks.py'
+      - '.github/workflows/image-symlinks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -p 'test_image_symlinks.py' -v
+      - name: Audit actual image overlay
+        run: python3 scripts/audit_image_symlinks.py mkosi.extra
