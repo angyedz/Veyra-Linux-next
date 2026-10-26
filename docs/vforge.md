@@ -10,11 +10,15 @@ distribution root or use a container engine.
 
 ```sh
 vforge create backend
+vforge install --environment backend htop
 vforge enter backend
-vpkg install htop
 vforge exec backend -- rpm -q bash
-vforge exec backend -- vpkg install htop
 vforge list
+vforge remove --environment backend htop
+vforge snapshot backend
+vforge snapshots backend
+vforge rollback backend
+vforge upgrade backend
 vforge delete backend
 ```
 
@@ -67,11 +71,17 @@ stored outside the project. Shared networking lets the environment reach the
 internet and local network services. Removing the request in `.vforge.toml`
 revokes it the next time the project is refreshed with `vforge up`.
 
-`vforge up` installs each package listed in `[packages].system` by running the
-regular `vpkg install` command inside the environment. Package names are
-validated and limited to Fedora/RPM Fusion packages. Removing a name from the
-list does not automatically uninstall it yet; use `vpkg remove` inside the
-environment.
+`vforge install`, `vforge remove`, `vforge search`, and `vforge info` run the
+matching regular `vpkg` command inside the selected environment. Use
+`--environment NAME` for a named environment; without it, Vforge targets the
+current project's environment. `vforge upgrade` updates a named environment
+and checks that it is compatible with the currently running Veyra base.
+
+`vforge up` installs each package listed in `[packages].system` by running
+`vpkg install` inside the project environment. Package names are validated
+and limited to Fedora/RPM Fusion packages. Removing a name from the list does
+not automatically uninstall it yet; use `vforge remove PACKAGE` from the
+project directory.
 
 ## Isolation and limits
 
@@ -88,26 +98,35 @@ to commands; only locale and terminal settings are retained.
 
 This is an early native implementation. Only the `integrated` project profile
 is accepted today. GPU, Wayland, PipeWire, D-Bus, capability selection, seccomp
-policy, SELinux policy, snapshot/rollback, automatic base compatibility
-management, and package removal reconciliation are not implemented. Package
-installation and real OverlayFS behavior have not yet
-been validated in a Veyra guest. A user namespace and rootless OverlayFS
-supporting the host kernel/storage filesystem are required; Vforge reports the
-kernel or mount error when those prerequisites are unavailable.
+policy, SELinux policy, and package removal reconciliation are not implemented.
+Snapshots copy the persistent OverlayFS upper into the same user-selected
+storage, using filesystem reflinks when available and a regular copy otherwise.
+They do not reserve disk space on a separate partition.
 
-Vforge environments are compatible with the Veyra root from which they were
-created. After a Veyra system update, review or recreate environments before
-using them. Do not assume an upper layer is compatible with every system
-version.
+Vforge records the active Veyra image ID, version, and root digest when an
+environment is first used. After an OTA changes that identity, `enter`, `exec`,
+and package commands stop until `vforge upgrade NAME` snapshots the existing
+state, runs `vpkg upgrade` against the new base, and records the new identity.
+If that package operation fails, Vforge restores the saved upper. A snapshot can
+be rolled back only while its recorded Veyra base is active; restore the system
+deployment first to use a snapshot from an older base. Active environments
+cannot be snapshotted, rolled back, upgraded, or deleted until their sessions
+close.
+
+Real namespace, OverlayFS, package, snapshot, and rollback behavior still needs
+to pass the Fedora 44 Veyra guest workflow. A user namespace and rootless
+OverlayFS support from the host kernel/storage filesystem are required;
+Vforge reports the kernel or mount error when those prerequisites are missing.
 
 ## Verification status
 
 Source tests cover persistent upper/work layout, project state placement,
 read-only explicit mounts, network approval, reserved targets, Veyra root
-identity, and namespace selection. GitHub Actions runs those checks and builds the installed Veyra
-image directly. A Fedora 44 Veyra guest run
-has not yet confirmed namespace creation, OverlayFS mount, package installation,
-or persistence across process restarts.
+identity, namespace selection, snapshot restore, and package command routing.
+GitHub Actions runs those checks and builds the installed Veyra image directly.
+A Fedora 44 Veyra guest run has not yet confirmed namespace creation, OverlayFS
+mount, package installation, snapshots, rollback, or persistence across process
+restarts.
 
 Inside the environment, `vpkg install`, `remove`, and `upgrade` act on that
 environment's private RPM database and OverlayFS upper. See

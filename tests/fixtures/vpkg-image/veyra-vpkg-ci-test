@@ -77,14 +77,21 @@ vforge exec vpkg-ci -- grep -Fxq "private vforge upper" /etc/veyra-vforge-ci-mar
 test ! -e /etc/veyra-vforge-ci-marker
 
 host_htop_before="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
-vforge exec vpkg-ci -- vpkg install htop
+vforge install htop --environment vpkg-ci
 vforge exec vpkg-ci -- rpm -q htop
 vforge exec vpkg-ci -- htop --version
 vforge exec vpkg-ci -- test -x /usr/bin/htop
 host_htop_after="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
 test "$host_htop_after" = "$host_htop_before"
+vforge exec vpkg-ci -- sh -ec 'printf "before rollback\n" > /var/lib/veyra/vforge-ci-snapshot-marker'
+snapshot_id="$(vforge snapshot vpkg-ci | awk '{print $4}')"
+test -n "$snapshot_id"
+vforge exec vpkg-ci -- sh -ec 'printf "after snapshot\n" > /var/lib/veyra/vforge-ci-snapshot-marker'
+vforge rollback vpkg-ci --snapshot "$snapshot_id"
+vforge exec vpkg-ci -- grep -Fxq "before rollback" /var/lib/veyra/vforge-ci-snapshot-marker
+vforge snapshots vpkg-ci | grep -Fq "$snapshot_id"
 echo "VEYRA_VFORGE_VPKG_CI_PASS"
-echo "Veyra QEMU test: vpkg installed htop only in the persistent native environment"
+echo "Veyra QEMU test: vforge package and snapshot commands stayed inside the persistent native environment"
 
 project=/var/lib/veyra/vforge-project-ci
 install -d -m 0700 "$project"

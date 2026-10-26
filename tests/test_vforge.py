@@ -16,6 +16,7 @@ SPEC = importlib.util.spec_from_loader("veyra_vforge", SourceFileLoader("veyra_v
 assert SPEC and SPEC.loader
 vforge = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vforge)
+CURRENT_BASE_IDENTITY = vforge.current_base_identity
 
 
 class VforgeNativeTests(unittest.TestCase):
@@ -29,7 +30,14 @@ class VforgeNativeTests(unittest.TestCase):
         })
         self.env.start()
         self.addCleanup(self.env.stop)
-
+        self.base_identity = {
+            "image_id": "veyra-next",
+            "image_version": "0.1.0",
+            "base_digest": "a" * 64,
+        }
+        self.base_patch = patch.object(vforge, "current_base_identity", return_value=self.base_identity)
+        self.base_patch.start()
+        self.addCleanup(self.base_patch.stop)
     def test_named_environment_persists_overlay_upper_and_work_directories(self) -> None:
         path = vforge.create("backend")
 
@@ -39,6 +47,111 @@ class VforgeNativeTests(unittest.TestCase):
         self.assertTrue(Path(metadata["upper"]).is_dir())
         self.assertTrue(Path(metadata["work"]).is_dir())
         self.assertEqual(vforge.environment_metadata(path), metadata)
+
+    def test_namespace_entry_binds_to_the_current_veyra_base_and_rejects_changed_base(self) -> None:
+        path = vforge.create("backend")
+        original = {"image_id": "veyra-next", "image_version": "0.1.0", "base_digest": "a" * 64}
+        changed = {"image_id": "veyra-next", "image_version": "0.2.0", "base_digest": "b" * 64}
+        with (
+            patch.object(vforge, "current_base_identity", return_value=original),
+            patch.object(vforge.subprocess, "run", return_value=type("Result", (), {"returncode": 0})()) as run,
+        ):
+            self.assertEqual(vforge.namespace_command(path, ["/bin/true"]), 0)
+        self.assertEqual(vforge.environment_metadata(path)["base_identity"], original)
+
+        with (
+            patch.object(vforge, "current_base_identity", return_value=changed),
+            patch.object(vforge.subprocess, "run") as run,
+        ):
+            with self.assertRaisesRegex(vforge.VforgeError, "base changed"):
+                vforge.namespace_command(path, ["/bin/true"])
+        run.assert_not_called()
+
+    def test_current_base_identity_requires_an_immutable_veyra_root(self) -> None:
+        marker = {
+            "image_id": "veyra-next",
+            "image_version": "0.1.0",
+            "base_digest": "a" * 64,
+        }
+        with (
+            patch.object(vforge, "verify_immutable_root_mount") as verify,
+            patch.object(vforge, "veyra_root_marker", return_value=marker),
+        ):
+            identity = CURRENT_BASE_IDENTITY({"root_id": "b" * 32})
+
+        verify.assert_called_once()
+        self.assertEqual(identity, marker)
+
+    def test_snapshot_restores_overlay_upper_and_is_bound_to_environment_and_base(self) -> None:
+        path = vforge.create("backend")
+        base = {"image_id": "veyra-next", "image_version": "0.1.0", "base_digest": "a" * 64}
+        state_file = path / "upper/etc/vforge-fixture"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("before snapshot")
+
+        with patch.object(vforge, "current_base_identity", return_value=base):
+            snapshot_id = vforge.snapshot_environment(path)
+            state_file.write_text("after snapshot")
+            vforge.rollback_environment(path, snapshot_id)
+
+        self.assertEqual(state_file.read_text(), "before snapshot")
+        saved = vforge.read_snapshot(path, snapshot_id)
+        self.assertEqual(saved["base_identity"], base)
+        self.assertEqual(saved["root_id"], vforge.environment_metadata(path)["root_id"])
+
+    def test_snapshot_refuses_to_run_while_environment_has_an_active_session(self) -> None:
+        path = vforge.create("backend")
+        base = {"image_id": "veyra-next", "image_version": "0.1.0", "base_digest": "a" * 64}
+        with (
+            patch.object(vforge, "current_base_identity", return_value=base),
+            vforge.environment_lock(path),
+        ):
+            with self.assertRaisesRegex(vforge.VforgeError, "active sessions"):
+                vforge.snapshot_environment(path)
+
+    def test_vforge_upgrade_rebases_base_and_restores_snapshot_if_package_upgrade_fails(self) -> None:
+        path = vforge.create("backend")
+        old = {"image_id": "veyra-next", "image_version": "0.1.0", "base_digest": "a" * 64}
+        new = {"image_id": "veyra-next", "image_version": "0.2.0", "base_digest": "b" * 64}
+        metadata = vforge.environment_metadata(path)
+        metadata["base_identity"] = old
+        vforge.write_metadata(path, metadata)
+        state_file = path / "upper/etc/vforge-fixture"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("before upgrade")
+
+        with (
+            patch.object(vforge, "current_base_identity", return_value=new),
+            patch.object(vforge, "namespace_command", return_value=0) as command,
+        ):
+            snapshot_id = vforge.upgrade_environment(path)
+        self.assertEqual(vforge.environment_metadata(path)["base_identity"], new)
+        self.assertEqual(command.call_args.args, (path, ["vpkg", "upgrade"]))
+        self.assertEqual(vforge.read_snapshot(path, snapshot_id)["base_identity"], old)
+
+        def fail_after_partial_update(*args, **kwargs) -> int:
+            (path / "upper/etc/vforge-fixture").write_text("partially upgraded")
+            return 1
+
+        with (
+            patch.object(vforge, "current_base_identity", return_value=new),
+            patch.object(vforge, "namespace_command", side_effect=fail_after_partial_update),
+        ):
+            with self.assertRaisesRegex(vforge.VforgeError, "previous snapshot was restored"):
+                vforge.upgrade_environment(path)
+        self.assertEqual((path / "upper/etc/vforge-fixture").read_text(), "before upgrade")
+        self.assertEqual(vforge.environment_metadata(path)["base_identity"], new)
+
+    def test_snapshot_commands_support_named_and_current_project_environments(self) -> None:
+        parsed = vforge.build_parser().parse_args(["snapshot", "backend"])
+        self.assertEqual((parsed.action, parsed.name), ("snapshot", "backend"))
+        parsed = vforge.build_parser().parse_args(["rollback", "--snapshot", "1234567890-abcdef12"])
+        self.assertEqual((parsed.action, parsed.name, parsed.snapshot_id), ("rollback", None, "1234567890-abcdef12"))
+
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text('[environment]\nname = "backend"\n')
+        self.assertEqual(vforge.environment_target(None, project), project / ".vforge" / "backend")
 
     def test_project_environment_stays_in_project_vforge_directory(self) -> None:
         project = self.root / "source"
@@ -108,6 +221,29 @@ class VforgeNativeTests(unittest.TestCase):
         config.write_text('[packages]\nsystem = ["--installroot=/"]\n', encoding="utf-8")
         with self.assertRaisesRegex(vforge.VforgeError, "package name"):
             vforge.project_settings(project)
+
+    def test_vforge_package_commands_route_through_vpkg_inside_selected_environment(self) -> None:
+        path = vforge.create("backend")
+        with patch.object(vforge, "namespace_command", return_value=0) as command:
+            result = vforge.package_command("install", ["htop"], self.root, environment_name="backend")
+
+        self.assertEqual(result, 0)
+        command.assert_called_once_with(path, ["vpkg", "install", "htop"])
+
+    def test_vforge_package_commands_default_to_current_project(self) -> None:
+        project = self.root / "source"
+        project.mkdir()
+        (project / ".vforge.toml").write_text('[environment]\nname = "backend"\n')
+        project_environment = vforge.create("backend", project=project)
+
+        with patch.object(vforge, "namespace_command", return_value=0) as command:
+            vforge.package_command("remove", ["htop"], project)
+
+        command.assert_called_once_with(project_environment, ["vpkg", "remove", "htop"])
+
+    def test_vforge_package_cli_accepts_environment_option(self) -> None:
+        parsed = vforge.build_parser().parse_args(["install", "htop", "--environment", "backend"])
+        self.assertEqual((parsed.action, parsed.environment, parsed.packages), ("install", "backend", ["htop"]))
 
     def test_project_up_installs_declared_packages_inside_the_environment(self) -> None:
         project = self.root / "source"

@@ -1,7 +1,18 @@
 # Vpkg inside Vforge
 
-Enter an environment with `vforge`, then use the same package commands as on
-the system:
+The package-facing interface starts with `vforge`:
+
+```sh
+vforge install htop                         # current project environment
+vforge remove htop
+vforge search htop
+vforge info htop
+vforge install --environment backend htop   # a named environment
+vforge upgrade backend
+```
+
+Vforge routes these operations through the regular `vpkg` program inside the
+environment. Entering an environment still lets you use `vpkg` directly:
 
 ```sh
 vforge enter backend
