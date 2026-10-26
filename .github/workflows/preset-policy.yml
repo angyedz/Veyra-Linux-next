@@ -1,0 +1,16 @@
+name: Preset policy regression
+on:
+  pull_request:
+    paths:
+      - 'scripts/smoke.py'
+      - 'tests/test_preset_policy.py'
+      - 'mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset'
+      - '.github/workflows/preset-policy.yml'
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -p 'test_preset_policy.py' -v

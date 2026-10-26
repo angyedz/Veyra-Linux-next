@@ -87,15 +87,20 @@ def main() -> int:
         return fail("missing image packages: " + ", ".join(missing))
 
     preset = ROOT / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset"
-    preset_content = preset.read_text(encoding="utf-8")
+    enabled_services = {
+        line.split(maxsplit=1)[1]
+        for raw in preset.read_text(encoding="utf-8").splitlines()
+        if (line := raw.split("#", 1)[0].strip()).startswith("enable ")
+        and len(line.split(maxsplit=1)) == 2
+    }
     for service in (
-        "enable NetworkManager.service",
-        "enable firewalld.service",
-        "enable plasma-setup.service",
-        "enable plasmalogin.service",
+        "NetworkManager.service",
+        "firewalld.service",
+        "plasma-setup.service",
+        "plasmalogin.service",
     ):
-        if service not in preset_content:
-            return fail(f"system preset must include {service!r}")
+        if service not in enabled_services:
+            return fail(f"system preset must enable {service!r}")
 
     postinstall = ROOT / "mkosi.postinst.chroot"
     postinstall_content = postinstall.read_text(encoding="utf-8")
