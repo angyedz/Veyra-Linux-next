@@ -60,9 +60,9 @@ Vforge starts user, mount, PID, and network namespaces. Networking is disabled.
 The system service prepares a read-only bind of only the active EROFS root
 before user sessions start. Vforge binds that stable mount into its private
 namespace and mounts kernel OverlayFS with `userxattr`, so it does not need
-permission to bind the host's namespace root. The machine's persistent `/etc`,
-`/var`, and `/home` state is not exposed. The environment's own persistent
-upper/work pair receives writes.
+permission to bind the host's namespace root. This non-recursive bind excludes
+the machine's persistent `/etc`, `/var`, and `/home` mounts. The environment's
+own persistent upper/work pair receives writes.
 The process starts inside that merged root. Only the project and individually
 approved mounts are exposed; `/proc`, a small `/dev`, `/tmp`, and `/run` are
 provided privately for the process. Host environment variables are not passed

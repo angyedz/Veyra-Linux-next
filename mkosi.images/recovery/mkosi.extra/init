@@ -1,0 +1,26 @@
+#!/usr/bin/bash
+set -eu
+
+mkdir -p /dev /proc /sys /run /sys/firmware/efi/efivars
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+
+if [[ -d /sys/firmware/efi ]]; then
+    mountpoint -q /sys/firmware/efi/efivars || \
+        mount -t efivarfs efivarfs /sys/firmware/efi/efivars || true
+fi
+
+/usr/sbin/modprobe virtio_pci 2>/dev/null || true
+/usr/sbin/modprobe virtio_blk 2>/dev/null || true
+/usr/sbin/modprobe ext4 2>/dev/null || true
+/usr/sbin/modprobe vfat 2>/dev/null || true
+
+if [[ -x /usr/lib/systemd/systemd-udevd ]]; then
+    /usr/lib/systemd/systemd-udevd --daemon
+    /usr/bin/udevadm trigger --action=add --type=subsystems --type=devices
+    /usr/bin/udevadm settle --timeout=10 || true
+fi
+
+exec /usr/bin/python3 /usr/libexec/veyra-recovery

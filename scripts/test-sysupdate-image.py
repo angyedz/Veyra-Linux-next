@@ -191,11 +191,12 @@ def add_serial_to_initial_uki(image: pathlib.Path) -> None:
         for line in listing.splitlines()
         if line.strip().lower().endswith(".efi")
     ]
-    if len(names) != 1:
-        raise RuntimeError(f"expected one initial UKI in EFI/Linux, found {names!r}")
+    system_names = [name for name in names if name.startswith(("veyra-next-", "veyra-next_"))]
+    if len(system_names) != 1:
+        raise RuntimeError(f"expected one initial Veyra system UKI in EFI/Linux, found {system_names!r}")
     with tempfile.TemporaryDirectory(prefix="veyra-serial-uki-") as temporary:
         uki = pathlib.Path(temporary) / "initial.efi"
-        run(["mcopy", "-i", image_ref, f"::/EFI/Linux/{names[0]}", str(uki)])
+        run(["mcopy", "-i", image_ref, f"::/EFI/Linux/{system_names[0]}", str(uki)])
         append_uki_cmdline(
             uki,
             "systemd.unit=veyra-ota-ci.target",
@@ -204,7 +205,7 @@ def add_serial_to_initial_uki(image: pathlib.Path) -> None:
             "systemd.show_status=1",
             "systemd.log_target=console",
         )
-        run(["mcopy", "-o", "-i", image_ref, str(uki), f"::/EFI/Linux/{names[0]}"])
+        run(["mcopy", "-o", "-i", image_ref, str(uki), f"::/EFI/Linux/{system_names[0]}"])
 
 
 def os_release_value(uki: pathlib.Path, key: str) -> str:
