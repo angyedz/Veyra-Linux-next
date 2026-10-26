@@ -421,6 +421,37 @@ def main() -> int:
         if expected not in update_client_content:
             return fail(f"OTA fallback reconciliation must verify and retire {expected!r}")
 
+    vforge_command = ROOT / "mkosi.extra/usr/bin/vforge"
+    vforge_base_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vforge-base.service"
+    vforge_tmpfiles = ROOT / "mkosi.extra/usr/lib/tmpfiles.d/veyra-vforge.conf"
+    veyra_preset = ROOT / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset"
+    vforge_base_link = ROOT / "mkosi.extra/usr/lib/systemd/system/multi-user.target.wants/veyra-vforge-base.service"
+    if not all(path.is_file() for path in (vforge_command, vforge_base_service, vforge_tmpfiles, veyra_preset)):
+        return fail("rootless Vforge requires its command, immutable-base service, tmpfiles entry, and preset")
+    vforge_command_content = vforge_command.read_text(encoding="utf-8")
+    if "VFORGE_BASE_ROOT = \"/run/veyra/vforge/base\"" not in vforge_command_content:
+        return fail("Vforge must bind its lower layer from the prepared immutable system base")
+    if "podman" in vforge_command_content.lower() or "registry.fedoraproject.org/fedora:44" in vforge_command_content:
+        return fail("Vforge must run directly over the Veyra base without a Fedora container runtime")
+    base_service_content = vforge_base_service.read_text(encoding="utf-8")
+    for expected in (
+        "After=local-fs.target systemd-tmpfiles-setup.service",
+        "mount --bind / /run/veyra/vforge/base",
+        "mount -o remount,bind,ro /run/veyra/vforge/base",
+        "WantedBy=multi-user.target",
+    ):
+        if expected not in base_service_content:
+            return fail(f"the Vforge base service must provide a read-only, non-recursive EROFS bind: {expected!r}")
+    if "rbind" in base_service_content:
+        return fail("the Vforge base service must not expose persistent host submounts")
+    if "enable veyra-vforge-base.service" not in veyra_preset.read_text(encoding="utf-8"):
+        return fail("the immutable Vforge base service must be enabled in the image")
+    if (not vforge_base_link.is_symlink()
+            or vforge_base_link.readlink().as_posix() != "/usr/lib/systemd/system/veyra-vforge-base.service"):
+        return fail("mkosi must install the Vforge base service enablement link in multi-user.target.wants")
+    if "/run/veyra/vforge/base" not in vforge_tmpfiles.read_text(encoding="utf-8"):
+        return fail("tmpfiles must create the immutable Vforge base mountpoint")
+
     logo = ROOT / "branding/veyra-logo.svg"
     installed_logo = ROOT / "mkosi.extra/usr/share/veyra/branding/veyra-logo.svg"
     if not logo.is_file() or not installed_logo.is_file():
