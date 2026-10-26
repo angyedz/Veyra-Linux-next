@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 BIOS_BOOT_TYPE = "21686148-6449-6e6f-744e-656564454649"
@@ -39,6 +42,28 @@ def log_tail(path: pathlib.Path, lines: int = 80) -> str:
         return "(log unavailable)"
 
 
+def capture_screen(monitor_socket: pathlib.Path, destination: pathlib.Path) -> bool:
+    """Save the text VGA screen if the firmware or GRUB never reaches serial output."""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if monitor_socket.exists():
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
+                    monitor.settimeout(2)
+                    monitor.connect(str(monitor_socket))
+                    try:
+                        monitor.recv(4096)
+                    except TimeoutError:
+                        pass
+                    monitor.sendall(f"screendump {destination}\n".encode("ascii"))
+                    time.sleep(0.5)
+                    return destination.is_file() and destination.stat().st_size > 0
+            except (OSError, TimeoutError):
+                return False
+        time.sleep(0.1)
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=pathlib.Path, required=True)
@@ -63,6 +88,10 @@ def main() -> int:
     serial_log = args.report_dir / "serial.log"
     qemu_stdout = args.report_dir / "qemu.stdout"
     qemu_stderr = args.report_dir / "qemu.stderr"
+    monitor_socket = pathlib.Path(tempfile.gettempdir()) / f"veyra-bios-qemu-{os.getpid()}.sock"
+    screen_dump = args.report_dir / "screen.ppm"
+    monitor_socket.unlink(missing_ok=True)
+
     command = [
         "qemu-system-x86_64",
         "-machine",
@@ -73,10 +102,12 @@ def main() -> int:
         "2",
         "-m",
         "2048",
+        "-vga",
+        "std",
         "-display",
         "none",
         "-monitor",
-        "none",
+        f"unix:{monitor_socket},server=on,wait=off",
         "-no-reboot",
         "-boot",
         "order=c,menu=off",
@@ -106,12 +137,15 @@ def main() -> int:
         return 1
     finally:
         if process is not None and process.poll() is None:
+            if not passed:
+                capture_screen(monitor_socket, screen_dump)
             process.terminate()
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+    monitor_socket.unlink(missing_ok=True)
 
     if passed:
         elapsed = int(time.monotonic() - start)
@@ -124,6 +158,8 @@ def main() -> int:
     print(log_tail(serial_log), file=sys.stderr)
     print("--- QEMU stderr ---", file=sys.stderr)
     print(log_tail(qemu_stderr), file=sys.stderr)
+    if screen_dump.is_file() and screen_dump.stat().st_size > 0:
+        print(f"VGA screenshot: {screen_dump}", file=sys.stderr)
     print(f"Full diagnostics: {args.report_dir}", file=sys.stderr)
     return 1
 
