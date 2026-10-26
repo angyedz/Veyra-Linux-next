@@ -9,7 +9,7 @@ distribution root or use a container engine.
 ## Create and enter environments
 
 ```sh
-vforge create backend
+vforge create backend --network shared
 vforge install --environment backend htop
 vforge enter backend
 vforge exec backend -- rpm -q bash

@@ -3,11 +3,14 @@
 The package-facing interface starts with `vforge`:
 
 ```sh
+cd /path/to/project
+vforge up
 vforge install htop                         # current project environment
 vforge remove htop
 vforge search htop
 vforge info htop
-vforge install --environment backend htop   # a named environment
+vforge create backend --network shared
+vforge install --environment backend htop
 vforge upgrade backend
 ```
 
