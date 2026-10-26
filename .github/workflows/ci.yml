@@ -250,6 +250,8 @@ jobs:
             cryptsetup-bin ovmf systemd-container systemd-ukify xz-utils zstd
       - name: Check image configuration
         run: python3 scripts/smoke.py
+      - name: Check Veyra Plasma color scheme and contrast
+        run: python3 -m unittest discover --start-directory tests --pattern 'test_plasma_theme.py' --verbose
       - name: Add the CI-only vpkg boot test to this disposable image
         run: |
           sudo install -D -m 0644 build/vpkg-site/RPM-GPG-KEY-VEYRA \
@@ -306,6 +308,8 @@ jobs:
           check plasma-wayland test -x /usr/bin/startplasma-wayland
           node --version
           check branding test -s /usr/share/veyra/branding/veyra-logo.svg
+          check veyra-plasma-color-scheme test -s /usr/share/color-schemes/VeyraDark.colors
+          check veyra-plasma-default-color-scheme grep -Fxq 'ColorScheme=VeyraDark' /etc/xdg/kdeglobals
           check pinned-rpm-repository-key test -s /usr/share/veyra/RPM-GPG-KEY-VEYRA
           check veyra-sysext-level sh -eu -c "grep -Fxq SYSEXT_LEVEL=1 /etc/os-release && grep -Fxq SYSEXT_LEVEL=1 /usr/lib/os-release"
           check plasma-setup-enabled sh -eu -c "find /etc/systemd/system -type l -name plasma-setup.service -print -quit | grep -q ."
