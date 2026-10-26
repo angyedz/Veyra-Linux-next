@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import os
 import subprocess
 import stat
 import struct
@@ -17,6 +18,205 @@ SPEC = importlib.util.spec_from_loader("veyra_vpkg", SourceFileLoader("veyra_vpk
 assert SPEC and SPEC.loader
 vpkg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vpkg)
+
+
+class VpkgSystemGenerationContractTests(unittest.TestCase):
+    def test_system_transaction_overlay_includes_active_parent_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            generation = root / "generation-candidate"
+            parent = root / "generation-parent"
+            for path in (
+                generation / "upper/usr", generation / "upper/etc",
+                generation / ".transaction-work/usr", generation / ".transaction-work/etc",
+                parent / "upper/usr", parent / "upper/etc",
+            ):
+                path.mkdir(parents=True)
+            with patch.object(vpkg, "run") as run:
+                vpkg.mount_system_transaction_root(
+                    generation,
+                    (parent / "upper/usr",),
+                    (parent / "upper/etc",),
+                )
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "mount", "-t", "overlay", "overlay", "-o",
+                f"lowerdir={parent / 'upper/usr'}:/usr,upperdir={generation / 'upper/usr'},"
+                f"workdir={generation / '.transaction-work/usr'},index=off,metacopy=off,redirect_dir=off",
+                str(generation / ".transaction-root/usr"),
+            ])
+            self.assertEqual(run.call_args_list[1].args[0], [
+                "mount", "-t", "overlay", "overlay", "-o",
+                f"lowerdir={parent / 'upper/etc'}:/etc,upperdir={generation / 'upper/etc'},"
+                f"workdir={generation / '.transaction-work/etc'},index=off,metacopy=off,redirect_dir=off",
+                str(generation / ".transaction-root/etc"),
+            ])
+
+    def test_system_transaction_cli_requires_explicit_action_and_packages(self) -> None:
+        parsed = vpkg.build_parser().parse_args(["system", "install", "htop"])
+        self.assertEqual((parsed.command, parsed.system_command, parsed.packages),
+                         ("system", "install", ["htop"]))
+        parsed = vpkg.build_parser().parse_args(["system", "upgrade"])
+        self.assertEqual(parsed.system_command, "upgrade")
+        with self.assertRaises(SystemExit):
+            vpkg.build_parser().parse_args(["system", "upgrade", "htop"])
+
+    def test_system_mutation_stops_at_shared_ota_lock_before_resolution(self) -> None:
+        with (
+            patch.object(vpkg, "require_root"),
+            patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+            patch.object(vpkg, "require_no_pending_update", side_effect=vpkg.VpkgError("OTA pending")),
+            patch.object(vpkg, "validate_user_package_name"),
+            patch.object(vpkg, "running_deployment_roothash") as identity,
+        ):
+            with self.assertRaisesRegex(vpkg.VpkgError, "OTA pending"):
+                vpkg.stage_system_generation("install", ["htop"])
+        identity.assert_not_called()
+
+    def test_ota_candidate_preparation_rejects_system_trial_before_solving(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base_root = root / "candidate-base"
+            base_root.mkdir()
+            layers = root / "app-layers"
+            layers.mkdir()
+            output = layers / "candidate"
+            with (
+                patch.object(vpkg, "fedora_release_from_root", return_value="44"),
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layers),
+                patch.object(vpkg, "load_pending_update", return_value=None),
+                patch.object(vpkg, "load_staged_package_trial", return_value=None),
+                patch.object(vpkg, "load_system_generation_trial", return_value={"state": "pending"}),
+                patch.object(vpkg, "build_user_app_generation") as build,
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "system-generation trial"):
+                    vpkg.prepare_for_base(base_root, "a" * 64, output)
+            build.assert_not_called()
+
+
+class VpkgContainerModeContractTests(unittest.TestCase):
+    def _validate(self, root: Path, marker: Path, mountinfo: Path):
+        original_stat = Path.stat
+
+        def root_owned_stat(path: Path, *args, **kwargs):
+            result = original_stat(path, *args, **kwargs)
+            if path == marker:
+                values = list(result)
+                values[4] = 0
+                return os.stat_result(values)
+            return result
+
+        with patch.object(Path, "stat", autospec=True, side_effect=root_owned_stat):
+            with patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")):
+                return vpkg.validate_container_root(root, marker, mountinfo, root / "cmdline")
+
+    def _fixture(self, temporary: str):
+        root = Path(temporary)
+        (root / "usr/lib/sysimage/rpm").mkdir(parents=True)
+        release = root / "usr/lib/os-release"
+        release.write_text(
+            'ID=fedora\nVERSION_ID=44\nIMAGE_ID=veyra-next\nIMAGE_VERSION=0.1.0\n',
+            encoding="utf-8",
+        )
+        marker = root / "marker.json"
+        marker.write_text(json.dumps({
+            "schema": 1,
+            "kind": "vforge-veyra-root",
+            "root_id": "a" * 32,
+            "image_id": "veyra-next",
+            "image_version": "0.1.0",
+            "base_digest": "b" * 64,
+            "storage_driver": "overlayfs",
+            "immutable_base": True,
+        }), encoding="utf-8")
+        marker.chmod(0o444)
+        (root / "cmdline").write_text(f"quiet roothash={'b' * 64}\n", encoding="ascii")
+        mountinfo = root / "mountinfo"
+        mountinfo.write_text(f"31 1 0:1 / {marker} ro,relatime - tmpfs tmpfs ro\n", encoding="utf-8")
+        return root, marker, mountinfo
+
+    def test_container_cli_is_separate_from_host_package_commands(self) -> None:
+        install = vpkg.build_parser().parse_args(["container", "install", "htop"])
+        remove = vpkg.build_parser().parse_args(["container", "remove", "htop"])
+        upgrade = vpkg.build_parser().parse_args(["container", "upgrade"])
+        self.assertEqual((install.command, install.container_command, install.packages),
+                         ("container", "install", ["htop"]))
+        self.assertEqual((remove.container_command, remove.packages), ("remove", ["htop"]))
+        self.assertEqual(upgrade.container_command, "upgrade")
+
+    def test_container_root_requires_private_marker_and_matching_veyra_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            result = self._validate(root, marker, mountinfo)
+            self.assertEqual(result["root_id"], "a" * 32)
+
+    def test_container_root_rejects_fedora_host_or_overlay_mounts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            release = root / "usr/lib/os-release"
+            release.write_text("ID=fedora\nVERSION_ID=44\nIMAGE_ID=fedora\nIMAGE_VERSION=44\n", encoding="utf-8")
+            with self.assertRaisesRegex(vpkg.VpkgReject, "Veyra deployment"):
+                self._validate(root, marker, mountinfo)
+
+            release.write_text(
+                'ID=fedora\nVERSION_ID=44\nIMAGE_ID=veyra-next\nIMAGE_VERSION=0.1.0\n',
+                encoding="utf-8",
+            )
+            mountinfo.write_text(
+                f"31 1 0:1 / {marker} ro,relatime - tmpfs tmpfs ro\n"
+                "32 1 0:2 / /usr rw,relatime - fuse.overlay fuse.overlay rw\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(vpkg.VpkgReject, "container /usr"):
+                self._validate(root, marker, mountinfo)
+
+    def test_container_marker_must_be_read_only_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            mountinfo.write_text(f"31 1 0:1 / {marker} rw,relatime - tmpfs tmpfs rw\n", encoding="utf-8")
+            with self.assertRaisesRegex(vpkg.VpkgReject, "mounted read-only"):
+                self._validate(root, marker, mountinfo)
+
+    def test_container_marker_must_match_active_verity_roothash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, marker, mountinfo = self._fixture(temporary)
+            (root / "cmdline").write_text(f"quiet roothash={'c' * 64}\n", encoding="ascii")
+            with self.assertRaisesRegex(vpkg.VpkgReject, "active dm-verity root hash"):
+                self._validate(root, marker, mountinfo)
+
+    def test_container_session_targets_root_and_private_state(self) -> None:
+        with patch.object(vpkg, "Session") as session_type:
+            vpkg.container_package_session(refresh=True)
+        options = session_type.call_args.kwargs
+        self.assertEqual(options["installroot"], Path("/"))
+        self.assertEqual(options["repo_ids"], ("fedora", "updates", *vpkg.RPMFUSION_REPOS))
+        self.assertEqual(options["cache_dir"], Path("/var/cache/veyra/vpkg/container"))
+        self.assertEqual(options["history_dir"], Path("/var/lib/veyra/vpkg/container/history"))
+        self.assertEqual(options["persist_dir"], Path("/var/lib/veyra/vpkg/container/persist"))
+        self.assertEqual(options["state_dir"], Path("/var/lib/veyra/vpkg/container/state"))
+        self.assertEqual(options["log_dir"], Path("/var/lib/veyra/vpkg/container/log"))
+        self.assertFalse(options["no_scripts"])
+
+    def test_container_transaction_policy_rejects_protected_core_changes(self) -> None:
+        class Change:
+            name = "glibc"
+
+        policy = {
+            "schema": 1,
+            "protected_packages": {"names": ["glibc"], "prefixes": ["kernel-"]},
+        }
+        with patch.object(vpkg, "read_json_object", return_value=policy):
+            with self.assertRaisesRegex(vpkg.VpkgReject, "protected Veyra base packages"):
+                vpkg.validate_container_changes((Change(),))
+
+    def test_container_transaction_stops_before_lock_when_root_guard_fails(self) -> None:
+        with (
+            patch.object(vpkg, "require_root"),
+            patch.object(vpkg, "validate_container_root", side_effect=vpkg.VpkgReject("invalid root")),
+            patch.object(vpkg, "with_container_lock") as lock,
+        ):
+            with self.assertRaisesRegex(vpkg.VpkgReject, "invalid root"):
+                vpkg.container_transaction("upgrade")
+        lock.assert_not_called()
 
 
 def running_in_qemu_vm() -> bool:
@@ -107,6 +307,9 @@ class VpkgPolicyTests(unittest.TestCase):
                 "integrity": {"tree_sha256": vpkg.user_app_tree_digest(current / "tree")},
             }
             (current / "manifest.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+            for generation in (previous, current):
+                vpkg.seal_user_app_tree(generation / "tree")
+                vpkg.seal_user_app_generation(generation)
             state_dir.mkdir()
             current_link = state_dir / "current"
             current_link.symlink_to(current, target_is_directory=True)
@@ -127,6 +330,10 @@ class VpkgPolicyTests(unittest.TestCase):
     def test_prepare_for_empty_intents_returns_ready_without_creating_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "usr/lib/os-release").write_text(
+                "ID=fedora\nVERSION_ID=44\n", encoding="utf-8"
+            )
             layer_dir = root / "app-layers"
             layer_dir.mkdir()
             output = layer_dir / "generation-candidate"
@@ -414,6 +621,34 @@ class VpkgPolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(vpkg.VpkgError, "REJECT: transaction changes protected base package"):
                 vpkg.package_records_after_install(Path("/stage"), base)
 
+    def test_protected_core_policy_is_machine_readable_and_fail_closed(self) -> None:
+        policy_path = Path(__file__).resolve().parents[1] / "mkosi.extra/usr/share/veyra/vpkg/protected-core.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        self.assertEqual(policy["schema"], 1)
+        self.assertEqual(policy["supported_base"], {"id": "fedora", "version_id": "44"})
+        self.assertIn("glibc", policy["protected_packages"]["names"])
+        self.assertIn("python3-libdnf5", policy["protected_packages"]["names"])
+        with patch.object(vpkg, "VPKG_POLICY_FILE", policy_path):
+            vpkg.load_vpkg_policy()
+            with self.assertRaisesRegex(vpkg.VpkgError, "protected system path"):
+                vpkg.validate_user_package_paths(["/usr/lib/modules/test.ko"])
+            with self.assertRaisesRegex(vpkg.VpkgError, "protected system path"):
+                vpkg.validate_user_package_paths(["/usr/share/veyra/injected.conf"])
+            with self.assertRaisesRegex(vpkg.VpkgError, "base-system packages"):
+                vpkg.validate_user_package_name("python3-libdnf5")
+        with tempfile.TemporaryDirectory() as temporary:
+            malformed = Path(temporary) / "policy.json"
+            malformed.write_text('{"schema": 1}', encoding="utf-8")
+            with patch.object(vpkg, "VPKG_POLICY_FILE", malformed):
+                with self.assertRaisesRegex(vpkg.VpkgError, "malformed or targets an unsupported base"):
+                    vpkg.load_vpkg_policy()
+                with self.assertRaisesRegex(vpkg.VpkgError, "malformed or targets an unsupported base"):
+                    vpkg.validate_user_package_name("example")
+            missing = Path(temporary) / "missing-policy.json"
+            with patch.object(vpkg, "VPKG_POLICY_FILE", missing):
+                with self.assertRaisesRegex(vpkg.VpkgError, "not a regular file"):
+                    vpkg.load_vpkg_policy()
+
     def test_user_app_transaction_classifies_safe_additions_as_live(self) -> None:
         base = {"bash": {"bash-0:5.2-1.x86_64"}}
         installed = {
@@ -477,10 +712,48 @@ class VpkgPolicyTests(unittest.TestCase):
         installed = {"python3": {"python3-0:3.14-1.x86_64"}}
         with patch.object(vpkg, "rpm_records", return_value=installed):
             classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "STAGED")
+        self.assertEqual(added, {})
+        self.assertIn("immutable system-generation backend", reason or "")
+        self.assertIn("cannot be activated by the current app-layer backend", reason or "")
+
+    def test_app_layer_executor_does_not_activate_staged_base_replacements(self) -> None:
+        base = {"python3": {"python3-0:3.13-1.x86_64"}}
+        installed = {"python3": {"python3-0:3.14-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value=installed):
+            with self.assertRaisesRegex(vpkg.VpkgError, "STAGED: transaction changes non-core base package"):
+                vpkg.package_records_after_install(Path("/stage"), base)
+
+    def test_user_app_transaction_rejects_protected_core_mutation_from_policy(self) -> None:
+        base = {"glibc": {"glibc-0:2.40-1.x86_64"}}
+        installed = {"glibc": {"glibc-0:2.41-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value=installed):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
         self.assertEqual(classification, "REJECT")
         self.assertEqual(added, {})
-        self.assertIn("staged system-package generations", reason or "")
-        self.assertIn("does not support yet", reason or "")
+        self.assertIn("protected base package(s) glibc", reason or "")
+
+    def test_user_app_transaction_rejects_protected_core_removal(self) -> None:
+        base = {"systemd": {"systemd-0:259-1.x86_64"}}
+        with patch.object(vpkg, "rpm_records", return_value={}):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("protected base package(s) systemd", reason or "")
+
+    def test_user_app_transaction_rejects_when_hook_metadata_cannot_be_inspected(self) -> None:
+        base = {"bash": {"bash-0:5.2-1.x86_64"}}
+        installed = {**base, "example": {"example-0:1-1.x86_64"}}
+        with (
+            patch.object(vpkg, "rpm_records", return_value=installed),
+            patch.object(vpkg, "rpm_package_has_execution_hooks", side_effect=vpkg.VpkgError("rpm query failed")),
+            patch.object(vpkg, "validate_installed_app_payloads") as validate_payloads,
+        ):
+            classification, added, reason = vpkg.classify_user_app_transaction(Path("/stage"), base)
+        self.assertEqual(classification, "REJECT")
+        self.assertEqual(added, {})
+        self.assertIn("could not inspect RPM scripts or triggers", reason or "")
+        validate_payloads.assert_not_called()
 
     def test_user_app_rpm_payload_policy_accepts_additive_application_files(self) -> None:
         regular = stat.S_IFREG | 0o755
@@ -583,10 +856,20 @@ class VpkgPolicyTests(unittest.TestCase):
             generation = layer_dir / "generation-test"
             tree = generation / "tree"
             tree.mkdir(parents=True)
+            (tree / "usr/bin").mkdir(parents=True)
+            (tree / "usr/bin/example").write_text("fixture", encoding="utf-8")
+            vpkg.seal_user_app_tree(tree)
             (generation / "manifest.json").write_text(
-                json.dumps({"schema": 1, "requests": [], "installed": {}}),
+                json.dumps({
+                    "schema": 1,
+                    "generation_id": generation.name,
+                    "requests": [{"kind": "repo", "name": "example"}],
+                    "installed": {"example": "example-1"},
+                    "integrity": {"tree_sha256": vpkg.user_app_tree_digest(tree)},
+                }),
                 encoding="utf-8",
             )
+            vpkg.seal_user_app_generation(generation)
             state_dir = root / "apps"
             state_dir.mkdir()
             current = state_dir / "current"

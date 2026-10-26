@@ -26,6 +26,39 @@ def section_values(path: pathlib.Path, section: str) -> list[str]:
     return values
 
 
+def included_configs(config: pathlib.Path, seen: set[pathlib.Path] | None = None) -> list[pathlib.Path]:
+    config = config.resolve()
+    seen = seen if seen is not None else set()
+    if config in seen:
+        return []
+    if not config.is_file():
+        raise FileNotFoundError(f"included mkosi config does not exist: {config}")
+    seen.add(config)
+
+    configs = [config]
+    for line in section_values(config, "Include"):
+        key, separator, value = line.partition("=")
+        if key != "Include" or not separator:
+            continue
+        matches = sorted(config.parent.glob(value.strip()))
+        if not matches:
+            raise FileNotFoundError(f"mkosi Include has no matching files: {value.strip()}")
+        for included in matches:
+            if not included.is_file():
+                raise ValueError(f"mkosi Include is not a file: {included}")
+            configs.extend(included_configs(included, seen))
+    return configs
+
+
+def image_packages(config: pathlib.Path) -> set[str]:
+    packages: set[str] = set()
+    for source in included_configs(config):
+        for line in section_values(source, "Content"):
+            if line.startswith("Packages="):
+                packages.add(line.removeprefix("Packages="))
+    return packages
+
+
 def fail(message: str) -> int:
     print(f"Veyra Next smoke check failed: {message}", file=sys.stderr)
     return 1
@@ -34,9 +67,9 @@ def fail(message: str) -> int:
 def main() -> int:
     config = ROOT / "mkosi.conf"
     output = section_values(config, "Output")
+    config_values = section_values(config, "Config")
     content = section_values(config, "Content")
     distribution = section_values(config, "Distribution")
-    config_values = section_values(config, "Config")
     build = section_values(config, "Build")
     runtime = section_values(config, "Runtime")
 
@@ -81,13 +114,10 @@ def main() -> int:
     if "Dependencies=initrd" not in config_values:
         return fail("the bootable image must build its referenced initrd as an explicit dependency")
 
-    shared_packages = ROOT / "mkosi.veyra-base.conf"
-    if not shared_packages.is_file():
-        return fail("the shared installed-image package definition is missing")
-    shared_content = section_values(shared_packages, "Content")
-    packages = {line.removeprefix("Packages=") for line in shared_content if line.startswith("Packages=")}
-    if any(line.startswith("Packages=") for line in content):
-        return fail("installed-image packages must come from the shared Veyra base definition")
+    try:
+        packages = image_packages(config)
+    except (OSError, ValueError) as error:
+        return fail(f"could not read image package configuration: {error}")
     required_packages = {
         "kernel",
         "libdnf5",
@@ -143,6 +173,8 @@ def main() -> int:
         "systemd-sysext",
         "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
         "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
+        "VPKG_POLICY_FILE = Path(\"/usr/share/veyra/vpkg/protected-core.json\")",
+        "load_vpkg_policy()",
         "check_user_app_base_conflicts",
         "Refusing non-Veyra RPM",
         "System files must be delivered by an A/B OS update",
@@ -151,21 +183,23 @@ def main() -> int:
     ):
         if expected not in vpkg_content:
             return fail(f"vpkg safety contract must include {expected!r}")
-    if 'commands.add_parser("container"' in vpkg_content:
-        policy = ROOT / "mkosi.extra/usr/share/veyra/vpkg/protected-core.json"
-        try:
-            policy_data = json.loads(policy.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return fail("container Vpkg must install a valid protected-core policy")
-        if not isinstance(policy_data, dict) or not all(
-            token in vpkg_content for token in ("container_protected_packages()", "validate_container_root(")
-        ):
-            return fail("container Vpkg must enforce protected-core policy and validate its Veyra root")
-    elif "BLOCKED_PACKAGE_PREFIXES" not in vpkg_content:
-        return fail("Vpkg must enforce its protected-package policy")
     backend = ROOT / "mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"
     if not backend.is_file():
         return fail("vpkg must install its libdnf5 API adapter")
+    protected_policy = ROOT / "mkosi.extra/usr/share/veyra/vpkg/protected-core.json"
+    try:
+        policy = json.loads(protected_policy.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return fail(f"vpkg must ship a valid machine-readable protected-core policy: {error}")
+    if (
+        policy.get("schema") != 1
+        or policy.get("supported_base") != {"id": "fedora", "version_id": "44"}
+        or "glibc" not in policy.get("protected_packages", {}).get("names", [])
+        or "python3-libdnf5" not in policy.get("protected_packages", {}).get("names", [])
+        or "/usr/lib/modules/" not in policy.get("payload_paths", {}).get("denied_prefixes", [])
+        or "/usr/share/veyra/" not in policy.get("payload_paths", {}).get("denied_prefixes", [])
+    ):
+        return fail("vpkg protected-core policy must target Fedora 44 and protect critical core payloads")
     backend_content = backend.read_text(encoding="utf-8")
     for expected in ("libdnf5.base.Base()", "libdnf5.base.Goal", "transaction.run()", '"noscripts", "notriggers"'):
         if expected not in backend_content:
@@ -350,8 +384,53 @@ def main() -> int:
         return fail("the initial UKI filename must use the same version as the root slot")
     if not (ROOT / "scripts/check-image.py").is_file():
         return fail("the built GPT layout must be checked in CI")
+    initrd_config = ROOT / "mkosi.images/initrd/mkosi.conf"
+    initrd_unit = ROOT / "mkosi.images/initrd/mkosi.extra/usr/lib/systemd/system/veyra-vpkg-generations.service"
+    initrd_helper = ROOT / "mkosi.images/initrd/mkosi.extra/usr/libexec/veyra-vpkg-initrd.py"
+    rootfs_helper = ROOT / "mkosi.extra/usr/libexec/veyra-vpkg-initrd.py"
+    health_unit = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-check.service"
+    initrd_wants = ROOT / "mkosi.images/initrd/mkosi.extra/usr/lib/systemd/system/initrd-root-fs.target.requires/veyra-vpkg-generations.service"
+    if not all(path.is_file() for path in (initrd_config, initrd_unit, initrd_helper, rootfs_helper, health_unit)):
+        return fail("the root image and initrd must contain the vpkg system-generation boot backend")
+    if initrd_helper.read_bytes() != rootfs_helper.read_bytes():
+        return fail("the root image and initrd generation helpers must be byte-for-byte identical")
+    if not all(path.stat().st_mode & 0o111 for path in (initrd_helper, rootfs_helper)):
+        return fail("both generation helper copies must be executable")
+    health_content = health_unit.read_text(encoding="utf-8")
+    if "After=graphical.target" not in health_content or "ExecStart=/usr/bin/vpkg complete-system-trial" not in health_content:
+        return fail("system-generation health commit must follow graphical and extension checks")
+    if not initrd_wants.is_symlink() or initrd_wants.readlink().as_posix() != "../veyra-vpkg-generations.service":
+        return fail("the initrd root-fs target must require vpkg generation selection")
+    initrd_config_content = initrd_config.read_text(encoding="utf-8")
+    if any(package not in initrd_config_content for package in ("Packages=python3", "Packages=systemd-boot-unsigned")):
+        return fail("the initrd generation selector needs Python and bootctl in the initrd")
+    if "KernelModules=*/kernel/fs/overlayfs/overlay.ko*" not in initrd_config_content:
+        return fail("the initrd must include Fedora's OverlayFS kernel module")
+    initrd_unit_content = initrd_unit.read_text(encoding="utf-8")
+    for expected in (
+        "After=sysroot.mount sysroot-etc.mount sysroot-var.mount",
+        "Requires=sysroot.mount sysroot-etc.mount sysroot-var.mount",
+        "RequiresMountsFor=/sysefi",
+        "Before=initrd-root-fs.target",
+        "/usr/libexec/veyra-vpkg-initrd.py",
+    ):
+        if expected not in initrd_unit_content:
+            return fail(f"the vpkg OverlayFS selector must run after existing persistent mounts: {expected!r}")
     if not (ROOT / "scripts/test-ab-boot.py").is_file():
         return fail("CI must boot a staged A/B update and exercise boot-count rollback")
+    update_image_test = ROOT / "scripts/test-sysupdate-image.py"
+    if not update_image_test.is_file():
+        return fail("CI must create the signed A/B test update")
+    update_image_content = update_image_test.read_text(encoding="utf-8")
+    for expected in (
+        "def add_serial_to_initial_uki(",
+        '"console=ttyS0,115200n8"',
+        '"systemd.show_status=1"',
+        '"systemd.log_target=console"',
+        "add_serial_to_initial_uki(staged_image)",
+    ):
+        if expected not in update_image_content:
+            return fail(f"the disposable initial UKI must expose test boot markers over serial: {expected!r}")
     update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
     if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
         return fail("the image must install the veyra-update command")

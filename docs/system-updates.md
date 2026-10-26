@@ -59,10 +59,11 @@ temporary signed test repository and performs install, upgrade and remove
 transactions. The fixture verifies that `systemd-sysext` exposes the installed
 commands, removes them again, and leaves Fedora's base RPM database untouched.
 It also attempts to install a signed but deliberately invalid extension image
-and verifies that the real `systemd-sysext` failure rolls the DNF transaction
-back while leaving the valid extension active. A separate DNF5 transaction
-test uses a controlled activation failure to exercise the rollback path
-reliably.
+and verifies that the real `systemd-sysext` failure rolls the libdnf5-backed
+transaction back while leaving the valid extension active. A separate
+libdnf5-backed transaction test uses a controlled activation failure to
+exercise rollback. A two-boot QEMU fixture also tests staged generation
+selection and rollback before `graphical.target`.
 
 ## Update signing and publication
 

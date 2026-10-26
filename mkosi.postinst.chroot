@@ -1,6 +1,10 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+# mkosi's extra-tree copy can normalize executable modes. The Vpkg initrd
+# helper is invoked directly by systemd, so keep its installed mode explicit.
+chmod 0755 /usr/libexec/veyra-vpkg-initrd.py
+
 # Install Flathub as a normal system app source for Discover. The official
 # .flatpakrepo, including its signing key, is vendored so this build step works
 # without network access inside mkosi's finalization sandbox.

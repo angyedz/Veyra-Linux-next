@@ -7,8 +7,8 @@ prototype with rollback metadata. It is not yet a complete native RPM manager.
 
 | Master specification | Current implementation | Remaining gap |
 |---|---|---|
-| Classify the resolved transaction as LIVE, STAGED, or REJECT | libdnf5 resolves the complete request in a disposable installroot; additive app transactions can be LIVE, explicitly reboot-staged app generations are supported, and unsupported changes are REJECT | General system RPM replacement transactions are not supported; classification is intentionally conservative |
-| Analyze dependencies, paths, conflicts, hooks, ABI, and privileges | Checks base RPM changes, payload paths, collisions, file types, setuid/setgid, capabilities, protected package names, scriptlets, triggers, file triggers, and SYSUSERS | `/etc` is rejected; unit handling needs real package coverage; ABI analysis is limited to sysext compatibility |
+| Classify the resolved transaction as LIVE, STAGED, or REJECT | libdnf5 resolves the complete request in a disposable installroot; additive app transactions are LIVE; a non-core base-RPM delta is classified STAGED; explicit app-layer staging is supported | The current executor rejects STAGED system-RPM deltas because there is no native system-root generation backend yet |
+| Analyze dependencies, paths, conflicts, hooks, ABI, and privileges | Checks full base RPM inventory deltas, payload paths, collisions, file types, setuid/setgid, capabilities, protected package names, scriptlets, triggers, file triggers, and SYSUSERS using the machine-readable policy | `/etc` is rejected; unit handling needs real package coverage; ABI analysis is limited to sysext compatibility |
 | Keep arbitrary RPM scriptlets from running with host privileges | libdnf5 uses `noscripts,notriggers`; any package declaring hooks or SYSUSERS metadata is rejected | No constrained effect adapter or scriptlet executor; unsupported hooks remain REJECT |
 | Install native RPM files on immutable EROFS | Additive `/usr` and `/opt` content is exposed through systemd-sysext | No full root overlay, `/etc` layer, generation-owned host RPM database, or system-package replacement |
 | Preserve and restore package generations | App payload directories and transaction manifests live under `/var/lib/veyra/vpkg/app-layers`; rollback changes the active generation and refreshes systemd-sysext. `vpkg stage install` records a trial marker and selects its generation after reboot, before sysext activation; a failed candidate can be rolled back from a text console | ext4 directories are copied, not snapshots; storage use grows with retained generations; no separate Recovery boot entry |
@@ -29,6 +29,16 @@ executing the file. Current package transactions and OTA candidate preparation
 require `ID=fedora` and `VERSION_ID=44`. The validated selected-base version is
 passed to libdnf5 and used for sysext `VERSION_ID`. Fedora 44 is the current
 target policy, not a permanent restriction on future Fedora targets.
+
+The immutable policy at `/usr/share/veyra/vpkg/protected-core.json` uses schema
+1. It declares the current Fedora 44 base identity, protected RPM names and
+prefixes, the only permitted additive payload roots, and exact/prefix protected
+paths. Missing, malformed, unknown-schema, or wrong-target policy data fails
+closed before a package request or payload is accepted. The policy is shipped
+by the `veyra-vpkg` RPM as well as the image build source. Its protected RPM
+names cover the image's init, boot, kernel/firmware, package-manager and
+integrity stack, including `libdnf5` and its Python bindings; `/usr/lib/veyra`
+and `/usr/share/veyra` are protected payload roots for Veyra-owned userland.
 
 ## Storage contract under the current image layout
 
@@ -66,9 +76,12 @@ The classifier consumes the solved RPM result, not a product-name shortcut.
   boot ID. The boot sync unit selects it only on a later boot and only for the
   matching pair; the health check completes the trial after sysext activation.
   `vpkg rollback` can restore the previous app generation from a text console.
-  This does not stage arbitrary host RPM replacements or `/etc` changes.
-- **REJECT:** protected boot/kernel/driver/systemd-core/RPM files, base package
-  replacements without a staged mechanism, `/etc` changes without a
+  This does not stage arbitrary host RPM replacements or `/etc` changes. An
+  replacement or removal of an unprotected RPM already present in the base is
+  identified as a STAGED candidate by transaction analysis, but the executor rejects
+  it because the required root-overlay generation mechanism is not installed.
+- **REJECT:** protected boot/kernel/driver/systemd-core/RPM files, `/etc`
+  changes without a
   generation-owned configuration layer, unresolved conflicts, unsafe file
   types or privileges, ABI incompatibility, and unsupported RPM hooks. A
   rejection leaves the active generation, intents, and old binding unchanged.

@@ -94,6 +94,12 @@ jobs:
           set -euo pipefail
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
           python3 scripts/check-image.py mkosi.output/veyra-next.raw
+          mapfile -t initrds < <(find mkosi.output -maxdepth 1 -type f -name 'initrd*.cpio.zst' -print)
+          if ((${#initrds[@]} != 1)); then
+            echo "Expected exactly one built initrd, found ${#initrds[@]}" >&2
+            exit 1
+          fi
+          python3 scripts/check-vpkg-initrd-image.py "${initrds[0]}"
           test -s "mkosi.output/veyra-next_${version}.efi"
           test -s mkosi.output/veyra-next_*.root.raw.zst
           test -s mkosi.output/veyra-next_*.root-verity.raw.zst

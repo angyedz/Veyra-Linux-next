@@ -142,6 +142,61 @@ def patch_uki(
         stream.write(struct.pack("<I", len(os_release)))
 
 
+def append_uki_cmdline(uki: pathlib.Path, *arguments: str) -> None:
+    """Append test-only boot arguments without changing the UKI identity."""
+    if any(not re.fullmatch(r"[A-Za-z0-9_.,=-]+", argument) for argument in arguments):
+        raise RuntimeError("UKI command-line arguments must be simple key=value tokens")
+    sections = pe_sections(uki)
+    if b".cmdline" not in sections:
+        raise RuntimeError(f"test UKI {uki} has no .cmdline section")
+    header, raw_offset, raw_size = sections[b".cmdline"]
+    with uki.open("r+b") as stream:
+        stream.seek(raw_offset)
+        old = stream.read(raw_size).split(b"\0", 1)[0].decode("ascii", errors="strict")
+        values = old.split()
+        for argument in arguments:
+            key = argument.split("=", 1)[0]
+            values = [item for item in values if item.split("=", 1)[0] != key]
+            values.append(argument)
+        cmdline = " ".join(values).encode("ascii") + b"\0"
+        if len(cmdline) > raw_size:
+            raise RuntimeError("test UKI command line exceeds its existing PE section")
+        stream.seek(raw_offset)
+        stream.write(cmdline.ljust(raw_size, b"\0"))
+        stream.seek(header + 8)
+        stream.write(struct.pack("<I", len(cmdline)))
+
+
+def add_serial_to_initial_uki(image: pathlib.Path) -> None:
+    """Expose the initial test-copy boot over serial; do not modify production artifacts."""
+    table = json.loads(run(["sfdisk", "--json", str(image)], stdout=subprocess.PIPE).stdout)["partitiontable"]
+    sector_size = int(table.get("sectorsize", 512))
+    esp_type = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+    esps = [p for p in table["partitions"] if str(p.get("type", "")).lower() == esp_type]
+    if len(esps) != 1:
+        raise RuntimeError("the test image must contain exactly one EFI system partition")
+    esp_offset = int(esps[0]["start"]) * sector_size
+    image_ref = f"{image}@@{esp_offset}"
+    listing = run(["mdir", "-b", "-i", image_ref, "::/EFI/Linux"], stdout=subprocess.PIPE).stdout
+    names = [
+        pathlib.PurePosixPath(line.strip()).name
+        for line in listing.splitlines()
+        if line.strip().lower().endswith(".efi")
+    ]
+    if len(names) != 1:
+        raise RuntimeError(f"expected one initial UKI in EFI/Linux, found {names!r}")
+    with tempfile.TemporaryDirectory(prefix="veyra-serial-uki-") as temporary:
+        uki = pathlib.Path(temporary) / "initial.efi"
+        run(["mcopy", "-i", image_ref, f"::/EFI/Linux/{names[0]}", str(uki)])
+        append_uki_cmdline(
+            uki,
+            "console=ttyS0,115200n8",
+            "systemd.show_status=1",
+            "systemd.log_target=console",
+        )
+        run(["mcopy", "-o", "-i", image_ref, str(uki), f"::/EFI/Linux/{names[0]}"])
+
+
 def os_release_value(uki: pathlib.Path, key: str) -> str:
     sections = pe_sections(uki)
     if b".osrel" not in sections:
@@ -278,6 +333,10 @@ def main() -> int:
                     "--image", str(staged_image),
                     "--repository", str(args.vpkg_test_repo.resolve()),
                 ])
+            # QEMU's serial log is the only guest evidence channel. Make the
+            # initial UKI in this disposable copy observable before sysupdate
+            # stages a candidate; never alter the built image or release UKI.
+            add_serial_to_initial_uki(staged_image)
             root_raw = source / "root.raw"
             verity_raw = source / "verity.raw"
             root_hash_path = source / "roothash"

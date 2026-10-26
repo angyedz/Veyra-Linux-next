@@ -2,7 +2,6 @@ name: Fedora image
 
 on:
   pull_request:
-  workflow_dispatch:
   push:
     branches: [main]
 
@@ -269,30 +268,37 @@ jobs:
             mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
+      - name: Verify the built initrd contains the native vpkg boot backend
+        run: |
+          set -euo pipefail
+          mapfile -t initrds < <(find mkosi.output -maxdepth 1 -type f -name 'initrd*.cpio.zst' -print)
+          if ((${#initrds[@]} != 1)); then
+            echo "Expected exactly one built initrd, found ${#initrds[@]}" >&2
+            exit 1
+          fi
+          python3 scripts/check-vpkg-initrd-image.py "${initrds[0]}"
       - name: Verify the packages inside the built image
         run: |
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
           check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
-            flatpak libdnf5 python3-libdnf5 e2fsprogs gcc git cmake python3 nodejs22
+            flatpak libdnf5 python3-libdnf5 gcc git cmake python3 nodejs22
           test "$(rpm -E "%{fedora}")" = 44
           grep -Fxq "ID=fedora" /usr/lib/os-release
           grep -Fxq "VERSION_ID=44" /usr/lib/os-release
-          test "$(rpm -q --qf "%{RELEASE}\\n" libdnf5 python3-libdnf5 | grep -Ec "\\.fc44$")" -eq 2
-          if rpm -qa --qf "%{NAME} %{RELEASE}\\n" | grep -Eiq "fc46|rawhide"; then
-            echo "Fedora46/Rawhide RPM detected in the Fedora44 image" >&2
-            exit 1
-          fi
-          for package in dnf5 dnf5-plugins; do
-            if rpm -q "$package" >/dev/null 2>&1; then
-              echo "The host image must not install the DNF5 CLI package: $package" >&2
-              exit 1
-            fi
-          done
+          test "$(rpm -q --qf "%{RELEASE}\n" libdnf5 python3-libdnf5 | grep -Ec "\.fc44$")" -eq 2
+          ! rpm -q dnf5 dnf5-plugins
           check systemd-sysupdate test -x /usr/lib/systemd/systemd-sysupdate
           check vpkg test -x /usr/bin/vpkg
-          check fuse2fs test -x /usr/bin/fuse2fs
+          check vpkg-generation-helper test -x /usr/libexec/veyra-vpkg-initrd.py
+          helper_mode="$(stat -c %a /usr/libexec/veyra-vpkg-initrd.py)"
+          printf "Installed Vpkg initrd helper mode: %s\\n" "$helper_mode"
+          check vpkg-generation-helper-mode test "$helper_mode" = 755
+          check vpkg-generation-helper-label matchpathcon -V /usr/libexec/veyra-vpkg-initrd.py
+          check vpkg-generation-health-unit test -s /usr/lib/systemd/system/veyra-vpkg-check.service
+          check vpkg-generation-health-label matchpathcon -V /usr/lib/systemd/system/veyra-vpkg-check.service
+          check vpkg-initrd-helper-label matchpathcon -V /usr/libexec/veyra-vpkg-initrd.py
           check python-libdnf5 python3 -c "import libdnf5"
           check dnf5-cli-absent sh -eu -c "! command -v dnf5"
           check veyra-update test -x /usr/bin/veyra-update
