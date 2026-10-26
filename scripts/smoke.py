@@ -77,6 +77,11 @@ def main() -> int:
     if "KernelCommandLine=systemd.unit=graphical.target" not in content:
         return fail("the image must boot into the graphical desktop target")
 
+    oci_config = ROOT / "mkosi.images/veyra-oci-rootfs/mkosi.conf"
+    oci_content = section_values(oci_config, "Content")
+    if "Initrds=" not in oci_content:
+        return fail("the OCI rootfs subimage must clear the installed image's inherited Initrds setting")
+
     shared_packages = ROOT / "mkosi.veyra-base.conf"
     if not shared_packages.is_file():
         return fail("the shared installed-image and OCI package definition is missing")
