@@ -1,0 +1,25 @@
+name: Branding mirror integrity
+on:
+  pull_request:
+    paths:
+      - 'scripts/smoke.py'
+      - 'branding/fastfetch/**'
+      - 'mkosi.extra/usr/share/veyra/fastfetch/**'
+      - 'tests/test_branding_mirror.py'
+      - '.github/workflows/branding-mirror.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/smoke.py'
+      - 'branding/fastfetch/**'
+      - 'mkosi.extra/usr/share/veyra/fastfetch/**'
+      - 'tests/test_branding_mirror.py'
+      - '.github/workflows/branding-mirror.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -p 'test_branding_mirror.py' -v
