@@ -240,14 +240,28 @@ def inject_test_user(etc_root: pathlib.Path, home_root: pathlib.Path) -> None:
     os.chown(user_home, TEST_UID, TEST_GID)
 
 
-def test_runner_script() -> str:
+def test_runner_script(archive_name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", archive_name):
+        raise VforgeQemuError("OCI archive filename must use simple ASCII letters, digits, '.', '_' or '-'")
     return f"""#!/bin/bash
 set -u
 
 source_root=/run/vforge-source
+base_root=/run/vforge-base
 mkdir -p "$source_root"
 if ! mount -t 9p -o trans=virtio,version=9p2000.L,ro vforge-source "$source_root"; then
     printf '%s\\n' '{FAIL_MARKER} mount' > /dev/console
+    systemctl poweroff --force --force || true
+    exit 1
+fi
+mkdir -p "$base_root"
+if ! mount -t 9p -o trans=virtio,version=9p2000.L,ro vforge-base "$base_root"; then
+    printf '%s\\n' '{FAIL_MARKER} base archive mount' > /dev/console
+    systemctl poweroff --force --force || true
+    exit 1
+fi
+if [[ ! -s "$base_root/{archive_name}" ]]; then
+    printf '%s\\n' '{FAIL_MARKER} base archive missing' > /dev/console
     systemctl poweroff --force --force || true
     exit 1
 fi
@@ -273,6 +287,7 @@ runuser --user vforge-test -- env \\
     XDG_DATA_HOME=/home/vforge-test/.local/share \\
     XDG_CONFIG_HOME=/home/vforge-test/.config \\
     XDG_STATE_HOME=/home/vforge-test/.local/state \\
+    VFORGE_BASE_ARCHIVE="/run/vforge-base/{archive_name}" \\
     PATH="$source_root/mkosi.extra/usr/bin:/usr/bin:/bin" \\
     PYTHONDONTWRITEBYTECODE=1 \\
     /bin/bash "$source_root/scripts/test-vforge-qemu.sh"
@@ -306,7 +321,7 @@ WantedBy=multi-user.target
 """
 
 
-def write_guest_test_service(etc_root: pathlib.Path) -> None:
+def write_guest_test_service(etc_root: pathlib.Path, archive_name: str) -> None:
     systemd = etc_root / "systemd/system"
     wants = systemd / "multi-user.target.wants"
     wants.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -314,7 +329,7 @@ def write_guest_test_service(etc_root: pathlib.Path) -> None:
     runner = etc_root / "veyra-vforge-qemu-test-runner"
     for path, content, mode in (
         (unit, test_runner_unit(), 0o644),
-        (runner, test_runner_script(), 0o755),
+        (runner, test_runner_script(archive_name), 0o755),
     ):
         if path.is_symlink():
             raise VforgeQemuError(f"guest test service path may not be a symlink: {path}")
@@ -379,7 +394,7 @@ def load_uki_patcher():
     return module.patch_uki
 
 
-def prepare_test_image(base_image: pathlib.Path, output_dir: pathlib.Path, offsets: dict[str, tuple[int, int]], image_version: str, roothash: str) -> pathlib.Path:
+def prepare_test_image(base_image: pathlib.Path, output_dir: pathlib.Path, offsets: dict[str, tuple[int, int]], image_version: str, roothash: str, archive_name: str) -> pathlib.Path:
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     image = output_dir / "veyra-vforge-test.raw"
     if image.exists() or image.is_symlink():
@@ -393,7 +408,7 @@ def prepare_test_image(base_image: pathlib.Path, output_dir: pathlib.Path, offse
             with mounted_ext4(image, offsets["home"][0], home_mount) as home_root:
                 inject_test_machine_id(etc_root)
                 inject_test_user(etc_root, home_root)
-                write_guest_test_service(etc_root)
+                write_guest_test_service(etc_root, archive_name)
     finally:
         etc_mount.rmdir() if etc_mount.exists() else None
         home_mount.rmdir() if home_mount.exists() else None
@@ -446,8 +461,9 @@ def require_kvm() -> str:
 def qemu_command(
     qemu: str, image: pathlib.Path, source_root: pathlib.Path, code: pathlib.Path,
     variables: pathlib.Path, vars_copy: pathlib.Path, serial_log: pathlib.Path,
+    oci_archive: pathlib.Path,
 ) -> list[str]:
-    values = (image, source_root, code, vars_copy, serial_log)
+    values = (image, source_root, code, vars_copy, serial_log, oci_archive)
     if any("," in str(path) for path in values):
         raise VforgeQemuError("QEMU file/share paths containing commas are not supported")
     shutil.copyfile(variables, vars_copy)
@@ -460,15 +476,18 @@ def qemu_command(
         "-netdev", "user,id=net0",
         "-device", "virtio-net-pci,netdev=net0",
         "-virtfs", f"local,id=vforge-source,path={source_root},mount_tag=vforge-source,security_model=none,readonly=on",
+        "-virtfs", f"local,id=vforge-base,path={oci_archive.parent},mount_tag=vforge-base,security_model=none,readonly=on",
         "-display", "none", "-serial", f"file:{serial_log}", "-monitor", "none", "-no-reboot",
     ]
 
 
-def run_guest(qemu: str, image: pathlib.Path, source_root: pathlib.Path, output_dir: pathlib.Path, timeout: int) -> str:
+def run_guest(qemu: str, image: pathlib.Path, source_root: pathlib.Path, oci_archive: pathlib.Path, output_dir: pathlib.Path, timeout: int) -> str:
     code, variables = find_ovmf_pair()
     serial_log = output_dir / "serial.log"
     qemu_log = output_dir / "qemu.log"
-    command = qemu_command(qemu, image, source_root, code, variables, output_dir / "OVMF_VARS.fd", serial_log)
+    command = qemu_command(
+        qemu, image, source_root, code, variables, output_dir / "OVMF_VARS.fd", serial_log, oci_archive,
+    )
     with qemu_log.open("wb") as log:
         process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + timeout
@@ -506,6 +525,7 @@ def run_guest(qemu: str, image: pathlib.Path, source_root: pathlib.Path, output_
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, type=pathlib.Path, help="validated Fedora 44 Veyra raw image with sidecar metadata")
+    parser.add_argument("--oci-archive", required=True, type=pathlib.Path, help="Veyra OCI rootfs archive from the same image build")
     parser.add_argument("--source-root", type=pathlib.Path, default=ROOT)
     parser.add_argument("--work-dir", type=pathlib.Path, default=ROOT / "work/vforge-qemu")
     parser.add_argument("--timeout", type=int, default=1800)
@@ -519,12 +539,18 @@ def main() -> int:
             raise VforgeQemuError("source checkout path containing a comma cannot be shared through QEMU 9p")
         base_image = args.image.resolve(strict=True)
         offsets, version, roothash = validate_base_image(base_image)
+        oci_archive = args.oci_archive.resolve(strict=True)
+        if not oci_archive.is_file() or oci_archive.stat().st_size == 0:
+            raise VforgeQemuError("Veyra OCI rootfs archive is missing or empty")
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", oci_archive.name):
+            raise VforgeQemuError("OCI archive filename must use simple ASCII letters, digits, '.', '_' or '-'")
+        run([sys.executable, str(ROOT / "scripts/check-vforge-oci-artifact.py"), str(oci_archive), "--require-sources"])
         if args.timeout <= 0:
             raise VforgeQemuError("QEMU timeout must be a positive number of seconds")
         output_dir = args.work_dir / f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         output_dir.mkdir(mode=0o700, parents=True)
-        test_image = prepare_test_image(base_image, output_dir, offsets, version, roothash)
-        serial = run_guest(qemu, test_image, source_root, output_dir, args.timeout)
+        test_image = prepare_test_image(base_image, output_dir, offsets, version, roothash, oci_archive.name)
+        serial = run_guest(qemu, test_image, source_root, oci_archive, output_dir, args.timeout)
         print(f"Vforge Fedora 44 guest scenario passed. Serial log: {output_dir / 'serial.log'}", flush=True)
         print("\n".join(serial.splitlines()[-40:]), flush=True)
         return 0

@@ -96,12 +96,12 @@ Delete and recreate them after importing a valid Veyra OCI archive.
 
 Local source tests cover identity and marker policy, creation arguments, Vpkg
 command routing, snapshot metadata, rollback identity checks, and refusal of
-legacy roots. GitHub Actions builds and checks the OCI artifact. The Vforge
-QEMU lifecycle fixture still needs to be switched to import that exact artifact
-and exercise rootless Podman creation, marker visibility, a real
-`vpkg container install`, private RPM DB, snapshot, and rollback. Until that
-fixture passes, the full Vforge runtime path is source/build verified only; no
-Podman/QEMU runtime success is claimed.
+legacy roots. GitHub Actions builds and checks the OCI artifact. The QEMU
+fixture now consumes the OCI archive from that same build and checks rootless
+Podman creation, marker visibility, a real `vpkg container install`, private RPM
+DB isolation, and snapshot/rollback. The Actions job runs it only when the
+runner exposes KVM. No Podman/QEMU runtime success is claimed until that guest
+scenario completes successfully.
 
 Vforge uses the Veyra host kernel and rootless Podman, not a VM. Its isolation
 still depends on the host's Podman, user namespaces, seccomp, SELinux and storage

@@ -349,7 +349,7 @@ def base_identity_from_environment(metadata: dict[str, object]) -> dict[str, str
         or not re.fullmatch(r"[0-9a-f]{64}", values["base_digest"])
         or not isinstance(values["image"], str)
         or not isinstance(values["base_image"], str)
-        or values["base_image"] != f"{VEYRA_BASE_REPOSITORY}:{values['base_digest'][:16]}"
+        or values["base_image"] != f"{VEYRA_BASE_REPOSITORY}:{values['base_digest']}"
         or not values["image"]
     ):
         raise VforgeError("Vforge environment has an incomplete Veyra OCI base identity")
@@ -505,8 +505,12 @@ def import_veyra_base(archive: Path) -> dict[str, str]:
         info = archive.stat()
     except OSError as error:
         raise VforgeError(f"Veyra OCI base archive is unavailable: {error}") from error
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-        raise VforgeError("Veyra OCI base archive must be a regular file owned by the current user")
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise VforgeError("Veyra OCI base archive must be a non-writable regular file owned by root or the current user")
     podman_root = common_store_root() / "containers"
     verify_podman_overlay(podman_root)
     podman(["load", "--input", str(archive)], capture=True, root=podman_root)
@@ -532,7 +536,7 @@ def import_veyra_base(archive: Path) -> dict[str, str]:
     if len(verified) != 1:
         raise VforgeError(f"expected exactly one valid Veyra OCI base after import; found {len(verified)}")
     image_id, identity = verified[0]
-    image_ref = f"{VEYRA_BASE_REPOSITORY}:{identity['base_digest'][:16]}"
+    image_ref = f"{VEYRA_BASE_REPOSITORY}:{identity['base_digest']}"
     podman(["image", "tag", image_id, image_ref], root=podman_root)
     archive_dir = common_store_root() / "base"
     ensure_private_directory(archive_dir)

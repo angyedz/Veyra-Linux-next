@@ -61,7 +61,7 @@ jobs:
       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/feature/vforge')
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Use Vpkg target-branch sources for branch builds
@@ -86,7 +86,7 @@ jobs:
             btrfs-progs ca-certificates cpio curl dnf dosfstools e2fsprogs \
             debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl \
             podman python3 squashfs-tools cryptsetup-bin systemd-container \
-            systemd-ukify xz-utils zstd
+            systemd-ukify xz-utils zstd qemu-system-x86 ovmf fuse2fs fuse3
       - name: Check image configuration
         run: python3 scripts/smoke.py
       - name: Gate Ubuntu DNF and Fedora 44 tools tree
@@ -123,3 +123,26 @@ jobs:
           image_id="$(sudo podman images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' | awk '$2 ~ /veyra-next/ { print $1; exit }')"
           sudo podman run --rm --entrypoint rpm "$image_id" -qa --qf '%{NAME}-%{EVR}.%{ARCH}\n' | sort > "$RUNNER_TEMP/oci-rpms.txt"
           diff -u "$RUNNER_TEMP/main-rpms.txt" "$RUNNER_TEMP/oci-rpms.txt"
+      - name: Check whether this runner exposes KVM to the Vforge runtime test
+        id: kvm
+        run: |
+          if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run Vforge rootless lifecycle with the built OCI artifact in QEMU/KVM
+        if: steps.kvm.outputs.available == 'true'
+        run: |
+          python3 scripts/run-vforge-qemu.py \
+            --image mkosi.output/veyra-next.raw \
+            --oci-archive mkosi.output/veyra-next-vforge-base.tar \
+            --work-dir "$RUNNER_TEMP/vforge-qemu"
+      - name: Record Vforge QEMU runtime test status
+        if: always()
+        run: |
+          if [[ '${{ steps.kvm.outputs.available }}' == 'true' ]]; then
+            echo 'Vforge QEMU runtime test ran against mkosi.output/veyra-next-vforge-base.tar.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Vforge QEMU runtime test was skipped because this GitHub runner has no accessible KVM device. Source and OCI build checks do not count as runtime evidence.' >> "$GITHUB_STEP_SUMMARY"
+          fi

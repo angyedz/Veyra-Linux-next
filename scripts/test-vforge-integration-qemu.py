@@ -205,30 +205,39 @@ def delete_environment(name: str) -> None:
 def main() -> int:
     xdg = tempfile.TemporaryDirectory(prefix="vforge-qemu-xdg-")
     old_xdg = {key: os.environ.get(key) for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME")}
+    created: str | None = None
+    created_graphroot: pathlib.Path | None = None
     try:
         require_qemu_guest()
         os.environ["XDG_DATA_HOME"] = str(pathlib.Path(xdg.name) / "data")
         os.environ["XDG_CONFIG_HOME"] = str(pathlib.Path(xdg.name) / "config")
         os.environ["XDG_STATE_HOME"] = str(pathlib.Path(xdg.name) / "state")
+        archive_text = os.environ.get("VFORGE_BASE_ARCHIVE")
+        if not archive_text:
+            raise RuntimeError("the QEMU runner must provide VFORGE_BASE_ARCHIVE from the matching OCI image build")
+        archive = pathlib.Path(archive_text)
+        if not archive.is_file() or archive.stat().st_size == 0:
+            raise RuntimeError(f"Veyra OCI base archive is missing or empty: {archive}")
         if not shutil.which("vforge") or not shutil.which("podman"):
             raise RuntimeError("the Veyra guest must contain both vforge and Podman")
         vforge_module = load_vforge_module()
-
         rootless = run(
             ["podman", "--remote=false", "info", "--format", "{{.Host.Security.Rootless}}"],
             capture=True,
         ).stdout.strip()
         if rootless.lower() != "true":
             raise RuntimeError(f"Podman is not using its rootless store (reported {rootless!r})")
-        rpmdb_path = pathlib.Path(run(["rpm", "--eval", "%{_dbpath}"], capture=True).stdout.strip())
-        rpmdb_before = directory_digest(rpmdb_path)
+
+        base_before = os_release_fields(pathlib.Path("/etc/os-release").read_text(encoding="utf-8"))
+        host_rpmdb = pathlib.Path(run(["rpm", "--eval", "%{_dbpath}"], capture=True).stdout.strip())
+        host_rpmdb_before = directory_digest(host_rpmdb)
+        run(["vforge", "base", "import", str(archive)])
+        run(["vforge", "base", "status"])
+        base_identity = vforge_module.require_imported_veyra_base()
 
         suffix = uuid.uuid4().hex[:10]
         name = f"qemu-vforge-{os.getuid()}-{suffix}"
-        marker = f"vforge-persistence-{suffix}"
-        system_marker = f"vforge-upper-{suffix}"
         token = uuid.uuid4().hex
-        system_token = uuid.uuid4().hex
         selected_store = pathlib.Path(xdg.name) / "selected-vforge-storage"
         run(["vforge", "config", "storage-root", str(selected_store)])
         denied_name = f"qemu-vforge-denied-{os.getuid()}-{suffix}"
@@ -239,187 +248,125 @@ def main() -> int:
             permission_denied = True
         if not permission_denied or container_exists(f"vforge-{denied_name}", selected_store / "containers"):
             raise RuntimeError("declining host network permission did not prevent environment creation")
-        created_name: str | None = None
-        created_graphroot: pathlib.Path | None = None
+
         try:
-            size_bytes = 2 * 1024**3
-            run_with_tty(["vforge", "create", name, "--network", "bridge", "--size", "2GiB"], "yes\n")
-            created_name = name
-            metadata = json.loads((vforge_store() / "state/environments.json").read_text())
-            environment = metadata["environments"][name]
-            runtime_id = vforge_module.host_runtime_id()
-            if environment.get("host_runtime") != runtime_id:
-                raise RuntimeError("environment metadata is not bound to the active Veyra runtime identity")
-            if environment.get("size_bytes") != size_bytes:
-                raise RuntimeError("Vforge did not persist the requested environment size cap")
-            data_root = pathlib.Path(environment["data_root"])
-            graphroot = pathlib.Path(environment["podman_root"])
-            created_graphroot = graphroot
-            size_image = pathlib.Path(environment["size_image"])
-            if data_root != selected_store / "environments" / name / "store":
-                raise RuntimeError("Vforge did not use the configured common storage root")
-            if graphroot != data_root / "containers" or size_image != data_root.parent / ".vforge-size.img":
-                raise RuntimeError("Vforge size cap does not cover its Podman graphroot")
-            if not size_image.is_file() or size_image.stat().st_size != size_bytes:
-                raise RuntimeError("Vforge backing file is not a sparse file of the requested size")
-            statfs = run(["stat", "-f", "--format=%S %b", str(data_root)], capture=True).stdout.split()
-            block_size, filesystem_blocks = map(int, statfs)
-            filesystem_bytes = block_size * filesystem_blocks
-            if filesystem_bytes > size_bytes or filesystem_bytes < size_bytes * 0.99:
-                raise RuntimeError(f"size-capped filesystem reports {filesystem_bytes} bytes, expected about {size_bytes}")
-            if size_image.stat().st_blocks * 512 >= size_bytes // 2:
-                raise RuntimeError("Vforge size-cap backing image appears preallocated")
-
-            # Integrated mode must expose the current Veyra /usr lower layer,
-            # not silently substitute the Fedora container's /usr.
-            host_abi = pathlib.Path("/usr/share/veyra/sysext-level").read_text().strip()
-            container_abi = run(
-                ["vforge", "exec", name, "--", "/bin/cat", "/usr/share/veyra/sysext-level"],
-                capture=True,
-            ).stdout.strip()
-            if not host_abi or container_abi != host_abi:
-                raise RuntimeError("integrated environment did not read the active Veyra /usr lower layer")
-
-            # A persisted integrated environment must fail closed when its
-            # recorded Veyra generation no longer matches the active lower.
-            run(["vforge", "stop", name])
-            state_path = vforge_module.common_state_directory() / "environments.json"
-            environment_state = vforge_module.read_store_state(
-                "environments.json", {"version": vforge_module.STATE_VERSION, "environments": {}}
+            run_with_tty(["vforge", "create", name, "--network", "bridge"], "yes\n")
+            created = name
+            environment = vforge_module.env_state()[name]
+            created_graphroot = pathlib.Path(environment["podman_root"])
+            if environment.get("root_mode") != "veyra-oci":
+                raise RuntimeError("Vforge did not record a Veyra OCI root")
+            if (
+                environment.get("image_id") != base_identity["image_id"]
+                or environment.get("image_version") != base_identity["image_version"]
+                or environment.get("base_digest") != base_identity["base_digest"]
+            ):
+                raise RuntimeError("Vforge environment does not match the imported Veyra base identity")
+            root_id = environment.get("root_id")
+            if not isinstance(root_id, str):
+                raise RuntimeError("Vforge environment has no root_id")
+            marker = pathlib.Path(environment["data_root"]) / "container-root.json"
+            vforge_module.validate_container_root_marker(environment)
+            container = vforge_module.inspect(f"vforge-{name}")
+            vforge_module.validate_container_identity(container, environment)
+            vforge_module.validate_container_mounts(container)
+            marker_mount = next(
+                mount for mount in container["Mounts"]
+                if mount.get("Destination") == "/run/veyra-vforge/root.json"
             )
-            stored_environment = environment_state["environments"][name]
-            try:
-                stored_environment["host_runtime"] = "stale-ota-generation"
-                vforge_module.write_json_file(state_path, environment_state)
-                stale_start = run(["vforge", "start", name], capture=True, check=False)
-                stale_error = (stale_start.stdout or "") + (stale_start.stderr or "")
-                if stale_start.returncode == 0 or "different Veyra runtime" not in stale_error:
-                    raise RuntimeError("Vforge did not block an environment bound to a stale Veyra generation")
-            finally:
-                stored_environment["host_runtime"] = runtime_id
-                vforge_module.write_json_file(state_path, environment_state)
-            run(["vforge", "start", name])
+            if marker_mount.get("RW") is not False:
+                raise RuntimeError("Vforge root marker is not mounted read-only")
+            for mount in container["Mounts"]:
+                destination = mount.get("Destination", "")
+                if destination in {"/etc", "/usr", "/var", "/boot"} or any(
+                    destination.startswith(path + "/") for path in ("/etc", "/usr", "/var", "/boot")
+                ):
+                    raise RuntimeError(f"host mount overlays the private Veyra root: {destination}")
+            marker_data = json.loads(marker.read_text(encoding="utf-8"))
+            if marker_data.get("root_id") != root_id or marker_data.get("base_digest") != environment["base_digest"]:
+                raise RuntimeError("read-only marker does not describe this environment's Veyra root")
 
             container_release = os_release_fields(run(
                 ["vforge", "exec", name, "--", "/bin/cat", "/etc/os-release"], capture=True
             ).stdout)
-            if container_release.get("ID") != "fedora" or container_release.get("VERSION_ID") != "44":
-                raise RuntimeError(f"Vforge test container must be Fedora 44, found {container_release!r}")
-            run(["vforge", "exec", name, "--", "dnf", "-y", "install", "tree"])
-            run(["vforge", "exec", name, "--", "rpm", "-q", "tree"])
-            layer_id = environment["layer_id"]
-            rpmdb_upper = data_root / "layers" / layer_id / "rpmdb-upper"
-            if not any(rpmdb_upper.rglob("*")):
-                raise RuntimeError("dnf did not persist the Veyra RPM database changes in the private upper")
-            if directory_digest(rpmdb_path) != rpmdb_before:
-                raise RuntimeError("dnf changed the host Veyra RPM database instead of its per-environment upper")
-
-            # A system path write must land in the per-environment upper only.
-            system_path = f"/usr/share/{system_marker}"
+            if container_release.get("ID") != base_before.get("ID") or container_release.get("VERSION_ID") != "44":
+                raise RuntimeError(f"environment did not start from the Veyra OCI root: {container_release!r}")
             run(["vforge", "exec", name, "--", "/bin/sh", "-ec",
-                 f"printf '%s\\n' '{system_token}' > '{system_path}'"])
-            if pathlib.Path(system_path).exists():
-                raise RuntimeError("integrated environment changed the host's Veyra /usr tree")
-            upper_file = data_root / "layers" / layer_id / "usr-upper" / "share" / system_marker
-            if upper_file.read_text().strip() != system_token:
-                raise RuntimeError("integrated environment did not persist its /usr write in the private upper")
+                 'test -d /usr/lib/sysimage/rpm && test -x /usr/bin/vpkg && test "$(id -u)" = 0 && '
+                 'test -r /run/veyra-vforge/root.json && test "$(rpm --eval \'%{_dbpath}\')" = /usr/lib/sysimage/rpm'])
+            if directory_digest(host_rpmdb) != host_rpmdb_before:
+                raise RuntimeError("base import or container creation changed the host RPM database")
 
-            run(["vforge", "snapshot", name, "system-upper"])
-            run(["vforge", "exec", name, "--", "/bin/rm", system_path])
-            run(["vforge", "exec", name, "--", "/bin/sh", "-ec", f"test ! -e '{system_path}'"])
-            run_with_tty(["vforge", "rollback", name, "system-upper"], "yes\n")
-            run(["vforge", "exec", name, "--", "/bin/sh", "-ec",
-                 f"test \"$(cat '{system_path}')\" = '{system_token}'"])
-            print("Veyra /usr lower, private upper, and snapshot rollback passed.", flush=True)
-
-            # Exercise the interactive entry point and write into the
-            # container's writable layer, not the host or a mounted directory.
-            shell_command = (
-                f"printf '%s\\n' '{token}' > /var/tmp/{marker}; "
-                "printf 'VFORGE_ENTER_COMMAND_RAN\\n'"
+            package_before = run(
+                ["vforge", "exec", name, "--", "rpm", "-q", "tree"], capture=True, check=False
             )
-            enter_output = run_with_tty(["vforge", "enter", name], shell_command + "\nexit\n")
-            if "VFORGE_ENTER_COMMAND_RAN" not in enter_output:
-                raise RuntimeError("the command entered through vforge enter did not run")
+            if package_before.returncode == 0:
+                raise RuntimeError("test package tree is already present in the imported Veyra root")
+            run(["vforge", "exec", name, "--", "vpkg", "container", "install", "tree"])
+            run(["vforge", "exec", name, "--", "rpm", "-q", "tree"])
+            if directory_digest(host_rpmdb) != host_rpmdb_before:
+                raise RuntimeError("vpkg container install changed the host RPM database")
 
-            verify = f"test \"$(cat /var/tmp/{marker})\" = '{token}'"
-            run(["vforge", "exec", name, "--", "/bin/sh", "-ec", verify])
+            marker_path = f"/var/tmp/vforge-snapshot-{suffix}"
+            run(["vforge", "exec", name, "--", "/bin/sh", "-ec",
+                 f"printf '%s\n' '{token}' > '{marker_path}'"])
+            run(["vforge", "snapshot", name, "vpkg-root"])
+            run(["vforge", "exec", name, "--", "vpkg", "container", "remove", "tree"])
+            removed = run(["vforge", "exec", name, "--", "rpm", "-q", "tree"], capture=True, check=False)
+            if removed.returncode == 0:
+                raise RuntimeError("vpkg container remove did not remove tree from the environment RPM DB")
+            run(["vforge", "exec", name, "--", "/bin/rm", marker_path])
+            run_with_tty(["vforge", "rollback", name, "vpkg-root"], "yes\n")
+            run(["vforge", "exec", name, "--", "rpm", "-q", "tree"])
+            run(["vforge", "exec", name, "--", "/bin/sh", "-ec",
+                 f"test \"$(cat '{marker_path}')\" = '{token}'"])
+            if environment.get("root_id") != root_id or marker_data.get("root_id") != root_id:
+                raise RuntimeError("snapshot rollback changed the environment root_id")
+            if directory_digest(host_rpmdb) != host_rpmdb_before:
+                raise RuntimeError("vpkg transaction or snapshot rollback changed the host RPM database")
+            print("Veyra OCI root, private RPM DB, Vpkg install, and full-root snapshot rollback passed.", flush=True)
+
             run(["vforge", "stop", name])
             run(["vforge", "start", name])
-            run(["vforge", "exec", name, "--", "/bin/sh", "-ec", verify])
-            print("Vforge state persisted across stop/start and exec.", flush=True)
-
-            # Exhaust the actual sparse ext4 filesystem, then prove an
-            # integrated system write receives ENOSPC. The probe is removed
-            # before delete so cleanup itself is not testing full-disk behavior.
-            filler = exhaust_store_until_enospc(data_root)
-            try:
-                probe = f"/usr/share/vforge-enospc-{suffix}"
-                probe_command = (
-                    f"if dd if=/dev/zero of='{probe}' bs=1M count=64 status=none 2>&1; then "
-                    "printf '%s\\n' VFORGE_ENOSPC_UNEXPECTED_SUCCESS; exit 1; "
-                    "else status=$?; fi; "
-                    "printf '%s\\n' VFORGE_ENOSPC_PROBE_EXECUTED; test \"$status\" -ne 0"
-                )
-                write_probe = run(
-                    ["vforge", "exec", name, "--", "/bin/sh", "-ec", probe_command],
-                    capture=True, check=False,
-                )
-                require_enospc_probe(write_probe)
-            finally:
-                filler.unlink(missing_ok=True)
-            run(["vforge", "exec", name, "--", "/bin/rm", "-f", probe], check=False)
-            print("Sparse ext4 size cap reached ENOSPC and recovered after freeing space.", flush=True)
-
+            run(["vforge", "exec", name, "--", "rpm", "-q", "tree"])
             delete_environment(name)
-            created_name = None
-            if upper_file.exists():
-                raise RuntimeError("vforge delete left its Veyra upper layer behind")
-            if size_image.exists() or data_root.parent.exists():
-                raise RuntimeError("vforge delete left its size-capped environment store behind")
+            created = None
 
-            # Check the separately stored project environment state and prove
-            # the project bind mount cannot read its own generated .vforge data.
             project_name = f"qemu-project-{os.getuid()}-{uuid.uuid4().hex[:8]}"
             with tempfile.TemporaryDirectory(prefix="vforge-project-") as temporary:
                 project = pathlib.Path(temporary)
                 (project / "source.txt").write_text("project source\n", encoding="utf-8")
                 (project / ".vforge.toml").write_text(
-                    f'[environment]\nname = "{project_name}"\nisolation = "integrated"\n',
+                    f'[environment]\nname = "{project_name}"\nisolation = "integrated"\n\n'
+                    '[packages]\nsystem = ["tree"]\n\n[permissions]\nnetwork = "shared"\n',
                     encoding="utf-8",
                 )
                 run(["git", "init", "--quiet", str(project)])
                 try:
                     run_with_tty(["vforge", "up"], "yes\n", cwd=project)
-                    if not (project / ".vforge/environment.json").is_file():
-                        raise RuntimeError("project Vforge state was not stored in the project's .vforge directory")
-                    run(
-                        ["vforge", "exec", project_name, "--", "/bin/sh", "-ec",
-                         "test -f /workspace/source.txt && test ! -e /workspace/.vforge/environment.json"]
-                    )
+                    run(["vforge", "exec", project_name, "--", "rpm", "-q", "tree"])
+                    run(["vforge", "exec", project_name, "--", "/bin/sh", "-ec",
+                         "test -f /workspace/source.txt && test ! -e /workspace/.vforge/environment.json"])
                     ignored = run(
                         ["git", "-C", str(project), "check-ignore", ".vforge/environment.json"], capture=True
                     ).stdout.strip()
                     if ignored != ".vforge/environment.json":
                         raise RuntimeError("project-local Vforge state is not excluded from Git")
                     delete_environment(project_name)
+                    if (project / ".vforge").exists() or not (project / "source.txt").exists():
+                        raise RuntimeError("project environment deletion did not preserve source and remove only .vforge state")
                 finally:
-                    project_graphroot = project / ".vforge/containers"
                     if (project / ".vforge/environment.json").exists():
                         try:
                             delete_environment(project_name)
                         except (OSError, RuntimeError, subprocess.CalledProcessError):
                             print(f"Could not clean up project environment {project_name}.", file=sys.stderr, flush=True)
-                    elif container_exists(f"vforge-{project_name}", project_graphroot):
-                        run(["podman", "--remote=false", *podman_roots(project_graphroot), "container", "rm", "--force", f"vforge-{project_name}"], check=False)
-                if (project / ".vforge").exists() or not (project / "source.txt").exists():
-                    raise RuntimeError("project environment deletion did not preserve source and remove only .vforge state")
             print("Vforge rootless create/enter/exec/stop/start/delete passed in QEMU.", flush=True)
             return 0
         finally:
-            if created_name and container_exists(f"vforge-{created_name}", created_graphroot):
-                print(f"Cleaning up test environment {created_name}.", file=sys.stderr, flush=True)
-                delete_environment(created_name)
+            if created and container_exists(f"vforge-{created}", created_graphroot):
+                print(f"Cleaning up test environment {created}.", file=sys.stderr, flush=True)
+                delete_environment(created)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"vforge QEMU integration test: {error}", file=sys.stderr)
         return 1

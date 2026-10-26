@@ -143,12 +143,14 @@ class VforgeQemuRunnerTests(unittest.TestCase):
                 runner.inject_test_machine_id(etc)
 
     def test_guest_boot_runner_is_valid_shell_and_uses_ro_source_as_normal_user(self) -> None:
-        script = runner.test_runner_script()
+        script = runner.test_runner_script("veyra-base.tar")
 
         result = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("version=9p2000.L,ro vforge-source", script)
+        self.assertIn("version=9p2000.L,ro vforge-base", script)
+        self.assertIn("VFORGE_BASE_ARCHIVE=\"/run/vforge-base/veyra-base.tar\"", script)
         self.assertIn("runuser --user vforge-test", script)
         self.assertIn(runner.PASS_MARKER, script)
         self.assertIn(runner.FAIL_MARKER, script)
@@ -159,22 +161,25 @@ class VforgeQemuRunnerTests(unittest.TestCase):
             code = root / "OVMF_CODE.fd"
             variables = root / "OVMF_VARS.fd"
             variables_copy = root / "OVMF_VARS.copy.fd"
+            archive = root / "veyra-base.tar"
             for path in (code, variables):
                 path.write_bytes(b"firmware")
+            archive.write_bytes(b"oci archive")
             command = runner.qemu_command(
                 "qemu-system-x86_64", root / "guest.raw", root / "checkout",
-                code, variables, variables_copy, root / "serial.log",
+                code, variables, variables_copy, root / "serial.log", archive,
             )
 
         self.assertIn("q35,accel=kvm", command)
         self.assertTrue(any("readonly=on" in item for item in command))
         self.assertTrue(any("security_model=none,readonly=on" in item for item in command))
+        self.assertTrue(any("mount_tag=vforge-base" in item and str(root) in item for item in command))
 
     def test_guest_fixture_loads_extensionless_vforge_executable_for_runtime_identity(self) -> None:
         with patch.object(fixture.shutil, "which", return_value=str(SCRIPT.parents[1] / "mkosi.extra/usr/bin/vforge")):
             module = fixture.load_vforge_module()
 
-        self.assertTrue(callable(module.host_runtime_id))
+        self.assertTrue(callable(module.validate_container_root_marker))
         self.assertTrue(callable(module.common_state_directory))
 
     def test_veyra_lower_fixture_requires_erofs_root(self) -> None:

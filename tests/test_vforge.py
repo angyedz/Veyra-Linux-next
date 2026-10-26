@@ -28,7 +28,7 @@ class VforgeCommandTests(unittest.TestCase):
     BASE_IDENTITY = {
         "image_id": "veyra-next", "image_version": "0.1.0",
         "base_digest": "a" * 64,
-        "image": "localhost/veyra-vforge-base:" + "a" * 16,
+        "image": "localhost/veyra-vforge-base:" + "a" * 64,
     }
 
     def setUp(self) -> None:
