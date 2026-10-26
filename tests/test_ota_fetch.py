@@ -96,6 +96,12 @@ class FetchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             fetch.fetch_asset("http://example.invalid", self.cache, self.name, self.size)
 
+    def test_invalid_https_url_rejected(self):
+        for url in ("https://", "https://example.invalid?redirect=http://bad",
+                    "https://user:password@example.invalid", "https://example.invalid/#fragment"):
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, "HTTPS"):
+                fetch.fetch_asset(url, self.cache, self.name, self.size)
+
     def test_symlink_cache_rejected(self):
         (self.root / "real").mkdir()
         self.cache.symlink_to(self.root / "real")
