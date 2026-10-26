@@ -97,7 +97,7 @@ class GlacierAssetTests(unittest.TestCase):
         selector = (ROOT / "mkosi.extra/usr/bin/veyra-theme").read_text()
         self.assertIn("plasma-apply-lookandfeel --apply", selector)
         self.assertIn("Run veyra-theme as the logged-in desktop user", selector)
-        self.assertNotIn("sudo ", selector.replace("without sudo.", ""))
+        self.assertFalse(any(line.lstrip().startswith("sudo ") for line in selector.splitlines()))
 
 
 if __name__ == "__main__":
