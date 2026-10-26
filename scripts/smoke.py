@@ -121,6 +121,8 @@ def main() -> int:
     required_packages = {
         "kernel",
         "libdnf5",
+        "policycoreutils",
+        "selinux-policy-targeted",
         "systemd-udev",
         "NetworkManager",
         "firewalld",

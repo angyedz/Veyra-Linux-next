@@ -291,7 +291,8 @@ jobs:
           check() { label="$1"; shift; echo "Checking: $label"; "$@"; }
           rpm -q \
             glibc systemd systemd-udev plasma-workspace plasma-login-manager plasma-setup \
-            flatpak libdnf5 python3-libdnf5 gcc git cmake python3 nodejs22
+            flatpak libdnf5 python3-libdnf5 policycoreutils selinux-policy-targeted \
+            gcc git cmake python3 nodejs22
           test "$(rpm -E "%{fedora}")" = 44
           grep -Fxq "ID=fedora" /usr/lib/os-release
           grep -Fxq "VERSION_ID=44" /usr/lib/os-release

@@ -48,9 +48,8 @@ jobs:
 
   build-veyra-image:
     if: >-
-      github.event_name == 'pull_request' ||
-      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/feature/vforge')
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/feature/vforge'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
