@@ -72,6 +72,8 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
     headers = {"Range": f"bytes={offset}-"} if offset else {}
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as response:
+        if not response.geturl().startswith('https://'):
+            raise ValueError('HTTPS redirect downgrade forbidden')
         status = response.status
         if offset and status == 206:
             expected = f"bytes {offset}-{size - 1}/{size}"
