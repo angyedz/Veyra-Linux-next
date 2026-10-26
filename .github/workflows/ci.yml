@@ -29,7 +29,7 @@ jobs:
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
       - name: Verify the packages inside the built image
         run: |
-          sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
+          sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eux -c '
           rpm -q \
             glibc systemd plasma-workspace plasma-login-manager plasma-setup \
             flatpak gcc git cmake python3 nodejs22 fastfetch
