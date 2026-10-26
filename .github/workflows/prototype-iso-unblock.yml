@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Fedora 44 live ISO toolchain
-        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils python3 xorriso isomd5sum squashfs-tools
+        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils python3 xorriso isomd5sum squashfs-tools qemu-system-x86-core edk2-ovmf
       - name: Source and installer unit tests
         run: |
           python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
@@ -75,6 +75,20 @@ jobs:
         env:
           VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
         run: bash scripts/build-live-iso.sh
+      - name: Capture BIOS and UEFI QEMU guest screens (diagnostic only)
+        run: |
+          python3 scripts/test-live-iso-qemu.py \
+            --iso build/live-iso/veyra-next-prototype-live.iso \
+            --output build/iso-qemu \
+            --modes both --at 20,60
+      - name: Upload BIOS/UEFI boot captures even on a failed diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prototype-live-iso-qemu-diagnostics
+          path: build/iso-qemu/
+          if-no-files-found: ignore
+          retention-days: 5
       - name: Preserve failure logs
         if: failure()
         uses: actions/upload-artifact@v4

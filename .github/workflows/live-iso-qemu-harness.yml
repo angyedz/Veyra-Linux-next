@@ -1,0 +1,27 @@
+name: Prototype Live ISO QEMU harness checks
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/test-live-iso-qemu.py'
+      - 'tests/test_live_iso_qemu.py'
+      - '.github/workflows/live-iso-qemu-harness.yml'
+      - '.github/workflows/prototype-iso-unblock.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/test-live-iso-qemu.py'
+      - 'tests/test_live_iso_qemu.py'
+
+permissions:
+  contents: read
+
+jobs:
+  source-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile the QEMU harness and run no-device unit tests
+        run: |
+          python3 -m py_compile scripts/test-live-iso-qemu.py tests/test_live_iso_qemu.py
+          python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
