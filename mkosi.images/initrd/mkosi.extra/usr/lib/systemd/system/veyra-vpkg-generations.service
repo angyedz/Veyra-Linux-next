@@ -9,6 +9,7 @@ Before=initrd-root-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+StandardError=journal+console
 ExecStart=/usr/bin/python3 /usr/libexec/veyra-vpkg-initrd.py
 
 [Install]
