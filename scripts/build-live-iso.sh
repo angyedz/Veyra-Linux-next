@@ -44,7 +44,7 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     --logfile="$log_file" \
     --iso-only \
     --iso-name=veyra-next-prototype-live.iso \
-    --extra-boot-args="console=ttyS0,115200n8"; then
+    --extra-boot-args="console=ttyS0,115200n8" 2>&1 | tee "$attempt_logs/livemedia-attempt-$attempt-console.log"; then
     built=1
     break
   fi
@@ -72,9 +72,9 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     echo "Live ISO build failed after $attempt attempts; see $attempt_logs." >&2
     exit 1
   fi
-  if [[ ! -f "$log_file" ]] || ! grep -Eqi \
-      '(failed to download (the following )?packages|failed to download metadata|curl error|cannot download repomd)' \
-      "$log_file"; then
+  download_error='failed to download (the following )?packages|failed to download metadata|curl error|cannot download repomd'
+  if ! { grep -Eqi "$download_error" "$log_file" 2>/dev/null ||
+         grep -Eqi "$download_error" "$attempt_logs/livemedia-attempt-$attempt-console.log"; }; then
     echo "Non-download Lorax error; will not retry. See $attempt_logs." >&2
     exit 1
   fi
