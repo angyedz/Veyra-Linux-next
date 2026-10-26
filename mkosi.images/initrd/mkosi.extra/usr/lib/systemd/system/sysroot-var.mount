@@ -1,0 +1,14 @@
+[Unit]
+DefaultDependencies=no
+After=sysroot.mount
+Requires=sysroot.mount
+Before=initrd-root-fs.target
+
+[Mount]
+What=/dev/disk/by-partlabel/VEYRA_VAR
+Where=/sysroot/var
+Type=ext4
+Options=rw,nodev,nosuid
+
+[Install]
+WantedBy=initrd-root-fs.target
