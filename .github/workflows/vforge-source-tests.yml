@@ -7,8 +7,11 @@ on:
       - 'mkosi.conf'
       - 'mkosi.veyra-base.conf'
       - 'mkosi.extra/usr/bin/vforge'
+      - 'mkosi.extra/usr/bin/vpkg'
       - 'scripts/**'
+      - 'docs/vpkg-*.md'
       - 'tests/test_vforge.py'
+      - 'tests/test_vpkg.py'
       - 'tests/test_build_environment.py'
   push:
     branches: [feature/vforge]
@@ -17,8 +20,11 @@ on:
       - 'mkosi.conf'
       - 'mkosi.veyra-base.conf'
       - 'mkosi.extra/usr/bin/vforge'
+      - 'mkosi.extra/usr/bin/vpkg'
       - 'scripts/**'
+      - 'docs/vpkg-*.md'
       - 'tests/test_vforge.py'
+      - 'tests/test_vpkg.py'
       - 'tests/test_build_environment.py'
   workflow_dispatch:
 
