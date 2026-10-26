@@ -48,6 +48,7 @@ jobs:
           grep -Fqx ID_LIKE=fedora /etc/os-release
           grep -Fqx VERSION_ID=44 /etc/os-release
           fastfetch --show-errors --pipe false > /tmp/veyra-fastfetch.txt
+          cat /tmp/veyra-fastfetch.txt
           grep -Fq "Veyra Next 0.1.0 (Fedora 44 base)" /tmp/veyra-fastfetch.txt
           grep -Fq '#######  ###############' /tmp/veyra-fastfetch.txt
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
