@@ -94,6 +94,8 @@ def main() -> int:
         return fail("the Lorax container must create and verify loop device nodes before building the Live ISO")
     if "Verify loop-backed Fedora ISO mounts in the job container" not in live_iso_job.group(1):
         return fail("the Live ISO job must verify its loop mount capability before invoking Lorax")
+    if "--security-opt=seccomp=unconfined" not in live_iso_job.group(1) or "--security-opt=apparmor=unconfined" not in live_iso_job.group(1):
+        return fail("the isolated Live ISO job container must permit the mount syscalls required by Lorax")
     if "veyra-live-iso-diagnostics" not in live_iso_job.group(1):
         return fail("the Live ISO job must retain Lorax diagnostics after a failed build")
     live_iso_script = (ROOT / "scripts/build-live-iso.sh").read_text(encoding="utf-8")

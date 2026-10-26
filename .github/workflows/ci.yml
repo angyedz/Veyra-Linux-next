@@ -480,6 +480,8 @@ jobs:
       image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
       options: >-
         --cap-add=SYS_ADMIN
+        --security-opt=seccomp=unconfined
+        --security-opt=apparmor=unconfined
         --device=/dev/loop-control
         --device-cgroup-rule="b 7:* rmw"
     timeout-minutes: 180
