@@ -162,6 +162,27 @@ class VforgeQemuRunnerTests(unittest.TestCase):
         source = FIXTURE_SCRIPT.read_text(encoding="utf-8")
         self.assertIn('TemporaryDirectory(prefix="vforge-qemu-xdg-", dir=pathlib.Path.home())', source)
 
+    def test_guest_fixture_selects_the_storage_root_before_importing_the_base(self) -> None:
+        source = FIXTURE_SCRIPT.read_text(encoding="utf-8")
+        selected = source.index('run(["vforge", "config", "storage-root", str(selected_store)])')
+        imported = source.index('run(["vforge", "base", "import", str(archive)])')
+        self.assertLess(selected, imported)
+
+    def test_rootless_podman_cleanup_runs_in_its_uid_mapped_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "storage"
+            path.mkdir()
+            result = subprocess.CompletedProcess([], 0, "", "")
+            with patch.object(fixture.shutil, "which", return_value="/usr/bin/podman"), patch.object(
+                fixture.subprocess, "run", return_value=result
+            ) as run:
+                fixture.cleanup_rootless_podman_storage(path)
+
+        run.assert_called_once_with(
+            ["/usr/bin/podman", "--remote=false", "unshare", "rm", "-rf", "--", str(path)],
+            check=False, capture_output=True, text=True,
+        )
+
     def test_qemu_command_uses_kvm_and_mounts_checkout_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

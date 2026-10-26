@@ -202,6 +202,22 @@ def delete_environment(name: str) -> None:
     run_with_tty(["vforge", "delete", name], "yes\n")
 
 
+def cleanup_rootless_podman_storage(path: pathlib.Path) -> None:
+    """Remove a rootless Podman store from its UID-mapped user namespace."""
+    if not path.exists():
+        return
+    executable = shutil.which("podman")
+    if executable is None:
+        raise RuntimeError("cannot clean rootless Podman storage without Podman")
+    result = subprocess.run(
+        [executable, "--remote=false", "unshare", "rm", "-rf", "--", str(path)],
+        check=False, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError("could not clean rootless Podman storage" + (f": {detail}" if detail else ""))
+
+
 def main() -> int:
     # /tmp is a small tmpfs on the guest. Podman must unpack the full Veyra
     # image into the dedicated persistent home partition instead.
@@ -209,6 +225,7 @@ def main() -> int:
     old_xdg = {key: os.environ.get(key) for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME")}
     created: str | None = None
     created_graphroot: pathlib.Path | None = None
+    podman_ready = False
     try:
         require_qemu_guest()
         os.environ["XDG_DATA_HOME"] = str(pathlib.Path(xdg.name) / "data")
@@ -229,6 +246,16 @@ def main() -> int:
         ).stdout.strip()
         if rootless.lower() != "true":
             raise RuntimeError(f"Podman is not using its rootless store (reported {rootless!r})")
+        podman_ready = True
+
+        suffix = uuid.uuid4().hex[:10]
+        name = f"qemu-vforge-{os.getuid()}-{suffix}"
+        token = uuid.uuid4().hex
+        selected_store = pathlib.Path(xdg.name) / "selected-vforge-storage"
+        # Vforge stores the imported image and its identity under the configured
+        # common storage root. Select it before import so later creates see the
+        # same base and use this test's disposable Podman graphroot.
+        run(["vforge", "config", "storage-root", str(selected_store)])
 
         base_before = os_release_fields(pathlib.Path("/etc/os-release").read_text(encoding="utf-8"))
         host_rpmdb = pathlib.Path(run(["rpm", "--eval", "%{_dbpath}"], capture=True).stdout.strip())
@@ -237,11 +264,6 @@ def main() -> int:
         run(["vforge", "base", "status"])
         base_identity = vforge_module.require_imported_veyra_base()
 
-        suffix = uuid.uuid4().hex[:10]
-        name = f"qemu-vforge-{os.getuid()}-{suffix}"
-        token = uuid.uuid4().hex
-        selected_store = pathlib.Path(xdg.name) / "selected-vforge-storage"
-        run(["vforge", "config", "storage-root", str(selected_store)])
         denied_name = f"qemu-vforge-denied-{os.getuid()}-{suffix}"
         permission_denied = False
         try:
@@ -373,11 +395,19 @@ def main() -> int:
         print(f"vforge QEMU integration test: {error}", file=sys.stderr)
         return 1
     finally:
-        for key, value in old_xdg.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        # OCI layers preserve package ownership metadata. Rootless Podman maps
+        # image root and package users to subordinate host UIDs, so the guest
+        # user cannot chmod those paths directly during TemporaryDirectory's
+        # host-namespace cleanup. Remove the store inside Podman's userns.
+        try:
+            if podman_ready:
+                cleanup_rootless_podman_storage(pathlib.Path(xdg.name))
+        finally:
+            for key, value in old_xdg.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
         xdg.cleanup()
 
 
