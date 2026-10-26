@@ -431,7 +431,7 @@ def main() -> int:
     vforge_base_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vforge-base.service"
     vforge_tmpfiles = ROOT / "mkosi.extra/usr/lib/tmpfiles.d/veyra-vforge.conf"
     veyra_preset = ROOT / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset"
-    vforge_base_link = ROOT / "mkosi.extra/etc/systemd/system/multi-user.target.wants/veyra-vforge-base.service"
+    vforge_base_link = ROOT / "mkosi.extra/usr/lib/systemd/system/multi-user.target.wants/veyra-vforge-base.service"
     if not all(path.is_file() for path in (vforge_command, vforge_base_service, vforge_tmpfiles, veyra_preset)):
         return fail("rootless Vforge requires its command, immutable-base service, tmpfiles entry, and preset")
     vforge_command_content = vforge_command.read_text(encoding="utf-8")
