@@ -279,6 +279,18 @@ def boot_until(
             except FileNotFoundError:
                 log = ""
             normalized = normalize_log(log)
+            if "VEYRA_OTA_BOOTCOUNT_DIAGNOSTICS_FAIL" in normalized:
+                excerpt = "\n".join(normalized.splitlines()[-80:])
+                raise RuntimeError(
+                    "systemd-boot did not expose the selected trial UKI boot-count path:\n"
+                    f"{excerpt}"
+                )
+            if "FAILED (errors=" in normalized or "FAILED (failures=" in normalized:
+                excerpt = "\n".join(normalized.splitlines()[-100:])
+                raise RuntimeError(
+                    "guest Vpkg integration tests reported a failure before OTA staging:\n"
+                    f"{excerpt}"
+                )
             if all(marker in normalized for marker in expected):
                 return normalized
             time.sleep(2)
@@ -363,6 +375,7 @@ def main() -> int:
                 f"roothash={args.roothash}",
                 "Reached target graphical.target",
                 "VEYRA_BOOT_BLESS_CI_PASS",
+                "VEYRA_OTA_BOOTCOUNT_DIAGNOSTICS",
                 f"VEYRA_OTA_MANUAL_OLD_CI_PASS_{args.ota_marker}",
                 f"VEYRA_OTA_SUCCESS_CI_PASS_{args.ota_marker}",
             ]

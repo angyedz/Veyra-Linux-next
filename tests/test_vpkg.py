@@ -42,6 +42,7 @@ class VpkgPolicyTests(unittest.TestCase):
             payload = tree / "usr/bin/example"
             payload.parent.mkdir(parents=True)
             payload.write_text("original", encoding="utf-8")
+            vpkg.seal_user_app_tree(tree)
             manifest = {
                 "schema": 1,
                 "generation_id": generation.name,
@@ -50,6 +51,7 @@ class VpkgPolicyTests(unittest.TestCase):
                 "integrity": {"tree_sha256": vpkg.user_app_tree_digest(tree)},
             }
             (generation / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            vpkg.seal_user_app_generation(generation)
             vpkg.verify_user_app_generation(generation)
             payload.write_text("modified", encoding="utf-8")
             with self.assertRaisesRegex(vpkg.VpkgError, "SHA-256 integrity check"):
@@ -87,6 +89,7 @@ class VpkgPolicyTests(unittest.TestCase):
             for generation in (previous, current):
                 tree = generation / "tree"
                 tree.mkdir(parents=True)
+                vpkg.seal_user_app_tree(tree)
             previous_manifest = {
                 "schema": 1,
                 "generation_id": previous.name,
@@ -107,6 +110,8 @@ class VpkgPolicyTests(unittest.TestCase):
                 "integrity": {"tree_sha256": vpkg.user_app_tree_digest(current / "tree")},
             }
             (current / "manifest.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+            for generation in (previous, current):
+                vpkg.seal_user_app_generation(generation)
             state_dir.mkdir()
             current_link = state_dir / "current"
             current_link.symlink_to(current, target_is_directory=True)
@@ -127,6 +132,10 @@ class VpkgPolicyTests(unittest.TestCase):
     def test_prepare_for_empty_intents_returns_ready_without_creating_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "usr/lib/os-release").write_text(
+                "ID=fedora\nVERSION_ID=44\n", encoding="utf-8"
+            )
             layer_dir = root / "app-layers"
             layer_dir.mkdir()
             output = layer_dir / "generation-candidate"
@@ -373,12 +382,12 @@ class VpkgPolicyTests(unittest.TestCase):
                 )
             self.assertEqual(session.call_args.kwargs["releasever"], "44")
 
-    def test_fedora_46_candidate_is_rejected_before_generation_creation(self) -> None:
+    def test_non_target_fedora_candidate_is_rejected_before_generation_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "usr/lib").mkdir(parents=True)
             (root / "usr/lib/os-release").write_text(
-                'ID=fedora\nVERSION_ID="46"\n', encoding="utf-8"
+                'ID=fedora\nVERSION_ID="45"\n', encoding="utf-8"
             )
             layer_dir = root / "app-layers"
             layer_dir.mkdir()
@@ -583,10 +592,20 @@ class VpkgPolicyTests(unittest.TestCase):
             generation = layer_dir / "generation-test"
             tree = generation / "tree"
             tree.mkdir(parents=True)
+            (tree / "usr/bin").mkdir(parents=True)
+            (tree / "usr/bin/example").write_text("fixture", encoding="utf-8")
+            vpkg.seal_user_app_tree(tree)
             (generation / "manifest.json").write_text(
-                json.dumps({"schema": 1, "requests": [], "installed": {}}),
+                json.dumps({
+                    "schema": 1,
+                    "generation_id": generation.name,
+                    "requests": [{"kind": "repo", "name": "example"}],
+                    "installed": {"example": "example-0:1-1.x86_64"},
+                    "integrity": {"tree_sha256": vpkg.user_app_tree_digest(tree)},
+                }),
                 encoding="utf-8",
             )
+            vpkg.seal_user_app_generation(generation)
             state_dir = root / "apps"
             state_dir.mkdir()
             current = state_dir / "current"

@@ -114,7 +114,7 @@ class Session:
         query = self.libdnf5.repo.RepoQuery(self.base)
         self._repo_callbacks = []
         veyra_repo_paths = self._resolve_veyra_repositories(query, cache_dir)
-        for repo in query.list():
+        for repo in query:
             repo_config = repo.get_config()
             _set_option(repo_config, "enabled", repo.get_id() in self.repo_ids)
             _set_option(repo_config, "pkg_gpgcheck", True)
@@ -150,7 +150,7 @@ class Session:
         selected = set(self.repo_ids) & {"veyra-main", "veyra-testing"}
         if not selected:
             return {}
-        configured = {repo.get_id(): repo for repo in query.list()}
+        configured = {repo.get_id(): repo for repo in query}
         result: dict[str, Path] = {}
         for repo_id in selected:
             repo = configured.get(repo_id)

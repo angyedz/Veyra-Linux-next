@@ -42,7 +42,7 @@ def main() -> int:
     python_build_environment_gate = ROOT / "scripts/check-build-environment.py"
     mkosi_wrapper = ROOT / "scripts/mkosi.sh"
     if not build_environment_gate.is_file() or not python_build_environment_gate.is_file():
-        return fail("mkosi must have build-container and Fedora-repository gates")
+        return fail("mkosi must have build-environment and Fedora-repository gates")
     wrapper_content = mkosi_wrapper.read_text(encoding="utf-8")
     for expected in ("check-build-environment.sh", "check-build-environment.py"):
         if expected not in wrapper_content:
@@ -55,10 +55,21 @@ def main() -> int:
     for workflow in ("ci.yml", "release.yml"):
         workflow_path = ROOT / ".github/workflows" / workflow
         workflow_content = workflow_path.read_text(encoding="utf-8")
-        if pinned_fedora_container not in workflow_content:
-            return fail(f"{workflow} must compose images in the pinned Fedora container")
         if "bash scripts/check-build-environment.sh" not in workflow_content:
-            return fail(f"{workflow} must gate the Fedora repositories before installing build tools")
+            return fail(f"{workflow} must gate its image build environment before installing build tools")
+
+    release_workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    if pinned_fedora_container not in release_workflow:
+        return fail("release.yml must compose images in the pinned Fedora container")
+
+    ci_workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    build_job = re.search(r"(?ms)^  build:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci_workflow)
+    if not build_job:
+        return fail("ci.yml must define the image build job")
+    if "VEYRA_MKOSI_RUNNER: github-ubuntu-24.04" not in build_job.group(1):
+        return fail("ci.yml image composition must use the guarded Ubuntu runner path")
+    if re.search(r"(?m)^    container:", build_job.group(1)):
+        return fail("ci.yml image composition must not nest mkosi inside a Fedora job container")
 
     for expected in (
         "Distribution=fedora",
@@ -99,8 +110,7 @@ def main() -> int:
     required_packages = {
         "kernel",
         "libdnf5",
-        "podman",
-        "fuse-overlayfs",
+        "util-linux",
         "systemd-udev",
         "NetworkManager",
         "firewalld",

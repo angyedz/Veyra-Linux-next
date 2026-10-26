@@ -150,6 +150,63 @@ def patch_uki(
         stream.write(struct.pack("<I", len(os_release)))
 
 
+def append_uki_cmdline(uki: pathlib.Path, *arguments: str) -> None:
+    """Append test-only boot arguments to an existing UKI without changing identity."""
+    if any(not re.fullmatch(r"[A-Za-z0-9_.,=-]+", argument) for argument in arguments):
+        raise RuntimeError("UKI command-line arguments must be simple key=value tokens")
+    sections = pe_sections(uki)
+    if b".cmdline" not in sections:
+        raise RuntimeError(f"test UKI {uki} has no .cmdline section")
+    header, raw_offset, raw_size = sections[b".cmdline"]
+    with uki.open("r+b") as stream:
+        stream.seek(raw_offset)
+        old = stream.read(raw_size).split(b"\0", 1)[0].decode("ascii")
+        values = old.split()
+        for argument in arguments:
+            key = argument.split("=", 1)[0]
+            values = [item for item in values if item.split("=", 1)[0] != key]
+            values.append(argument)
+        cmdline = (" ".join(values)).encode("ascii") + b"\0"
+        if len(cmdline) > raw_size:
+            raise RuntimeError("test UKI command line exceeds its existing PE section")
+        stream.seek(raw_offset)
+        stream.write(cmdline.ljust(raw_size, b"\0"))
+        stream.seek(header + 8)
+        stream.write(struct.pack("<I", len(cmdline)))
+
+
+def add_serial_to_initial_uki(image: pathlib.Path) -> None:
+    """Make the initial, test-copy boot visible on serial before the OTA UKI exists."""
+    table = json.loads(run(["sfdisk", "--json", str(image)], stdout=subprocess.PIPE).stdout)["partitiontable"]
+    sector_size = int(table.get("sectorsize", 512))
+    esp_type = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+    esps = [p for p in table["partitions"] if str(p.get("type", "")).lower() == esp_type]
+    if len(esps) != 1:
+        raise RuntimeError("the test image must contain exactly one EFI system partition")
+    esp_offset = int(esps[0]["start"]) * sector_size
+    image_ref = f"{image}@@{esp_offset}"
+    listing = run(["mdir", "-b", "-i", image_ref, "::/EFI/Linux"], stdout=subprocess.PIPE).stdout
+    names = [
+        pathlib.PurePosixPath(line.strip()).name
+        for line in listing.splitlines()
+        if line.strip().lower().endswith(".efi")
+    ]
+    if len(names) != 1:
+        raise RuntimeError(f"expected one initial UKI in EFI/Linux, found {names!r}")
+    with tempfile.TemporaryDirectory(prefix="veyra-serial-uki-") as temporary:
+        uki = pathlib.Path(temporary) / "initial.efi"
+        run(["mcopy", "-i", image_ref, f"::/EFI/Linux/{names[0]}", str(uki)])
+        append_uki_cmdline(
+            uki,
+            "systemd.unit=veyra-ota-ci.target",
+            "console=ttyS0,115200n8",
+            "systemd.firstboot=no",
+            "systemd.show_status=1",
+            "systemd.log_target=console",
+        )
+        run(["mcopy", "-o", "-i", image_ref, str(uki), f"::/EFI/Linux/{names[0]}"])
+
+
 def os_release_value(uki: pathlib.Path, key: str) -> str:
     sections = pe_sections(uki)
     if b".osrel" not in sections:
@@ -242,6 +299,7 @@ def inject_guest_ota_test(
     version: str,
     roothash: str,
     marker: str,
+    run_vpkg_ci: bool,
 ) -> None:
     """Configure only the disposable guest image to run the updater test on boot."""
     partitions, sector_size = inspect_partitions(image)
@@ -262,6 +320,9 @@ def inject_guest_ota_test(
             str(image), str(mountpoint),
         ])
         try:
+            if run_vpkg_ci:
+                (mountpoint / "veyra/vpkg-ci-enabled").parent.mkdir(parents=True, exist_ok=True)
+                (mountpoint / "veyra/vpkg-ci-enabled").write_text("enabled\n", encoding="ascii")
             systemd_definitions = mountpoint / "sysupdate.d"
             systemd_definitions.mkdir(parents=True, exist_ok=True)
             for source in sorted(definitions.glob("*.conf")):
@@ -287,6 +348,9 @@ def inject_guest_ota_test(
                 f"roothash={roothash!r}\n"
                 f"marker={marker!r}\n"
                 "mkdir -p \"$state\" \"$(dirname \"$intents\")\"\n"
+                "saved_intents=\"$state/intents.before-conflict.json\"\n"
+                "had_intents=0\n"
+                "if [[ -s \"$intents\" ]]; then cp -a \"$intents\" \"$saved_intents\"; had_intents=1; fi\n"
                 "printf '{\"schema\":1,\"requests\":[{\"kind\":\"repo\",\"name\":\"systemd\"}]}\\n' >\"$intents\"\n"
                 "if /usr/bin/veyra-update install \"$version\" >\"$state/conflict.log\" 2>&1; then\n"
                 "  cat \"$state/conflict.log\" >&2\n"
@@ -303,7 +367,7 @@ def inject_guest_ota_test(
                 "  exit 1\n"
                 "fi\n"
                 "grep -Fq 'There is no completed Veyra system update' \"$state/no-reboot.log\"\n"
-                "printf '{\"schema\":1,\"requests\":[]}\\n' >\"$intents\"\n"
+                "if (( had_intents )); then cp -a \"$saved_intents\" \"$intents\"; else printf '{\"schema\":1,\"requests\":[]}\\n' >\"$intents\"; fi\n"
                 "/usr/bin/veyra-update install \"$version\"\n"
                 "python3 - \"$pending\" \"$version\" \"$roothash\" <<'PY'\n"
                 "import json, pathlib, sys\n"
@@ -380,13 +444,67 @@ def inject_guest_ota_test(
 
             systemd = mountpoint / "systemd/system"
             systemd.mkdir(parents=True, exist_ok=True)
+            vpkg_wants = (
+                "veyra-vpkg-stage-recovery.service veyra-vpkg-ci.service "
+                if run_vpkg_ci else ""
+            )
+            vpkg_after = " veyra-vpkg-ci.service" if run_vpkg_ci else ""
+            prepare_after = "graphical.target veyra-vpkg-ci.service" if run_vpkg_ci else "graphical.target"
+            vpkg_stage_condition = (
+                "ConditionPathExists=/var/lib/veyra/vpkg-ci-stage-pass\n\n"
+                if run_vpkg_ci else ""
+            )
+            (systemd / "veyra-ota-ci.target").write_text(
+                "[Unit]\n"
+                "Description=Disposable Veyra OTA integration test sequence\n"
+                "Requires=graphical.target\n"
+                f"After=graphical.target{vpkg_after}\n"
+                f"Wants={vpkg_wants}veyra-ota-ci-prepare.service veyra-ota-ci-manual-old.service\n",
+                encoding="ascii",
+            )
+            diagnostic_script = test_dir / "bootcount-check.py"
+            diagnostic_script.write_text(
+                "#!/usr/bin/python3\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
+                f"expected = {f'veyra-next_{version}+3-0.efi'!r}\n"
+                "status = subprocess.run(['/usr/bin/bootctl', 'status'], check=True, text=True, capture_output=True)\n"
+                "print(status.stdout, end='')\n"
+                "root = Path('/sys/firmware/efi/efivars')\n"
+                "variables = sorted(root.glob('LoaderBootCountPath-*')) + sorted(root.glob('LoaderEntrySelected-*'))\n"
+                "decoded = []\n"
+                "for path in variables:\n"
+                "    value = path.read_bytes()[4:].decode('utf-16-le', errors='replace').rstrip('\\0')\n"
+                "    print(f'{path.name}={value}')\n"
+                "    decoded.append(value)\n"
+                "if not any(expected.lower() in value.lower() for value in decoded):\n"
+                "    print(f'VEYRA_OTA_BOOTCOUNT_DIAGNOSTICS_FAIL expected={expected!r}', flush=True)\n"
+                "    sys.exit(1)\n"
+                "print('VEYRA_OTA_BOOTCOUNT_DIAGNOSTICS', flush=True)\n",
+                encoding="ascii",
+            )
+            diagnostic_script.chmod(0o755)
+            diagnostic_exec = systemd / "veyra-ota-ci-diagnostics.service"
+            diagnostic_exec.write_text(
+                "[Unit]\n"
+                "Description=Check systemd-boot trial count metadata\n"
+                "After=graphical.target\n"
+                "Before=boot-complete.target\n"
+                "ConditionKernelCommandLine=veyra.ota-ci=trial\n\n"
+                "[Service]\nType=oneshot\n"
+                "ExecStart=/etc/veyra/ota-ci/bootcount-check.py\n"
+                "StandardOutput=journal+console\nStandardError=journal+console\n",
+                encoding="ascii",
+            )
             (systemd / "veyra-ota-ci-prepare.service").write_text(
                 "[Unit]\n"
                 "Description=Exercise Veyra OTA preflight inside the QEMU guest\n"
-                "After=graphical.target veyra-vpkg-ci.service\n"
-                "Before=systemd-bless-boot.service boot-complete.target\n"
+                f"After={prepare_after}\n"
+                "Before=veyra-ota-ci.target\n"
                 "ConditionKernelCommandLine=!veyra.ota-ci=trial\n\n"
                 "ConditionPathExists=!/var/lib/veyra/ota-ci/staged\n\n"
+                f"{vpkg_stage_condition}"
                 "[Service]\nType=oneshot\n"
                 "ExecStart=/etc/veyra/ota-ci/prepare\n"
                 "TimeoutStartSec=600\n"
@@ -397,7 +515,6 @@ def inject_guest_ota_test(
                 "[Unit]\n"
                 "Description=Verify successful Veyra OTA completion inside the QEMU guest\n"
                 "After=systemd-bless-boot.service\n"
-                "Before=boot-complete.target\n"
                 "ConditionKernelCommandLine=veyra.ota-ci=trial\n\n"
                 "[Service]\nType=oneshot\n"
                 "ExecStart=/etc/veyra/ota-ci/success\n"
@@ -407,8 +524,8 @@ def inject_guest_ota_test(
             (systemd / "veyra-ota-ci-manual-old.service").write_text(
                 "[Unit]\n"
                 "Description=Verify an old UKI remains healthy while an OTA trial is available\n"
-                "After=systemd-bless-boot.service\n"
-                "Before=boot-complete.target\n"
+                f"After=graphical.target{vpkg_after} veyra-ota-ci-prepare.service\n"
+                "Before=veyra-ota-ci.target\n"
                 "ConditionKernelCommandLine=!veyra.ota-ci=trial\n"
                 "ConditionPathExists=/var/lib/veyra/ota-ci/staged\n"
                 "ConditionPathExists=!/var/lib/veyra/ota-ci/manual-old-checked\n\n"
@@ -417,13 +534,26 @@ def inject_guest_ota_test(
                 "StandardOutput=journal+console\nStandardError=journal+console\n",
                 encoding="ascii",
             )
+            if run_vpkg_ci:
+                vpkg_dropin = systemd / "veyra-vpkg-ci.service.d/veyra-ota-ci.conf"
+                vpkg_dropin.parent.mkdir(parents=True, exist_ok=True)
+                vpkg_dropin.write_text(
+                    "[Unit]\nConditionPathExists=/etc/veyra/vpkg-ci-enabled\n",
+                    encoding="ascii",
+                )
             (mountpoint / "systemd/system/boot-complete.target.d").mkdir(
                 parents=True, exist_ok=True
             )
             (mountpoint / "systemd/system/boot-complete.target.d/veyra-ota-ci.conf").write_text(
-                "[Unit]\n"
-                "Requires=veyra-ota-ci-prepare.service veyra-ota-ci-manual-old.service veyra-ota-ci-success.service\n"
-                "After=veyra-ota-ci-prepare.service veyra-ota-ci-manual-old.service veyra-ota-ci-success.service\n",
+                "[Unit]\nRequires=veyra-ota-ci-diagnostics.service\n"
+                "After=veyra-ota-ci-diagnostics.service\n",
+                encoding="ascii",
+            )
+            (mountpoint / "systemd/system/systemd-bless-boot.service.d").mkdir(
+                parents=True, exist_ok=True
+            )
+            (mountpoint / "systemd/system/systemd-bless-boot.service.d/veyra-ota-ci.conf").write_text(
+                "[Unit]\nWants=veyra-ota-ci-success.service\n",
                 encoding="ascii",
             )
         finally:
@@ -518,7 +648,7 @@ def main() -> int:
                 test_uki,
                 version,
                 roothash,
-                "graphical.target",
+                "boot-complete.target",
                 extra_cmdline=("veyra.ota-ci=trial",),
             )
             write_manifest(source, [root_asset, verity_asset, uki_asset], args.fingerprint)
@@ -548,7 +678,9 @@ def main() -> int:
                     version,
                     roothash,
                     ota_marker,
+                    args.vpkg_test_repo is not None,
                 )
+                add_serial_to_initial_uki(staged_image)
 
                 boot_command = [
                     sys.executable,

@@ -18,7 +18,9 @@ check_image = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(check_image)
 
 
-def write_uki(path: Path, version_id: str = "44") -> None:
+def write_uki(path: Path, version_id: str | None = None) -> None:
+    if version_id is None:
+        version_id = check_image.configured_fedora_release()
     osrel = (
         f'ID=fedora\nVERSION_ID={version_id}\nIMAGE_ID="veyra-next"\n'
         'IMAGE_VERSION="0.1.0"\n'
@@ -39,9 +41,22 @@ def write_uki(path: Path, version_id: str = "44") -> None:
 
 
 class FedoraReleaseGateTests(unittest.TestCase):
-    def make_artifacts(self, directory: Path, *, root_version: str = "44", uki_version: str = "44",
-                       systemd: str = "259.1-1.fc44", fedora_release: str = "44-0.1",
-                       kernel: str = "7.1.4-200.fc44") -> Path:
+    def make_artifacts(
+        self,
+        directory: Path,
+        *,
+        root_version: str | None = None,
+        uki_version: str | None = None,
+        systemd: str | None = None,
+        fedora_release: str | None = None,
+        kernel: str | None = None,
+    ) -> Path:
+        target_release = check_image.configured_fedora_release()
+        root_version = root_version if root_version is not None else target_release
+        uki_version = uki_version if uki_version is not None else target_release
+        systemd = systemd if systemd is not None else f"259.1-1.fc{target_release}"
+        fedora_release = fedora_release if fedora_release is not None else f"{target_release}-0.1"
+        kernel = kernel if kernel is not None else f"7.1.4-200.fc{target_release}"
         image = directory / "veyra-next.raw"
         image.touch()
         (directory / "veyra-next.osrelease").write_text(
@@ -60,35 +75,52 @@ class FedoraReleaseGateTests(unittest.TestCase):
         )
         return image
 
-    def test_accepts_matching_fedora_44_root_uki_and_base_rpms(self) -> None:
+    def test_accepts_matching_configured_fedora_root_uki_and_base_rpms(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             image = self.make_artifacts(Path(temporary))
             check_image.validate_fedora_release(image)
 
-    def test_rejects_rawhide_root_even_when_uki_is_fedora_44(self) -> None:
+    def test_rejects_root_from_a_different_fedora_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            image = self.make_artifacts(Path(temporary), root_version="46")
-            with self.assertRaisesRegex(ValueError, "root artifact must identify Fedora 44"):
+            target_release = check_image.configured_fedora_release()
+            foreign_release = str(int(target_release) + 1)
+            image = self.make_artifacts(
+                Path(temporary), root_version=foreign_release, uki_version=foreign_release
+            )
+            with self.assertRaisesRegex(
+                ValueError, f"root artifact must identify Fedora {target_release}"
+            ):
                 check_image.validate_fedora_release(image)
 
-    def test_rejects_rawhide_uki_osrel(self) -> None:
+    def test_rejects_uki_from_a_different_fedora_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            image = self.make_artifacts(Path(temporary), uki_version="46")
-            with self.assertRaisesRegex(ValueError, "UKI artifact must identify Fedora 44"):
+            target_release = check_image.configured_fedora_release()
+            foreign_release = str(int(target_release) + 1)
+            image = self.make_artifacts(Path(temporary), uki_version=foreign_release)
+            with self.assertRaisesRegex(
+                ValueError, f"UKI artifact must identify Fedora {target_release}"
+            ):
                 check_image.validate_fedora_release(image)
 
-    def test_rejects_rawhide_core_rpm_release(self) -> None:
+    def test_rejects_core_rpm_from_a_newer_fedora_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            image = self.make_artifacts(Path(temporary), systemd="262.1-1.fc46")
+            target_release = check_image.configured_fedora_release()
+            foreign_release = int(target_release) + 1
+            image = self.make_artifacts(
+                Path(temporary), systemd=f"262.1-1.fc{foreign_release}"
+            )
             with self.assertRaisesRegex(ValueError, "newer Fedora appears"):
                 check_image.validate_fedora_release(image)
 
     def test_rejects_any_newer_fedora_rpm_in_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             image = self.make_artifacts(Path(temporary))
+            foreign_release = int(check_image.configured_fedora_release()) + 1
             manifest = image.with_name("veyra-next.manifest")
             content = json.loads(manifest.read_text(encoding="utf-8"))
-            content["packages"].append({"name": "some-library", "version": "1.0-1.fc46"})
+            content["packages"].append(
+                {"name": "some-library", "version": f"1.0-1.fc{foreign_release}"}
+            )
             manifest.write_text(json.dumps(content), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "newer Fedora appears"):
                 check_image.validate_fedora_release(image)

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Fail closed unless mkosi runs in an isolated, target-matched Fedora container."""
+"""Require an isolated Fedora container or the guarded Ubuntu runner with pinned Fedora tools."""
 
 from __future__ import annotations
 
 import configparser
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -93,8 +94,11 @@ def validate_environment(
     enabled_repo_listing: str,
     mountinfo: str,
     in_container: bool,
+    host_runner: bool = False,
+    host_dnf_available: bool = False,
+    host_dnf_ubuntu_owned: bool = False,
 ) -> None:
-    if not in_container:
+    if not in_container and not host_runner:
         raise BuildEnvironmentError("image composition must run inside an isolated Fedora container")
 
     release = target_release(mkosi_config)
@@ -109,35 +113,55 @@ def validate_environment(
             f"tools_release={tools_release!r}, enabled={tools_enabled}"
         )
     osrelease = key_values(osrelease_path)
-    if osrelease.get("ID") != "fedora" or osrelease.get("VERSION_ID") != release:
+    if host_runner:
+        if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_OS") != "Linux":
+            raise BuildEnvironmentError("Ubuntu host builds are restricted to GitHub Actions Linux runners")
+        if osrelease.get("ID") != "ubuntu" or osrelease.get("VERSION_ID") != "24.04":
+            raise BuildEnvironmentError(
+                f"build runner must be Ubuntu 24.04; found "
+                f"ID={osrelease.get('ID')!r}, VERSION_ID={osrelease.get('VERSION_ID')!r}"
+            )
+        configured = enabled_repo_ids(repo_directory)
+        listed = {
+            line.split()[0]
+            for line in enabled_repo_listing.splitlines()[1:]
+            if line.split()
+        }
+        repo_files = list(repo_directory.glob("*.repo")) + list(pathlib.Path("/etc/dnf/repos.d").glob("*.repo"))
+        if not host_dnf_available or not host_dnf_ubuntu_owned:
+            raise BuildEnvironmentError("Ubuntu host builds require Ubuntu-packaged /usr/bin/dnf")
+        if configured or listed or repo_files:
+            raise BuildEnvironmentError("Ubuntu host DNF must not have host repositories or repo files")
+    elif osrelease.get("ID") != "fedora" or osrelease.get("VERSION_ID") != release:
         raise BuildEnvironmentError(
             f"build container must be Fedora {release}; found "
             f"ID={osrelease.get('ID')!r}, VERSION_ID={osrelease.get('VERSION_ID')!r}"
         )
 
-    expected = {
-        "fedora": f"https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch",
-        "updates": "https://mirrors.fedoraproject.org/metalink?repo=updates-released-f$releasever&arch=$basearch",
-        "fedora-cisco-openh264": f"https://mirrors.fedoraproject.org/metalink?repo=fedora-cisco-openh264-$releasever&arch=$basearch",
-    }
-    configured = enabled_repo_ids(repo_directory)
-    listed = {
-        line.split()[0]
-        for line in enabled_repo_listing.splitlines()[1:]
-        if line.split()
-    }
-    if set(configured) != set(expected) or listed != set(expected):
-        raise BuildEnvironmentError(
-            "enabled repos must be only official Fedora repos for the current target "
-            f"(fedora, updates); config={sorted(configured)!r}, dnf={sorted(listed)!r}"
-        )
-    for repo, expected_url in expected.items():
-        values = configured[repo][1]
-        urls = [values.get(key, "").strip() for key in ("metalink", "mirrorlist", "baseurl")]
-        if urls.count(expected_url) != 1 or sum(bool(url) for url in urls) != 1:
+    if not host_runner:
+        expected = {
+            "fedora": f"https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch",
+            "updates": "https://mirrors.fedoraproject.org/metalink?repo=updates-released-f$releasever&arch=$basearch",
+            "fedora-cisco-openh264": f"https://mirrors.fedoraproject.org/metalink?repo=fedora-cisco-openh264-$releasever&arch=$basearch",
+        }
+        configured = enabled_repo_ids(repo_directory)
+        listed = {
+            line.split()[0]
+            for line in enabled_repo_listing.splitlines()[1:]
+            if line.split()
+        }
+        if set(configured) != set(expected) or listed != set(expected):
             raise BuildEnvironmentError(
-                f"Fedora repository URL for {repo} must be exactly {expected_url!r}; found {urls!r}"
+                "enabled repos must be only official Fedora repos for the current target "
+                f"(fedora, updates); config={sorted(configured)!r}, dnf={sorted(listed)!r}"
             )
+        for repo, expected_url in expected.items():
+            values = configured[repo][1]
+            urls = [values.get(key, "").strip() for key in ("metalink", "mirrorlist", "baseurl")]
+            if urls.count(expected_url) != 1 or sum(bool(url) for url in urls) != 1:
+                raise BuildEnvironmentError(
+                    f"Fedora repository URL for {repo} must be exactly {expected_url!r}; found {urls!r}"
+                )
 
     home = pathlib.Path(os.environ.get("HOME", "/root")).resolve()
     protected = {
@@ -171,10 +195,23 @@ def validate_environment(
 
 def main() -> int:
     in_container = pathlib.Path("/.dockerenv").exists() or pathlib.Path("/run/.containerenv").exists()
+    host_runner = os.environ.get("VEYRA_MKOSI_RUNNER") == "github-ubuntu-24.04"
     try:
-        listing = subprocess.check_output(
-            ["dnf5", "repo", "list", "--enabled", "--quiet"], text=True
-        )
+        if host_runner:
+            listing = subprocess.check_output(
+                ["dnf", "repolist", "--enabled", "--quiet", "--cacheonly", "--releasever=44"],
+                text=True,
+            )
+            dnf_path = shutil.which("dnf") or ""
+            owner = subprocess.check_output(["dpkg-query", "-S", "/usr/bin/dnf"], text=True)
+            dnf_ubuntu_owned = dnf_path == "/usr/bin/dnf" and any(
+                line.startswith("dnf: /usr/bin/dnf") for line in owner.splitlines()
+            )
+        else:
+            listing = subprocess.check_output(
+                ["dnf5", "repo", "list", "--enabled", "--quiet"], text=True
+            )
+            dnf_ubuntu_owned = False
         validate_environment(
             osrelease_path=pathlib.Path("/etc/os-release"),
             repo_directory=pathlib.Path("/etc/yum.repos.d"),
@@ -182,11 +219,17 @@ def main() -> int:
             enabled_repo_listing=listing,
             mountinfo=pathlib.Path("/proc/self/mountinfo").read_text(encoding="utf-8"),
             in_container=in_container,
+            host_runner=host_runner,
+            host_dnf_available=host_runner and shutil.which("dnf") is not None,
+            host_dnf_ubuntu_owned=host_runner and dnf_ubuntu_owned,
         )
     except (OSError, subprocess.CalledProcessError, BuildEnvironmentError) as error:
         print(f"mkosi build environment gate failed: {error}", file=sys.stderr)
         return 1
-    print(f"Isolated Fedora {target_release(ROOT / 'mkosi.conf')} build environment is valid")
+    if host_runner:
+        print(f"Ubuntu runner and Fedora {target_release(ROOT / 'mkosi.conf')} mkosi tools tree are valid")
+    else:
+        print(f"Isolated Fedora {target_release(ROOT / 'mkosi.conf')} build environment is valid")
     return 0
 
 
