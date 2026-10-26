@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import configparser
 from pathlib import Path
-import subprocess
 import sys
 
 
