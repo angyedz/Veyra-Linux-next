@@ -36,6 +36,7 @@ def main() -> int:
     output = section_values(config, "Output")
     content = section_values(config, "Content")
     distribution = section_values(config, "Distribution")
+    config_values = section_values(config, "Config")
     build = section_values(config, "Build")
     runtime = section_values(config, "Runtime")
 
@@ -76,6 +77,8 @@ def main() -> int:
         return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
     if "KernelCommandLine=systemd.unit=graphical.target" not in content:
         return fail("the image must boot into the graphical desktop target")
+    if "Dependencies=initrd" not in config_values:
+        return fail("the bootable image must build its referenced initrd as an explicit dependency")
 
     oci_config = ROOT / "mkosi.images/veyra-oci-rootfs/mkosi.conf"
     oci_content = section_values(oci_config, "Content")

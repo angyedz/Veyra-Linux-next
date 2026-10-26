@@ -55,6 +55,8 @@ def validate_source_config(root: Path, *, require_sources: bool = False) -> list
         raise ValueError("The OCI rootfs does not include the shared package definition.")
     if "veyra-oci-rootfs" not in main.get("Config.Dependencies", []):
         raise ValueError("The installed Veyra image does not build the OCI rootfs subimage.")
+    if "initrd" not in main.get("Config.Dependencies", []):
+        raise ValueError("The installed bootable image does not build its referenced initrd dependency.")
     if image.get("Output.Format") != ["oci-archive"] or image.get("Content.Bootable") != ["no"]:
         raise ValueError("The Vforge rootfs must be a non-bootable OCI archive image.")
     if image.get("Output.ImageId") or image.get("Output.ImageVersion"):
