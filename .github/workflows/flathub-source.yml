@@ -1,0 +1,29 @@
+name: Flathub source integrity checks
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/validate_flatpakrepo.py'
+      - 'tests/test_flatpakrepo_validation.py'
+      - 'mkosi.extra/usr/share/veyra/flathub.flatpakrepo'
+      - '.github/workflows/flathub-source.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/validate_flatpakrepo.py'
+      - 'tests/test_flatpakrepo_validation.py'
+      - 'mkosi.extra/usr/share/veyra/flathub.flatpakrepo'
+      - '.github/workflows/flathub-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate vendored Flathub metadata
+        run: python3 scripts/validate_flatpakrepo.py
+      - name: Run negative regression tests
+        run: python3 -m unittest discover -s tests -p 'test_flatpakrepo_validation.py' -v
