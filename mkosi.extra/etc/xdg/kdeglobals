@@ -1,0 +1,17 @@
+# Distribution-level defaults only; users may override in ~/.config/kdeglobals.
+[General]
+ColorScheme=VeyraGlacier
+Name=Veyra Glacier
+
+[KDE]
+LookAndFeelPackage=org.kde.breezedark.desktop
+widgetStyle=Breeze
+
+[Icons]
+Theme=breeze-dark
+
+[WM]
+activeBackground=18,25,39
+activeForeground=230,239,251
+inactiveBackground=24,32,46
+inactiveForeground=144,163,187
