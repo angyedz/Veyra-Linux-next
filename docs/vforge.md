@@ -87,9 +87,9 @@ project directory.
 
 Vforge starts user, mount, PID, and network namespaces. Networking is isolated
 by default; an approved project may share the host network namespace. It creates
-a private mount tree and binds only the active read-only Veyra EROFS root as
-OverlayFS's lower. The bind is deliberately non-recursive, so the
-machine's persistent `/etc`, `/var`, and `/home` mounts are not exposed. The
+a private mount tree and uses the active read-only Veyra EROFS root as
+OverlayFS's lower. Nested host mounts are detached from the lower view, so the
+machine's persistent `/etc`, `/var`, and `/home` state is not exposed. The
 environment's own persistent upper/work pair receives writes.
 The process starts inside that merged root. Only the project and individually
 approved mounts are exposed; `/proc`, a small `/dev`, `/tmp`, and `/run` are
