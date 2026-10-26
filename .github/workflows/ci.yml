@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Avoid rebuilding obsolete PR heads while a newer theme commit is tested.
+concurrency:
+  group: veyra-fedora-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-24.04
