@@ -25,11 +25,14 @@ from typing import Sequence
 
 CONTAINER_PREFIX = "vforge-"
 LABEL = "io.veyra.vforge"
-FEDORA_IMAGE = "registry.fedoraproject.org/fedora:44"
+VEYRA_BASE_REPOSITORY = "localhost/veyra-vforge-base"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,54}$")
 NETWORKS = ("none", "bridge")
 PROFILES = ("strict", "integrated", "trusted")
 HOME_MODES = ("none", "project-only", "read-only", "read-write")
+VPKG_CONTAINER_CAPABILITIES = (
+    "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETFCAP", "SETGID", "SETUID", "SYS_CHROOT",
+)
 TARGET_DENYLIST = ("/", "/proc", "/sys", "/dev", "/run", "/etc", "/usr", "/boot", "/var/lib")
 HOST_SOURCE_DENYLIST = ("/", "/root", "/etc", "/usr", "/boot", "/var/lib", "/proc", "/sys", "/dev")
 PROJECT_CONFIG = ".vforge.toml"
@@ -302,6 +305,331 @@ def remove_environment_state(name: str) -> None:
 def stable_digest(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_veyra_base_identity(
+    labels: object,
+    os_release: object,
+    digest: object,
+    *,
+    rpmdb_private: bool,
+    vpkg_container: bool,
+) -> dict[str, str]:
+    if not isinstance(labels, dict) or not isinstance(os_release, dict):
+        raise VforgeError("Veyra OCI base identity metadata is malformed")
+    image_id = labels.get("org.veyra.base.id")
+    version = labels.get("org.veyra.base.version")
+    if labels.get("org.veyra.base.schema") != "1" or image_id != "veyra-next":
+        raise VforgeError("OCI image is not a supported Veyra base; expected schema 1 and image_id=veyra-next")
+    if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}", version):
+        raise VforgeError("Veyra OCI base has an invalid image version")
+    if any(os_release.get(key) != value for key, value in (
+        ("ID", "fedora"), ("VERSION_ID", "44"), ("IMAGE_ID", "veyra-next"), ("IMAGE_VERSION", version),
+    )):
+        raise VforgeError("OCI image root identity does not match the Fedora 44 Veyra image labels")
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise VforgeError("Veyra OCI base has no valid SHA-256 manifest digest")
+    if not rpmdb_private:
+        raise VforgeError("Veyra OCI base is missing its private /usr/lib/sysimage/rpm database")
+    if not vpkg_container:
+        raise VforgeError("Veyra OCI base does not provide the vpkg container command")
+    return {"image_id": image_id, "image_version": version, "base_digest": digest.removeprefix("sha256:")}
+
+
+def base_identity_from_environment(metadata: dict[str, object]) -> dict[str, str]:
+    if metadata.get("root_mode") != "veyra-oci":
+        raise VforgeError("legacy Fedora/host-overlay Vforge environment is unsupported; recreate it from a verified Veyra OCI base")
+    keys = ("image_id", "image_version", "base_digest", "base_image", "image")
+    values = {key: metadata.get(key) for key in keys}
+    if (
+        values["image_id"] != "veyra-next"
+        or not isinstance(values["image_version"], str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}", values["image_version"])
+        or not isinstance(values["base_digest"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", values["base_digest"])
+        or not isinstance(values["image"], str)
+        or not isinstance(values["base_image"], str)
+        or values["base_image"] != f"{VEYRA_BASE_REPOSITORY}:{values['base_digest'][:16]}"
+        or not values["image"]
+    ):
+        raise VforgeError("Vforge environment has an incomplete Veyra OCI base identity")
+    return {
+        "image_id": str(values["image_id"]),
+        "image_version": str(values["image_version"]),
+        "base_digest": str(values["base_digest"]),
+        "image": str(values["base_image"]),
+    }
+
+
+def _parse_os_release(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and re.fullmatch(r"[A-Z0-9_]+", key):
+            result[key] = value.strip().strip('"').strip("'")
+    return result
+
+
+def _inspect_veyra_image(image: str, podman_root: Path) -> dict[str, str]:
+    inspection = podman(["image", "inspect", "--format", "json", image], capture=True, root=podman_root)
+    try:
+        payload = json.loads(inspection.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise VforgeError("Podman returned invalid Veyra image metadata") from error
+    if isinstance(payload, list):
+        payload = payload[0] if payload else None
+    if not isinstance(payload, dict):
+        raise VforgeError("Podman returned no Veyra image metadata")
+    config = payload.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    image_id = payload.get("Id") or payload.get("ID")
+    if not isinstance(image_id, str) or not image_id:
+        raise VforgeError("Podman did not return an image ID for the selected Veyra base")
+    probe = podman([
+        "run", "--rm", "--network=none", "--entrypoint", "/bin/sh", image_id, "-ec",
+        "test -d /usr/lib/sysimage/rpm && test -x /usr/bin/vpkg && "
+        "cat /usr/lib/os-release && /usr/bin/vpkg container --help >/dev/null",
+    ], capture=True, root=podman_root)
+    return validate_veyra_base_identity(
+        labels, _parse_os_release(probe.stdout or ""), payload.get("Digest"),
+        rpmdb_private=True, vpkg_container=True,
+    )
+
+
+def write_container_root_marker(
+    data_root: Path | str, root_id: str, base_identity: dict[str, str]
+) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}", root_id):
+        raise VforgeError("Vforge container root_id must be a lowercase UUID hex string")
+    marker_data = {
+        "schema": 1,
+        "kind": "vforge-veyra-root",
+        "root_id": root_id,
+        "image_id": base_identity.get("image_id"),
+        "image_version": base_identity.get("image_version"),
+        "base_digest": base_identity.get("base_digest"),
+        "storage_driver": "podman-overlay",
+        "immutable_base": True,
+    }
+    if (
+        marker_data["image_id"] != "veyra-next"
+        or not isinstance(marker_data["image_version"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(marker_data["base_digest"]))
+    ):
+        raise VforgeError("cannot write a marker for an unverified Veyra OCI base")
+    directory = Path(data_root)
+    ensure_private_directory(directory)
+    marker = directory / "container-root.json"
+    temporary = directory / (".container-root-" + uuid.uuid4().hex)
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o444)
+            json.dump(marker_data, stream, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+        fsync_directory(directory)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise VforgeError(f"could not write the Vforge root identity marker: {error}") from error
+    return marker
+
+
+def validate_container_root_marker(metadata: dict[str, object]) -> None:
+    base_identity = base_identity_from_environment(metadata)
+    root_id = metadata.get("root_id")
+    data_root = metadata.get("data_root")
+    if not isinstance(root_id, str) or not re.fullmatch(r"[0-9a-f]{32}", root_id) or not isinstance(data_root, str):
+        raise VforgeError("Vforge environment has an incomplete root marker identity")
+    marker = Path(data_root) / "container-root.json"
+    reject_symlink_components(marker, "Vforge root marker")
+    try:
+        info = marker.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o444:
+            raise VforgeError("Vforge root marker must be a user-owned read-only regular file")
+        with marker.open("r", encoding="utf-8") as stream:
+            value = json.load(stream)
+    except (OSError, json.JSONDecodeError) as error:
+        raise VforgeError(f"Vforge root marker is missing or invalid: {error}") from error
+    expected = {
+        "schema": 1,
+        "kind": "vforge-veyra-root",
+        "root_id": root_id,
+        "image_id": base_identity["image_id"],
+        "image_version": base_identity["image_version"],
+        "base_digest": base_identity["base_digest"],
+        "storage_driver": "podman-overlay",
+        "immutable_base": True,
+    }
+    if value != expected:
+        raise VforgeError("Vforge root marker does not match the environment's recorded Veyra base")
+
+
+def validate_container_mounts(container: dict[str, object]) -> None:
+    mounts = container.get("Mounts")
+    if not isinstance(mounts, list):
+        raise VforgeError("Podman did not report Vforge container mounts")
+    marker_is_read_only = False
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            raise VforgeError("Podman returned malformed Vforge container mount metadata")
+        destination = mount.get("Destination")
+        if not isinstance(destination, str):
+            raise VforgeError("Podman returned a mount without a destination")
+        if destination == "/run/veyra-vforge/root.json":
+            marker_is_read_only = mount.get("RW") is False
+        if any(destination == path or destination.startswith(path + "/") for path in ("/usr", "/etc", "/var", "/boot")):
+            if destination != "/run/veyra-vforge/root.json":
+                raise VforgeError(f"Veyra root path {destination} must remain private to the container")
+    if not marker_is_read_only:
+        raise VforgeError("Vforge root identity marker is not mounted read-only")
+
+
+def validate_container_identity(container: dict[str, object], metadata: dict[str, object]) -> None:
+    config = container.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if not isinstance(labels, dict) or any(labels.get(key) != value for key, value in (
+        (LABEL, "1"),
+        ("io.veyra.vforge.root-id", metadata.get("root_id")),
+        ("io.veyra.vforge.base-digest", metadata.get("base_digest")),
+    )):
+        raise VforgeError("Podman container labels do not match the recorded Veyra root identity")
+
+
+def import_veyra_base(archive: Path) -> dict[str, str]:
+    archive = Path(os.path.abspath(archive))
+    reject_symlink_components(archive, "Veyra OCI base archive")
+    try:
+        archive = archive.resolve(strict=True)
+        info = archive.stat()
+    except OSError as error:
+        raise VforgeError(f"Veyra OCI base archive is unavailable: {error}") from error
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        raise VforgeError("Veyra OCI base archive must be a regular file owned by the current user")
+    podman_root = common_store_root() / "containers"
+    verify_podman_overlay(podman_root)
+    podman(["load", "--input", str(archive)], capture=True, root=podman_root)
+    listing = podman(["images", "--filter", "label=org.veyra.base.id=veyra-next", "--format=json"], capture=True, root=podman_root)
+    try:
+        images = json.loads(listing.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise VforgeError("Podman returned an invalid image list after loading the Veyra OCI archive") from error
+    if not isinstance(images, list):
+        raise VforgeError("Podman returned an invalid image list after loading the Veyra OCI archive")
+    verified: list[tuple[str, dict[str, str]]] = []
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("ID") or item.get("Id")
+        if not isinstance(candidate, str) or not candidate:
+            continue
+        try:
+            identity = _inspect_veyra_image(candidate, podman_root)
+        except VforgeError:
+            continue
+        verified.append((candidate, identity))
+    if len(verified) != 1:
+        raise VforgeError(f"expected exactly one valid Veyra OCI base after import; found {len(verified)}")
+    image_id, identity = verified[0]
+    image_ref = f"{VEYRA_BASE_REPOSITORY}:{identity['base_digest'][:16]}"
+    podman(["image", "tag", image_id, image_ref], root=podman_root)
+    archive_dir = common_store_root() / "base"
+    ensure_private_directory(archive_dir)
+    stored_archive = archive_dir / "veyra-rootfs.oci.tar"
+    temporary = archive_dir / (".veyra-rootfs-" + uuid.uuid4().hex)
+    try:
+        shutil.copyfile(archive, temporary)
+        os.chmod(temporary, 0o600)
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(temporary, stored_archive)
+        fsync_directory(archive_dir)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise VforgeError(f"could not keep the imported Veyra OCI archive for project/size-capped stores: {error}") from error
+    state = {"schema": 1, "image": image_ref, "archive": str(stored_archive), **identity}
+    write_json_file(common_state_directory() / "veyra-base.json", state)
+    print(f"Imported Veyra OCI base {identity['image_id']} {identity['image_version']} ({identity['base_digest']}).")
+    return identity
+
+
+def require_imported_veyra_base(podman_root: Path | str | None = None) -> dict[str, str]:
+    state = read_store_state("veyra-base.json", None)
+    if not isinstance(state, dict) or state.get("schema") != 1 or not isinstance(state.get("image"), str):
+        raise VforgeError(
+            "no verified Veyra OCI base is imported; use 'vforge base import PATH' with the matching Veyra OCI archive"
+        )
+    root = Path(podman_root) if podman_root is not None else common_store_root() / "containers"
+    verify_podman_overlay(root)
+    identity = _inspect_veyra_image(str(state["image"]), root)
+    if any(state.get(key) != value for key, value in identity.items()):
+        raise VforgeError("the imported Veyra OCI base changed; run 'vforge base import PATH' again")
+    return {**identity, "image": str(state["image"])}
+
+
+def verify_podman_overlay(podman_root: Path | str) -> None:
+    result = podman(["info", "--format=json"], capture=True, root=podman_root)
+    try:
+        info = json.loads(result.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise VforgeError("Podman returned invalid storage-driver metadata") from error
+    store = info.get("store") if isinstance(info, dict) else None
+    if not isinstance(store, dict):
+        host = info.get("host") if isinstance(info, dict) else None
+        store = host.get("store") if isinstance(host, dict) else None
+    driver = store.get("graphDriverName") or store.get("GraphDriverName") if isinstance(store, dict) else None
+    if driver != "overlay":
+        raise VforgeError("Vforge requires rootless Podman overlay storage for persistent Veyra container roots")
+
+
+def ensure_veyra_base_in_store(podman_root: Path | str) -> dict[str, str]:
+    root = Path(podman_root)
+    state = read_store_state("veyra-base.json", None)
+    expected = require_imported_veyra_base()
+    expected_identity = {key: value for key, value in expected.items() if key != "image"}
+    verify_podman_overlay(root)
+    try:
+        return require_imported_veyra_base(root)
+    except VforgeError:
+        if not isinstance(state, dict) or not isinstance(state.get("archive"), str):
+            raise VforgeError("the verified Veyra OCI archive is unavailable for this environment store")
+        archive = Path(state["archive"])
+        reject_symlink_components(archive, "stored Veyra OCI base archive")
+        if not archive.is_file() or archive.is_symlink() or archive.stat().st_uid != os.geteuid():
+            raise VforgeError("the stored Veyra OCI base archive is missing or unsafe")
+        podman(["load", "--input", str(archive)], capture=True, root=root)
+        listing = podman(["images", "--filter", "label=org.veyra.base.id=veyra-next", "--format=json"], capture=True, root=root)
+        try:
+            images = json.loads(listing.stdout or "[]")
+        except json.JSONDecodeError as error:
+            raise VforgeError("Podman returned an invalid image list after loading the Veyra OCI base") from error
+        matches: list[str] = []
+        for item in images if isinstance(images, list) else []:
+            if not isinstance(item, dict):
+                continue
+            candidate = item.get("ID") or item.get("Id")
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            try:
+                identity = _inspect_veyra_image(candidate, root)
+            except VforgeError:
+                continue
+            if identity == expected_identity:
+                matches.append(candidate)
+        if len(matches) != 1:
+            raise VforgeError(f"expected exactly one matching Veyra OCI base in environment storage; found {len(matches)}")
+        image_ref = str(state.get("image"))
+        podman(["image", "tag", matches[0], image_ref], root=root)
+        return require_imported_veyra_base(root)
+
+
+def base_status() -> None:
+    identity = require_imported_veyra_base()
+    print(
+        f"Veyra OCI base: {identity['image_id']} {identity['image_version']} "
+        f"(sha256:{identity['base_digest']})"
+    )
 
 
 def parse_size_bytes(value: str | None) -> int | None:
@@ -1344,18 +1672,12 @@ def ensure_running(name: str) -> str:
     recorded = env_state().get(name)
     if not isinstance(recorded, dict):
         raise VforgeError(f"environment '{name}' has no vforge runtime metadata; recreate it with vforge")
-    if recorded.get("isolation") != "strict" and recorded.get("host_runtime") != host_runtime_id():
-        raise VforgeError(f"environment '{name}' was created for a different Veyra runtime; run 'vforge upgrade {name}'")
+    if recorded.get("root_mode") != "veyra-oci":
+        raise VforgeError(f"environment '{name}' uses the legacy Fedora/host-overlay root; recreate it from a verified Veyra OCI base")
+    validate_container_root_marker(recorded)
+    validate_container_identity(metadata, recorded)
+    validate_container_mounts(metadata)
     running = state(metadata) == "running"
-    if recorded.get("isolation") != "strict":
-        layer_id = recorded.get("layer_id")
-        if not isinstance(layer_id, str):
-            raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer; recreate it with vforge")
-        active_paths = layer_paths(layer_id, recorded.get("data_root"))
-        if running and not (os.path.ismount(active_paths["merged"]) and os.path.ismount(active_paths["rpmdb-merged"])):
-            raise VforgeError(f"environment '{name}' is running without its Veyra OverlayFS mount; stop and start it")
-        if not running:
-            ensure_veyra_overlay(layer_id, recorded.get("data_root"), recorded.get("layer_stack", []), name)
     if not running:
         podman(["container", "start", podman_name])
     return podman_name
@@ -1372,8 +1694,10 @@ def create_container(
     layer_stack: Sequence[str] = (),
     mounts: list[dict[str, str]] | None = None,
     resources: dict[str, object] | None = None,
-    image: str = FEDORA_IMAGE,
+    image: str | None = None,
     extra_labels: dict[str, str] | None = None,
+    root_id: str | None = None,
+    base_identity: dict[str, str] | None = None,
 ) -> None:
     if isolation not in PROFILES:
         raise VforgeError(f"unsupported isolation profile: {isolation}")
@@ -1399,13 +1723,30 @@ def create_container(
     podman_name = container_name(name)
     if exists(podman_name, podman_root):
         raise VforgeError(f"environment '{name}' already exists")
+    if root_id is None or base_identity is None:
+        raise VforgeError("Vforge container creation requires a verified Veyra root identity")
+    if podman_root is None:
+        raise VforgeError("Vforge container creation requires an explicit private Podman graphroot")
+    verify_podman_overlay(podman_root)
+    if image is None:
+        image = base_identity.get("image")
+    if not isinstance(image, str) or not image:
+        raise VforgeError("Vforge container creation has no immutable Veyra image reference")
+    root_marker = write_container_root_marker(data_root or common_store_root(), root_id, base_identity)
     command = [
-        "container", "create", "--pull=missing", "--name", podman_name,
+        "container", "create", "--pull=never", "--name", podman_name,
         "--hostname", name, "--label", f"{LABEL}=1",
         "--label", f"io.veyra.vforge.isolation={isolation}",
+        "--label", f"io.veyra.vforge.root-id={root_id}",
+        "--label", f"io.veyra.vforge.base-digest={base_identity['base_digest']}",
         "--network", network, "--init", "--cap-drop=all",
         "--security-opt=no-new-privileges",
     ]
+    # RPM file ownership, modes, capabilities, and maintainer scriptlets need
+    # these process-local capabilities. Rootless Podman confines them to the
+    # container's user namespace; this does not grant host capabilities.
+    for capability in VPKG_CONTAINER_CAPABILITIES:
+        command.append(f"--cap-add={capability}")
     for key, value in (extra_labels or {}).items():
         command.extend(("--label", f"io.veyra.vforge.{key}={value}"))
     all_mounts = list(mounts or [])
@@ -1415,12 +1756,6 @@ def create_container(
         validate_mount_for_launch({"source": str(project_root), "target": "/workspace", "access": "read-write"}, project_root)
     for mount in all_mounts:
         validate_mount_for_launch(mount, project_root)
-    if isolation != "strict":
-        if layer_id is None:
-            raise VforgeError("integrated environments require a persistent Veyra system layer")
-        overlay_mounts = ensure_veyra_overlay(layer_id, data_root, layer_stack, name)
-        all_mounts.append({"source": str(overlay_mounts["usr"]), "target": "/usr", "access": "read-write"})
-        all_mounts.append({"source": str(overlay_mounts["rpmdb"]), "target": str(overlay_mounts["rpmdb-target"]), "access": "read-write"})
     if home_mode in {"read-only", "read-write"}:
         all_mounts.append({
             "source": str(Path.home().resolve()),
@@ -1432,6 +1767,7 @@ def create_container(
             raise VforgeError("bind mount paths containing ':' or ',' are not supported")
         access = ":ro" if mount["access"] == "read-only" else ":rw"
         command.extend(("--volume", f"{mount['source']}:{mount['target']}{access}"))
+    command.extend(("--volume", f"{root_marker}:/run/veyra-vforge/root.json:ro"))
     if resource_model.get("project") and isolation != "strict":
         command.extend(("--tmpfs", "/workspace/.vforge"))
     if resource_model.get("gpu"):
@@ -1480,40 +1816,50 @@ def create(
     gpu: bool = False, wayland: bool = False, audio: bool = False, user_bus: bool = False,
     size: str | None = None,
 ) -> None:
-    size_bytes = parse_size_bytes(size)
     if isolation not in PROFILES or home_mode not in HOME_MODES or network not in NETWORKS:
         raise VforgeError("invalid isolation profile, Home permission or network mode")
     if any(not isinstance(value, bool) for value in (gpu, wayland, audio, user_bus)):
         raise VforgeError("GPU, Wayland, audio and user D-Bus permissions must be true or false")
     if home_mode == "project-only":
         raise VforgeError("--home project-only is available only for project environments")
-    resources: dict[str, object] = {
-        "home": home_mode, "gpu": gpu, "wayland": wayland,
-        "audio": audio, "system_bus": user_bus,
-    }
     if isolation == "strict" and (home_mode != "none" or gpu or wayland or audio or user_bus):
         raise VforgeError("strict isolation cannot grant Home, GPU, Wayland, audio or user D-Bus access")
     if isolation != "trusted" and (gpu or wayland or audio or user_bus):
         raise VforgeError("GPU, Wayland, audio and user D-Bus access require --isolation trusted")
+    size_bytes = parse_size_bytes(size)
+    resources: dict[str, object] = {
+        "home": home_mode, "gpu": gpu, "wayland": wayland,
+        "audio": audio, "system_bus": user_bus,
+    }
     if home_mode != "none" or any((gpu, wayland, audio, user_bus)) or network != "none":
         if not sys.stdin.isatty():
             raise VforgeError("requested host permissions need interactive approval")
         print(f"Named environment '{name}' requests these host permissions: {json.dumps(resources, sort_keys=True)}; network={network}.")
         if input("Approve? [y/N] ").strip().lower() not in {"y", "yes"}:
             raise VforgeError("requested permissions were not approved")
-    runtime_id = host_runtime_id()
+    base_identity = require_imported_veyra_base()
     if name in env_state() or exists(container_name(name)):
         raise VforgeError(f"environment '{name}' already exists")
     parent = named_environment_parent(name)
     data_root, size_image = configure_environment_store(parent, size_bytes)
     podman_root = data_root / "containers" if size_bytes is not None else common_store_root() / "containers"
-    if exists(container_name(name), podman_root):
-        raise VforgeError(f"an unregistered Podman environment '{name}' already exists in the selected storage; inspect it before reuse")
-    layer_id = uuid.uuid4().hex if isolation != "strict" else None
+    try:
+        base_identity = ensure_veyra_base_in_store(podman_root)
+        if exists(container_name(name), podman_root):
+            raise VforgeError(f"an unregistered Podman environment '{name}' already exists in the selected storage; inspect it before reuse")
+    except Exception:
+        if size_image is not None:
+            remove_size_capped_store(size_image, data_root, discard=True)
+        else:
+            shutil.rmtree(data_root, ignore_errors=True)
+        raise
+    root_id = uuid.uuid4().hex
     metadata = {
         "type": "named", "isolation": isolation, "network": network,
-        "image": FEDORA_IMAGE, "permissions": resources,
-        "mounts": [], "host_runtime": runtime_id, "layer_id": layer_id, "data_root": str(data_root),
+        "root_mode": "veyra-oci", "image": base_identity["image"], "base_image": base_identity["image"],
+        "image_id": base_identity["image_id"], "image_version": base_identity["image_version"],
+        "base_digest": base_identity["base_digest"], "root_id": root_id,
+        "permissions": resources, "mounts": [], "layer_id": None, "data_root": str(data_root),
         "podman_root": str(podman_root), "layer_stack": [],
     }
     if size_bytes is not None:
@@ -1521,8 +1867,11 @@ def create(
         metadata["size_image"] = str(size_image)
     try:
         save_environment(name, metadata)
-        create_container(name, network, isolation=isolation, layer_id=layer_id, data_root=data_root,
-                         podman_root=metadata["podman_root"], resources=resources, layer_stack=[])
+        create_container(
+            name, network, isolation=isolation, data_root=data_root,
+            podman_root=metadata["podman_root"], resources=resources,
+            root_id=root_id, base_identity=base_identity,
+        )
     except Exception:
         remove_environment_state(name)
         if size_image is not None:
@@ -1530,10 +1879,11 @@ def create(
         else:
             shutil.rmtree(data_root, ignore_errors=True)
         raise
-    print("Use 'vforge enter " + name + "' to start a shell; install packages with dnf, without sudo.")
+    print("Use 'vforge enter " + name + "' to start a shell; install packages with vpkg, without sudo.")
 
 
 def project_up(project: Path) -> None:
+    base_identity = require_imported_veyra_base()
     project = canonical_project_root(project)
     project_stat = project.stat()
     project_identity = (project_stat.st_dev, project_stat.st_ino)
@@ -1553,7 +1903,7 @@ def project_up(project: Path) -> None:
     if config["isolation"] != "strict":
         mounts.insert(0, {"source": str(project), "target": "/workspace", "access": "read-write"})
     if config["packages"] and network == "none":
-        raise VforgeError("project packages need network = 'shared' so Fedora can resolve and install them")
+        raise VforgeError("project packages need network = 'shared' so Veyra repositories can resolve them")
     state = env_state().get(name)
     if state is None:
         local_state = read_project_environment(project, project_state_root)
@@ -1564,6 +1914,8 @@ def project_up(project: Path) -> None:
             state = local_state
     if isinstance(state, dict) and (state.get("type") != "project" or state.get("project") != str(project)):
         raise VforgeError(f"environment name '{name}' is already used by another Vforge environment")
+    if isinstance(state, dict) and state.get("root_mode") != "veyra-oci":
+        raise VforgeError(f"environment '{name}' uses the legacy Fedora/host-overlay root; delete and recreate it from a Veyra OCI base")
     if isinstance(state, dict) and state.get("size_bytes") != size_bytes:
         raise VforgeError(
             "changing or adding/removing a project's size cap requires deleting and recreating its Vforge environment"
@@ -1572,28 +1924,35 @@ def project_up(project: Path) -> None:
         data_root, size_image = project_state_root, None
     else:
         data_root, size_image = configure_environment_store(project_state_root, size_bytes)
-    existing = exists(container_name(name), data_root / "containers")
+    podman_root = data_root / "containers"
+    existing = exists(container_name(name), podman_root)
+    if isinstance(state, dict):
+        base_identity = base_identity_from_environment(state)
+        root_id = state.get("root_id")
+        if not isinstance(root_id, str) or not re.fullmatch(r"[0-9a-f]{32}", root_id):
+            raise VforgeError(f"environment '{name}' has no valid Veyra root_id")
+    else:
+        base_identity = ensure_veyra_base_in_store(podman_root)
+        root_id = uuid.uuid4().hex
     metadata = {
         "type": "project", "project": str(project), "config_digest": config["config_digest"],
         "permission_digest": config["permission_digest"], "permissions": permissions,
         "packages": config["packages"], "mounts": mounts, "network": network,
-        "image": FEDORA_IMAGE, "isolation": config["isolation"], "host_runtime": host_runtime_id(),
+        "root_mode": "veyra-oci", "image": base_identity["image"], "base_image": base_identity["image"],
+        "image_id": base_identity["image_id"], "image_version": base_identity["image_version"],
+        "base_digest": base_identity["base_digest"], "root_id": root_id,
+        "isolation": config["isolation"],
     }
     metadata["data_root"] = str(data_root)
-    metadata["podman_root"] = str(data_root / "containers")
+    metadata["podman_root"] = str(podman_root)
     if size_bytes is not None:
         metadata["size_bytes"] = size_bytes
         metadata["size_image"] = str(size_image)
-    if config["isolation"] != "strict":
-        data_root.joinpath("layers").mkdir(mode=0o700, exist_ok=True)
-    metadata["layer_id"] = uuid.uuid4().hex if config["isolation"] != "strict" else None
+    metadata["layer_id"] = None
     metadata["layer_stack"] = []
     if existing:
         if not isinstance(state, dict) or state.get("type") != "project" or state.get("project") != str(project):
             raise VforgeError(f"environment '{name}' exists outside this project; refusing to reuse it")
-        if config["isolation"] != "strict" and state.get("isolation") != "strict" and isinstance(state.get("layer_id"), str):
-            metadata["layer_id"] = state["layer_id"]
-            metadata["layer_stack"] = list(state.get("layer_stack", []))
         if state.get("config_digest") == config["config_digest"]:
             ensure_running(name)
         else:
@@ -1602,14 +1961,15 @@ def project_up(project: Path) -> None:
     else:
         labels = {"type": "project", "permission": str(config["permission_digest"])}
         create_container(
-            name, network, layer_id=metadata["layer_id"], isolation=str(config["isolation"]), layer_stack=metadata["layer_stack"], mounts=mounts,
+            name, network, isolation=str(config["isolation"]), mounts=mounts,
             data_root=data_root, podman_root=metadata["podman_root"], resources=permissions, extra_labels=labels,
+            root_id=root_id, base_identity=base_identity,
         )
         save_environment(name, metadata)
         podman(["container", "start", container_name(name)])
     packages = config["packages"]
     if packages:
-        podman(["container", "exec", container_name(name), "dnf", "install", "-y", *packages])
+        podman(["container", "exec", container_name(name), "vpkg", "container", "install", *packages])
     print(f"Project environment '{name}' is ready at /workspace.")
 
 
@@ -1631,7 +1991,8 @@ def replace_project_environment(name: str, checkpoint: str, metadata: dict[str, 
         labels = {"type": "project", "permission": str(config["permission_digest"])}
         create_container(
             name, new_network, layer_id=metadata.get("layer_id"), isolation=str(config["isolation"]),
-            layer_stack=metadata.get("layer_stack", []),
+            layer_stack=metadata.get("layer_stack", []), root_id=str(metadata.get("root_id", "")),
+            base_identity=base_identity_from_environment(metadata),
             data_root=metadata.get("data_root"), podman_root=metadata.get("podman_root"), mounts=metadata["mounts"], resources=permissions,
             image=checkpoint_image, extra_labels=labels,
         )
@@ -1755,6 +2116,8 @@ def remove_private_file(path: Path) -> None:
 
 def recover_snapshot_transaction(name: str, metadata: dict[str, object]) -> None:
     """Finish an interrupted snapshot rotation before the environment is reused."""
+    if metadata.get("root_mode") != "veyra-oci":
+        raise VforgeError(f"environment '{name}' uses the legacy Fedora/host-overlay root; refusing snapshot recovery")
     data_root_text = metadata.get("data_root")
     if not isinstance(data_root_text, str):
         raise VforgeError("snapshot transaction has no valid Vforge data root")
@@ -1845,6 +2208,7 @@ def recover_pending_snapshot_transactions() -> None:
 
 def recover_rollback_transaction(name: str, current_metadata: dict[str, object]) -> None:
     """Recover an interrupted rollback to its already-committed pre-rollback checkpoint."""
+    base_identity_from_environment(current_metadata)
     data_root_text = current_metadata.get("data_root")
     if not isinstance(data_root_text, str):
         raise VforgeError("rollback transaction has no valid Vforge data root")
@@ -1881,7 +2245,7 @@ def recover_rollback_transaction(name: str, current_metadata: dict[str, object])
     image, network, mounts, permissions = stored_container_options(checkpoint_metadata)
     if image != checkpoint_image:
         raise VforgeError("rollback checkpoint metadata points at a different image")
-    if checkpoint_metadata.get("isolation") != "strict" and not isinstance(layer_id, str):
+    if checkpoint_metadata.get("root_mode") != "veyra-oci" and checkpoint_metadata.get("isolation") != "strict" and not isinstance(layer_id, str):
         raise VforgeError("rollback checkpoint has no Veyra system layer")
 
     podman_name = container_name(name)
@@ -1891,8 +2255,9 @@ def recover_rollback_transaction(name: str, current_metadata: dict[str, object])
     if exists(backup_name, graphroot):
         podman(["container", "stop", "--time", "0", backup_name], check=False, root=graphroot)
         podman(["container", "rm", "--force", backup_name], root=graphroot)
-    for value in {item for item in (current_layer_id, layer_id) if isinstance(item, str)}:
-        unmount_veyra_overlay(value, data_root)
+    if checkpoint_metadata.get("root_mode") != "veyra-oci":
+        for value in {item for item in (current_layer_id, layer_id) if isinstance(item, str)}:
+            unmount_veyra_overlay(value, data_root)
     if exists(podman_name, graphroot):
         podman(["container", "rm", "--force", podman_name], root=graphroot)
 
@@ -1903,6 +2268,7 @@ def recover_rollback_transaction(name: str, current_metadata: dict[str, object])
         layer_stack=restored.get("layer_stack", []), data_root=data_root,
         podman_root=graphroot, isolation=str(restored.get("isolation", "integrated")),
         mounts=mounts, resources=permissions, image=checkpoint_image,
+        root_id=str(restored.get("root_id", "")), base_identity=base_identity_from_environment(restored),
     )
     save_environment(name, restored)
     if was_running:
@@ -1936,6 +2302,10 @@ def make_snapshot(name: str, label: str | None = None) -> str:
     metadata = env_state().get(name)
     if not isinstance(metadata, dict):
         raise VforgeError(f"environment '{name}' has no local vforge metadata")
+    base_identity_from_environment(metadata)
+    validate_container_root_marker(metadata)
+    validate_container_identity(container_metadata, metadata)
+    validate_container_mounts(container_metadata)
     snapshot = label or (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6])
     image = snapshot_image(name, snapshot)
     snapshots = snapshots_state()
@@ -1945,7 +2315,7 @@ def make_snapshot(name: str, label: str | None = None) -> str:
     if any(isinstance(entry, dict) and entry.get("name") == snapshot for entry in entries):
         raise VforgeError(f"snapshot '{snapshot}' already exists for '{name}'")
     was_running = state(container_metadata) == "running"
-    integrated = metadata.get("isolation") != "strict"
+    integrated = False
     layer_id = metadata.get("layer_id")
     journal_written = False
     try:
@@ -1961,9 +2331,11 @@ def make_snapshot(name: str, label: str | None = None) -> str:
 
         after_metadata = copy.deepcopy(metadata)
         upper_path: str | None = None
+        base_identity = base_identity_from_environment(metadata)
         entry: dict[str, object] = {
             "name": snapshot, "image": image, "upper": None,
-            "host_runtime": host_runtime_id(), "environment": after_metadata,
+            "root_id": metadata["root_id"], "base_digest": base_identity["base_digest"],
+            "image_version": base_identity["image_version"], "environment": after_metadata,
             "created": datetime.now(timezone.utc).isoformat(),
         }
         if integrated:
@@ -2002,7 +2374,7 @@ def make_snapshot(name: str, label: str | None = None) -> str:
 
 
 def stored_container_options(metadata: dict[str, object]) -> tuple[str, str, list[dict[str, str]], dict[str, object]]:
-    image = metadata.get("image", FEDORA_IMAGE)
+    image = metadata.get("image")
     network = metadata.get("network", "none")
     mounts = metadata.get("mounts", [])
     permissions = metadata.get("permissions", {"home": "none"})
@@ -2054,6 +2426,7 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
     metadata = env_state().get(name)
     if not isinstance(metadata, dict):
         raise VforgeError(f"environment '{name}' has no local vforge metadata")
+    current_base_identity = base_identity_from_environment(metadata)
     entries = snapshots_state().get(name, [])
     selected = next((entry for entry in entries if isinstance(entry, dict) and entry.get("name") == snapshot), None) if isinstance(entries, list) else None
     if not isinstance(selected, dict) or not isinstance(selected.get("image"), str):
@@ -2063,6 +2436,15 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
     snapshot_metadata = selected.get("environment", metadata)
     if not isinstance(snapshot_metadata, dict):
         raise VforgeError("snapshot environment metadata is invalid")
+    snapshot_base_identity = base_identity_from_environment(snapshot_metadata)
+    if (
+        snapshot_metadata.get("root_id") != metadata.get("root_id")
+        or snapshot_base_identity["base_digest"] != current_base_identity["base_digest"]
+        or selected.get("root_id") != metadata.get("root_id")
+        or selected.get("base_digest") != current_base_identity["base_digest"]
+        or selected.get("image_version") != current_base_identity["image_version"]
+    ):
+        raise VforgeError("snapshot root identity does not match the current Veyra environment")
     stored_container_options(snapshot_metadata)
     if confirm:
         if not sys.stdin.isatty():
@@ -2100,7 +2482,8 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
     target_stack = snapshot_metadata.get("layer_stack", [])
     if not isinstance(target_stack, list):
         raise VforgeError("snapshot Veyra layer stack is malformed")
-    if target_isolation != "strict" and not target_stack:
+    target_is_oci = snapshot_metadata.get("root_mode") == "veyra-oci"
+    if not target_is_oci and target_isolation != "strict" and not target_stack:
         # The legacy copy format must never overwrite the checkpoint's active
         # upper during rollback. Restore it into a fresh isolated layer id.
         if not isinstance(target_layer_id, str):
@@ -2126,11 +2509,11 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
     try:
         if was_running:
             podman(["container", "stop", "--time", "10", podman_name], root=podman_root)
-        if metadata.get("isolation") != "strict" and isinstance(old_layer_id, str):
+        if metadata.get("root_mode") != "veyra-oci" and metadata.get("isolation") != "strict" and isinstance(old_layer_id, str):
             unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
-        if target_isolation != "strict" and isinstance(target_layer_id, str) and target_layer_id != old_layer_id:
+        if not target_is_oci and target_isolation != "strict" and isinstance(target_layer_id, str) and target_layer_id != old_layer_id:
             unmount_veyra_overlay(target_layer_id, data_root)
-        if target_isolation != "strict":
+        if not target_is_oci and target_isolation != "strict":
             if not isinstance(target_layer_id, str):
                 raise VforgeError("integrated environment has no Veyra OverlayFS layer")
             if not target_stack:
@@ -2142,9 +2525,10 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
             name, network, layer_id=target_layer_id if isinstance(target_layer_id, str) else None,
             layer_stack=target_stack, data_root=data_root, podman_root=podman_root,
             isolation=target_isolation, mounts=mounts, resources=permissions, image=selected["image"],
+            root_id=str(snapshot_metadata.get("root_id", "")), base_identity=snapshot_base_identity,
         )
         snapshot_runtime = selected.get("host_runtime")
-        runtime_compatible = target_isolation == "strict" or snapshot_runtime == host_runtime_id()
+        runtime_compatible = target_is_oci or target_isolation == "strict" or snapshot_runtime == host_runtime_id()
         if was_running and runtime_compatible:
             podman(["container", "start", podman_name], root=podman_root)
         restored_metadata = copy.deepcopy(snapshot_metadata)
@@ -2152,7 +2536,7 @@ def rollback_to(name: str, snapshot: str, *, confirm: bool = True) -> None:
         save_environment(name, restored_metadata)
         podman(["container", "rm", backup_name], root=podman_root)
         remove_private_file(tx_path)
-        if isinstance(old_layer_id, str) and old_layer_id != target_layer_id:
+        if metadata.get("root_mode") != "veyra-oci" and isinstance(old_layer_id, str) and old_layer_id != target_layer_id:
             try:
                 unmount_veyra_overlay(old_layer_id, metadata.get("data_root"))
                 old_root = Path(str(metadata.get("data_root", ""))) / "layers" / old_layer_id
@@ -2178,22 +2562,16 @@ def upgrade(name: str) -> None:
     metadata = env_state().get(name)
     if not isinstance(metadata, dict):
         raise VforgeError(f"environment '{name}' has no local vforge metadata")
+    base_identity_from_environment(metadata)
     if state(container_metadata) != "running":
-        if metadata.get("isolation") != "strict":
-            layer_id = metadata.get("layer_id")
-            if not isinstance(layer_id, str):
-                raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer")
-            ensure_veyra_overlay(layer_id, metadata.get("data_root"), metadata.get("layer_stack", []), name)
-        podman(["container", "start", podman_name])
+        ensure_running(name)
     checkpoint = make_snapshot(name, "pre-upgrade-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6])
     network = metadata.get("network", "none")
     connected = network != "bridge"
     if connected:
         podman(["network", "connect", "bridge", podman_name])
     try:
-        podman(["container", "exec", podman_name, "dnf", "upgrade", "-y"])
-        metadata["host_runtime"] = host_runtime_id()
-        save_environment(name, metadata)
+        podman(["container", "exec", podman_name, "vpkg", "container", "upgrade"])
         print(f"Upgraded '{name}'. Snapshot '{checkpoint}' is available for rollback.")
     except VforgeError:
         print(f"Upgrade failed. Restoring pre-upgrade snapshot '{checkpoint}'.", file=sys.stderr)
@@ -2283,17 +2661,15 @@ def start(name: str) -> None:
     recorded = env_state().get(name)
     if not isinstance(recorded, dict):
         raise VforgeError(f"environment '{name}' has no vforge runtime metadata; recreate it with vforge")
-    if recorded.get("isolation") != "strict" and recorded.get("host_runtime") != host_runtime_id():
-        raise VforgeError(f"environment '{name}' was created for a different Veyra runtime; run 'vforge upgrade {name}'")
     if state(metadata) == "running":
+        if recorded.get("root_mode") != "veyra-oci":
+            raise VforgeError(f"environment '{name}' uses the legacy Fedora/host-overlay root; recreate it from a verified Veyra OCI base")
+        validate_container_root_marker(recorded)
+        validate_container_identity(metadata, recorded)
+        validate_container_mounts(metadata)
         print(f"Environment '{name}' is already running.")
         return
-    if recorded.get("isolation") != "strict":
-        layer_id = recorded.get("layer_id")
-        if not isinstance(layer_id, str):
-            raise VforgeError(f"environment '{name}' has no Veyra OverlayFS layer")
-        ensure_veyra_overlay(layer_id, recorded.get("data_root"), recorded.get("layer_stack", []), name)
-    podman(["container", "start", podman_name])
+    ensure_running(name)
     print(f"Started '{name}'.")
 
 
@@ -2301,13 +2677,13 @@ def stop(name: str) -> None:
     podman_name, metadata = require_environment(name)
     if state(metadata) != "running":
         recorded = env_state().get(name)
-        if isinstance(recorded, dict) and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
+        if isinstance(recorded, dict) and recorded.get("root_mode") != "veyra-oci" and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
             unmount_veyra_overlay(recorded["layer_id"], recorded.get("data_root"))
         print(f"Environment '{name}' is already stopped.")
         return
     podman(["container", "stop", "--time", "10", podman_name])
     recorded = env_state().get(name)
-    if isinstance(recorded, dict) and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
+    if isinstance(recorded, dict) and recorded.get("root_mode") != "veyra-oci" and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
         unmount_veyra_overlay(recorded["layer_id"], recorded.get("data_root"))
     print(f"Stopped '{name}'.")
 
@@ -2347,7 +2723,7 @@ def delete(name: str) -> None:
     if state(metadata) == "running":
         podman(["container", "stop", "--time", "10", podman_name])
     recorded = env_state().get(name)
-    if isinstance(recorded, dict) and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
+    if isinstance(recorded, dict) and recorded.get("root_mode") != "veyra-oci" and recorded.get("isolation") != "strict" and isinstance(recorded.get("layer_id"), str):
         unmount_veyra_overlay(recorded["layer_id"], recorded.get("data_root"))
     podman(["container", "rm", podman_name])
     snapshots = snapshots_state().get(name, [])
@@ -2388,7 +2764,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--storage-root", help="override the common named-environment storage root for this command")
     subparsers = parser.add_subparsers(dest="action", required=True)
 
-    create_parser = subparsers.add_parser("create", help="create a persistent Fedora 44 environment")
+    create_parser = subparsers.add_parser("create", help="create a persistent Veyra environment")
     create_parser.add_argument("name")
     create_parser.add_argument("--network", choices=NETWORKS, default="none")
     create_parser.add_argument("--isolation", choices=PROFILES, default="integrated")
@@ -2401,6 +2777,11 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--storage-root", dest="storage_root_command", help="override the common named-environment storage root")
 
     subparsers.add_parser("list", help="list vforge environments")
+    base_parser = subparsers.add_parser("base", help="import and inspect the Veyra OCI base")
+    base_subparsers = base_parser.add_subparsers(dest="base_action", required=True)
+    import_parser = base_subparsers.add_parser("import", help="verify and import a Veyra OCI rootfs archive")
+    import_parser.add_argument("archive", type=Path)
+    base_subparsers.add_parser("status", help="show the verified Veyra OCI base")
     for action in ("enter", "start", "stop", "delete"):
         action_parser = subparsers.add_parser(action, help=f"{action} a named environment")
         action_parser.add_argument("name", nargs="?" if action == "enter" else None)
@@ -2448,6 +2829,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Vforge common storage root set to {selected}.")
             return 0
         ACTIVE_STORAGE_ROOT = resolve_storage_root(override)
+        if args.action == "base":
+            if args.base_action == "import":
+                import_veyra_base(args.archive)
+                return 0
+            base_status()
+            return 0
         ensure_persistent_size_mounts()
         recover_pending_snapshot_transactions()
         if args.action == "create":

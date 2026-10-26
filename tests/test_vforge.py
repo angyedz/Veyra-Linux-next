@@ -25,6 +25,12 @@ SPEC.loader.exec_module(vforge)
 
 
 class VforgeCommandTests(unittest.TestCase):
+    BASE_IDENTITY = {
+        "image_id": "veyra-next", "image_version": "0.1.0",
+        "base_digest": "a" * 64,
+        "image": "localhost/veyra-vforge-base:" + "a" * 16,
+    }
+
     def setUp(self) -> None:
         self.state = tempfile.TemporaryDirectory()
         self.addCleanup(self.state.cleanup)
@@ -44,39 +50,100 @@ class VforgeCommandTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(vforge.VforgeError):
                 vforge.container_name(name)
 
-    def test_create_uses_fixed_image_and_network_none_without_mounts(self) -> None:
-        with patch.object(vforge, "exists", return_value=False), patch.object(
-            vforge, "ensure_veyra_overlay", return_value={
-                "usr": Path("/tmp/vforge-test/usr"),
-                "rpmdb": Path("/tmp/vforge-test/rpmdb"),
-                "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
+    def test_veyra_base_identity_requires_fedora44_private_root_and_vpkg(self) -> None:
+        labels = {
+            "org.veyra.base.id": "veyra-next",
+            "org.veyra.base.version": "0.1.0",
+            "org.veyra.base.schema": "1",
+        }
+        release = {"ID": "fedora", "VERSION_ID": "44", "IMAGE_ID": "veyra-next", "IMAGE_VERSION": "0.1.0"}
+        identity = vforge.validate_veyra_base_identity(
+            labels, release, "sha256:" + "a" * 64, rpmdb_private=True, vpkg_container=True
+        )
+        self.assertEqual(identity["image_version"], "0.1.0")
+        self.assertEqual(identity["base_digest"], "a" * 64)
+
+        invalid = (
+            ({**labels, "org.veyra.base.id": "fedora"}, release, "sha256:" + "a" * 64, True, True),
+            (labels, {**release, "ID": "ubuntu"}, "sha256:" + "a" * 64, True, True),
+            (labels, {**release, "IMAGE_VERSION": "0.2.0"}, "sha256:" + "a" * 64, True, True),
+            (labels, release, "sha256:bad", True, True),
+            (labels, release, "sha256:" + "a" * 64, False, True),
+            (labels, release, "sha256:" + "a" * 64, True, False),
+        )
+        for candidate in invalid:
+            with self.subTest(candidate=candidate), self.assertRaises(vforge.VforgeError):
+                vforge.validate_veyra_base_identity(
+                    candidate[0], candidate[1], candidate[2],
+                    rpmdb_private=candidate[3], vpkg_container=candidate[4],
+                )
+
+    def test_create_fails_before_environment_state_changes_without_imported_veyra_base(self) -> None:
+        with patch.object(vforge, "require_imported_veyra_base", side_effect=vforge.VforgeError("missing Veyra OCI base")) as require_base, \
+             patch.object(vforge, "env_state") as env_state, \
+             patch.object(vforge, "configure_environment_store") as configure:
+            with self.assertRaisesRegex(vforge.VforgeError, "missing Veyra OCI base"):
+                vforge.create("backend", "none")
+
+        require_base.assert_called_once()
+        env_state.assert_not_called()
+        configure.assert_not_called()
+
+    def test_root_marker_matches_vpkg_container_contract_and_is_mounted_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            metadata = {
+                "root_mode": "veyra-oci", "image": self.BASE_IDENTITY["image"],
+                "base_image": self.BASE_IDENTITY["image"], "image_id": "veyra-next",
+                "image_version": "0.1.0", "base_digest": "a" * 64,
+                "root_id": "b" * 32, "data_root": str(data_root),
             }
-        ), patch.object(vforge, "host_runtime_id", return_value="runtime-test"), patch.object(
-            vforge, "podman"
-        ) as call:
+            marker = vforge.write_container_root_marker(data_root, "b" * 32, self.BASE_IDENTITY)
+            self.assertEqual(marker.name, "container-root.json")
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o444)
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), {
+                "schema": 1, "kind": "vforge-veyra-root", "root_id": "b" * 32,
+                "image_id": "veyra-next", "image_version": "0.1.0",
+                "base_digest": "a" * 64, "storage_driver": "podman-overlay",
+                "immutable_base": True,
+            })
+            vforge.validate_container_root_marker(metadata)
+            vforge.validate_container_mounts({"Mounts": [
+                {"Destination": "/run/veyra-vforge/root.json", "RW": False},
+            ]})
+            with self.assertRaisesRegex(vforge.VforgeError, "must remain private"):
+                vforge.validate_container_mounts({"Mounts": [
+                    {"Destination": "/usr", "RW": True},
+                    {"Destination": "/run/veyra-vforge/root.json", "RW": False},
+                ]})
+
+    def test_create_uses_fixed_image_and_network_none_without_mounts(self) -> None:
+        with patch.object(vforge, "exists", return_value=False), \
+             patch.object(vforge, "require_imported_veyra_base", return_value=self.BASE_IDENTITY), \
+             patch.object(vforge, "ensure_veyra_base_in_store", return_value=self.BASE_IDENTITY), \
+             patch.object(vforge, "verify_podman_overlay"), patch.object(vforge, "podman") as call:
             vforge.create("backend", "none")
 
         argv = call.call_args.args[0]
         self.assertEqual(argv[0:2], ["container", "create"])
-        self.assertIn(vforge.FEDORA_IMAGE, argv)
+        self.assertIn(self.BASE_IDENTITY["image"], argv)
         self.assertEqual(argv[argv.index("--network") + 1], "none")
         self.assertIn("--init", argv)
         self.assertIn("--cap-drop=all", argv)
+        for capability in vforge.VPKG_CONTAINER_CAPABILITIES:
+            self.assertIn(f"--cap-add={capability}", argv)
         self.assertIn("--security-opt=no-new-privileges", argv)
         self.assertIn(f"{vforge.LABEL}=1", argv)
         volumes = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--volume"]
-        self.assertIn("/tmp/vforge-test/usr:/usr:rw", volumes)
-        self.assertIn("/tmp/vforge-test/rpmdb:/usr/lib/sysimage/rpm:rw", volumes)
+        self.assertTrue(any(value.endswith(":/run/veyra-vforge/root.json:ro") for value in volumes))
+        self.assertFalse(any(":/usr:" in value or ":/usr/lib/sysimage/rpm:" in value for value in volumes))
         self.assertNotIn("--privileged", argv)
 
     def test_create_allows_explicit_network_opt_in(self) -> None:
-        with patch.object(vforge, "exists", return_value=False), patch.object(
-            vforge, "ensure_veyra_overlay", return_value={
-                "usr": Path("/tmp/vforge-test/usr"),
-                "rpmdb": Path("/tmp/vforge-test/rpmdb"),
-                "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
-            }
-        ), patch.object(vforge, "host_runtime_id", return_value="runtime-test"), patch("builtins.input", return_value="yes"), patch.object(
+        with patch.object(vforge, "exists", return_value=False), \
+             patch.object(vforge, "require_imported_veyra_base", return_value=self.BASE_IDENTITY), \
+             patch.object(vforge, "ensure_veyra_base_in_store", return_value=self.BASE_IDENTITY), \
+             patch.object(vforge, "verify_podman_overlay"), patch("builtins.input", return_value="yes"), patch.object(
             vforge.sys.stdin, "isatty", return_value=True
         ), patch.object(
             vforge, "podman"
@@ -89,12 +156,12 @@ class VforgeCommandTests(unittest.TestCase):
     def test_named_network_permission_fails_closed_without_interactive_approval(self) -> None:
         with patch.object(vforge.sys.stdin, "isatty", return_value=False), patch.object(
             vforge, "podman"
-        ) as podman, patch.object(vforge, "ensure_veyra_overlay") as overlay:
+        ) as podman, patch.object(vforge, "require_imported_veyra_base") as base:
             with self.assertRaisesRegex(vforge.VforgeError, "interactive approval"):
                 vforge.create("backend", "bridge")
 
         podman.assert_not_called()
-        overlay.assert_not_called()
+        base.assert_not_called()
 
     def test_named_graphics_permission_requires_trusted_profile_and_interactive_consent(self) -> None:
         with patch.object(vforge.sys.stdin, "isatty", return_value=False), \
@@ -132,10 +199,12 @@ class VforgeCommandTests(unittest.TestCase):
                          "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
                      }), patch.object(vforge, "podman") as podman, \
                      patch.object(Path, "home", return_value=home):
-                    vforge.create_container(
-                        "backend", "none", layer_id="a" * 32,
-                        resources={"home": mode},
-                    )
+                    with patch.object(vforge, "verify_podman_overlay"):
+                        vforge.create_container(
+                            "backend", "none", layer_id="a" * 32,
+                            resources={"home": mode}, root_id="b" * 32,
+                            base_identity=self.BASE_IDENTITY, podman_root=Path(self.state.name) / "containers",
+                        )
                 argv = podman.call_args.args[0]
                 volumes = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--volume"]
                 if expected is None:
@@ -148,16 +217,14 @@ class VforgeCommandTests(unittest.TestCase):
             project = Path(temporary) / "project"
             project.mkdir()
             with patch.object(vforge, "exists", return_value=False), patch.object(
-                vforge, "ensure_veyra_overlay", return_value={
-                    "usr": Path("/tmp/vforge-test/usr"),
-                    "rpmdb": Path("/tmp/vforge-test/rpmdb"),
-                    "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
-                }
+                vforge, "verify_podman_overlay"
             ), patch.object(vforge, "podman") as podman:
                 vforge.create_container(
                     "backend", "none", layer_id="a" * 32,
                     mounts=[{"source": str(project), "target": "/workspace", "access": "read-write"}],
                     resources={"home": "project-only", "project": str(project)},
+                    root_id="b" * 32, base_identity=self.BASE_IDENTITY,
+                    podman_root=Path(self.state.name) / "containers",
                 )
 
             argv = podman.call_args.args[0]
@@ -197,11 +264,13 @@ class VforgeCommandTests(unittest.TestCase):
                         "rpmdb": Path("/tmp/vforge-test/rpmdb"),
                         "rpmdb-target": Path("/usr/lib/sysimage/rpm"),
                     }
-                 ), patch.object(vforge, "podman") as podman:
+                 ), patch.object(vforge, "verify_podman_overlay"), patch.object(vforge, "podman") as podman:
                 vforge.create_container(
                     "backend", "none", isolation="trusted", layer_id="a" * 32,
                     resources={"home": "none", "gpu": True, "wayland": True,
                                "audio": True, "system_bus": True},
+                    root_id="b" * 32, base_identity=self.BASE_IDENTITY,
+                    podman_root=Path(self.state.name) / "containers",
                 )
 
             argv = podman.call_args.args[0]
@@ -346,35 +415,30 @@ class VforgeCommandTests(unittest.TestCase):
 
     def test_integrated_environment_refuses_to_start_after_veyra_generation_changes(self) -> None:
         metadata = {"State": {"Status": "exited"}}
-        record = {
-            "isolation": "integrated", "host_runtime": "old-generation",
-            "layer_id": "a" * 32, "data_root": "/tmp/vforge-store",
-        }
+        record = {"root_mode": "fedora-overlay", "isolation": "integrated"}
         with patch.object(vforge, "require_environment", return_value=("vforge-backend", metadata)), \
              patch.object(vforge, "env_state", return_value={"backend": record}), \
              patch.object(vforge, "host_runtime_id", return_value="new-generation"), \
              patch.object(vforge, "podman") as podman:
-            with self.assertRaisesRegex(vforge.VforgeError, "different Veyra runtime"):
+            with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
                 vforge.ensure_running("backend")
 
         podman.assert_not_called()
 
     def test_strict_environment_can_start_after_veyra_generation_changes(self) -> None:
         metadata = {"State": {"Status": "exited"}}
-        record = {"isolation": "strict", "host_runtime": "old-generation"}
+        record = {"root_mode": "fedora-overlay", "isolation": "strict"}
         with patch.object(vforge, "require_environment", return_value=("vforge-backend", metadata)), \
              patch.object(vforge, "env_state", return_value={"backend": record}), \
              patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")) as podman:
-            vforge.ensure_running("backend")
+            with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+                vforge.ensure_running("backend")
 
-        self.assertEqual(podman.call_args.args[0], ["container", "start", "vforge-backend"])
+        podman.assert_not_called()
 
     def test_upgrade_rebinds_integrated_environment_to_current_veyra_generation(self) -> None:
         container = {"State": {"Status": "running"}}
-        metadata = {
-            "isolation": "integrated", "host_runtime": "old-generation",
-            "network": "none", "layer_id": "b" * 32, "data_root": "/tmp/vforge-store",
-        }
+        metadata = {"root_mode": "fedora-overlay", "isolation": "integrated", "network": "none"}
         result = subprocess.CompletedProcess([], 0, "", "")
         with patch.object(vforge, "require_environment", return_value=("vforge-backend", container)), \
              patch.object(vforge, "env_state", return_value={"backend": metadata}), \
@@ -382,15 +446,12 @@ class VforgeCommandTests(unittest.TestCase):
              patch.object(vforge, "make_snapshot", return_value="before-upgrade") as snapshot, \
              patch.object(vforge, "podman", return_value=result) as podman, \
              patch.object(vforge, "save_environment") as save:
-            vforge.upgrade("backend")
+            with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+                vforge.upgrade("backend")
 
-        snapshot.assert_called_once_with("backend", ANY)
-        commands = [invocation.args[0] for invocation in podman.call_args_list]
-        self.assertIn(["network", "connect", "bridge", "vforge-backend"], commands)
-        self.assertIn(["container", "exec", "vforge-backend", "dnf", "upgrade", "-y"], commands)
-        self.assertIn(["network", "disconnect", "bridge", "vforge-backend"], commands)
-        self.assertEqual(metadata["host_runtime"], "new-generation")
-        save.assert_called_once_with("backend", metadata)
+        snapshot.assert_not_called()
+        podman.assert_not_called()
+        save.assert_not_called()
 
     def test_size_units_convert_to_exact_byte_caps(self) -> None:
         self.assertEqual(vforge.parse_size_bytes("20GiB"), 20 * 1024**3)
@@ -478,7 +539,8 @@ class VforgeCommandTests(unittest.TestCase):
     def test_explicit_size_limit_provisions_capped_store(self) -> None:
         with patch.object(vforge, "exists", return_value=False), patch.object(
             vforge, "create_size_capped_store"
-        ) as create_store, patch.object(vforge, "host_runtime_id", return_value="runtime-test"), patch.object(
+        ) as create_store, patch.object(vforge, "require_imported_veyra_base", return_value=self.BASE_IDENTITY), \
+             patch.object(vforge, "ensure_veyra_base_in_store", return_value=self.BASE_IDENTITY), patch.object(vforge, "verify_podman_overlay"), patch.object(
             vforge, "podman"
         ) as podman_call:
             vforge.create("backend", "none", isolation="strict", size="8GiB")
@@ -498,6 +560,8 @@ class VforgeCommandTests(unittest.TestCase):
                 vforge, "create_size_capped_store"
             ) as create_store, patch.object(vforge, "env_state", return_value={}), patch.object(
                 vforge, "exists", return_value=False
+            ), patch.object(vforge, "require_imported_veyra_base", return_value=self.BASE_IDENTITY), patch.object(
+                vforge, "ensure_veyra_base_in_store", return_value=self.BASE_IDENTITY
             ), patch.object(vforge, "host_runtime_id", return_value="runtime-test"), patch.object(
                 vforge, "create_container"
             ) as create_container, patch.object(vforge, "save_environment") as save, patch.object(
@@ -561,18 +625,17 @@ class VforgeCommandTests(unittest.TestCase):
     def test_enter_starts_a_stopped_environment_before_exec(self) -> None:
         metadata = {"State": {"Status": "exited"}}
         with patch.object(vforge, "require_environment", return_value=("vforge-backend", metadata)), patch.object(
-            vforge, "env_state", return_value={"backend": {"isolation": "strict", "host_runtime": "runtime-test"}}
-        ), patch.object(vforge, "host_runtime_id", return_value="runtime-test"), patch.object(
-            vforge, "podman", return_value=subprocess.CompletedProcess(args=[], returncode=0)
-        ) as call:
-            self.assertEqual(vforge.ensure_running("backend"), "vforge-backend")
+            vforge, "env_state", return_value={"backend": {"root_mode": "fedora-overlay"}}
+        ), patch.object(vforge, "podman") as call:
+            with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+                vforge.ensure_running("backend")
 
-        self.assertEqual(call.call_args.args[0], ["container", "start", "vforge-backend"])
+        call.assert_not_called()
 
     def test_list_shows_only_vforge_containers(self) -> None:
         payload = json.dumps(
             [
-                {"Names": ["vforge-backend"], "State": "running", "Image": vforge.FEDORA_IMAGE},
+                {"Names": ["vforge-backend"], "State": "running", "Image": self.BASE_IDENTITY["image"]},
                 {"Names": ["other"], "State": "running", "Image": "fedora:44"},
             ]
         )
@@ -695,63 +758,50 @@ class VforgeCommandTests(unittest.TestCase):
         overlay.assert_not_called()
 
     def test_snapshot_commits_persistent_container_state(self) -> None:
-        metadata = {"State": {"Status": "running"}}
-        record = {"type": "named", "isolation": "strict", "host_runtime": "runtime-test"}
-        with patch.object(vforge, "require_environment", return_value=("vforge-backend", metadata)), patch.object(
-            vforge, "env_state", return_value={"backend": record}
-        ), patch.object(vforge, "snapshots_state", return_value={}), patch.object(
-            vforge, "host_runtime_id", return_value="runtime-test"
-        ), patch.object(vforge, "save_snapshots") as save, patch.object(vforge, "podman") as call:
-            snapshot = vforge.make_snapshot("backend", "before-test")
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory)
+            record = {
+                "type": "named", "root_mode": "veyra-oci", "isolation": "strict",
+                "image": self.BASE_IDENTITY["image"], "base_image": self.BASE_IDENTITY["image"],
+                "image_id": "veyra-next", "image_version": "0.1.0",
+                "base_digest": "a" * 64, "root_id": "b" * 32, "data_root": str(data_root),
+            }
+            vforge.write_container_root_marker(data_root, "b" * 32, self.BASE_IDENTITY)
+            container = {
+                "State": {"Status": "running"},
+                "Config": {"Labels": {
+                    vforge.LABEL: "1", "io.veyra.vforge.root-id": "b" * 32,
+                    "io.veyra.vforge.base-digest": "a" * 64,
+                }},
+                "Mounts": [{"Destination": "/run/veyra-vforge/root.json", "RW": False}],
+            }
+            with patch.object(vforge, "require_environment", return_value=("vforge-backend", container)), patch.object(
+                vforge, "env_state", return_value={"backend": record}
+            ), patch.object(vforge, "snapshots_state", return_value={}), patch.object(
+                vforge, "save_snapshots"
+            ) as save, patch.object(vforge, "podman") as call:
+                snapshot = vforge.make_snapshot("backend", "before-test")
 
         self.assertEqual(snapshot, "before-test")
         commands = [invocation.args[0] for invocation in call.call_args_list]
         self.assertIn(["container", "stop", "--time", "10", "vforge-backend"], commands)
         self.assertIn(["container", "commit", "--pause=true", "vforge-backend", "localhost/vforge-snapshot:backend-before-test"], commands)
         self.assertEqual(commands[-1], ["container", "start", "vforge-backend"])
-        self.assertEqual(save.call_args.args[1][0]["environment"], record)
+        entry = save.call_args.args[1][0]
+        self.assertEqual(entry["environment"], record)
+        self.assertEqual(entry["root_id"], "b" * 32)
+        self.assertEqual(entry["base_digest"], "a" * 64)
+        self.assertEqual(entry["image_version"], "0.1.0")
 
     def test_integrated_snapshot_journals_and_rotates_frozen_uppers_instead_of_copying(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            data_root = Path(directory)
-            layer_id = "d" * 32
-            active = vforge.layer_paths(layer_id, data_root)
-            (active["upper"] / "system-change").write_text("kept", encoding="utf-8")
-            (active["rpmdb-upper"] / "package-state").write_text("kept", encoding="utf-8")
-            metadata = {
-                "type": "named", "isolation": "integrated", "layer_id": layer_id,
-                "layer_stack": [], "data_root": str(data_root), "podman_root": str(data_root / "containers"),
-            }
-            container = {"State": {"Status": "running"}}
-            observed: list[dict[str, object]] = []
-            recover_function = vforge.recover_snapshot_transaction
-
-            def recover(name: str, recorded: dict[str, object]) -> None:
-                journal = vforge.read_private_json(data_root / ".snapshot-transaction.json", "test transaction")
-                observed.append(journal)
-                recover_function(name, recorded)
-
-            with patch.object(vforge, "require_environment", return_value=("vforge-backend", container)), \
-                 patch.object(vforge, "env_state", return_value={"backend": metadata}), \
-                 patch.object(vforge, "snapshots_state", return_value={}), \
-                 patch.object(vforge, "host_runtime_id", return_value="runtime-test"), \
-                 patch.object(vforge, "unmount_veyra_overlay"), \
-                 patch.object(vforge, "sync_storage"), \
-                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
-                 patch.object(vforge, "inspect", return_value={"State": {"Status": "exited"}}), \
-                 patch.object(vforge, "save_environment"), \
-                 patch.object(vforge, "save_snapshots", side_effect=lambda name, entries: None), \
-                 patch.object(vforge, "ensure_veyra_overlay"), \
-                 patch.object(vforge, "recover_snapshot_transaction", side_effect=recover):
+        container = {"State": {"Status": "running"}}
+        metadata = {"type": "named", "isolation": "integrated", "layer_id": "a" * 32}
+        with patch.object(vforge, "require_environment", return_value=("vforge-backend", container)), \
+             patch.object(vforge, "env_state", return_value={"backend": metadata}), \
+             patch.object(vforge, "podman") as podman:
+            with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
                 vforge.make_snapshot("backend", "frozen-state")
-
-            snapshot_root = data_root / "snapshots" / "backend" / "frozen-state"
-            self.assertEqual((snapshot_root / "usr-upper/system-change").read_text(encoding="utf-8"), "kept")
-            self.assertEqual((snapshot_root / "rpmdb-upper/package-state").read_text(encoding="utf-8"), "kept")
-            self.assertEqual(observed[0]["entry"]["environment"]["layer_stack"], ["frozen-state"])
-            self.assertEqual(list(active["upper"].iterdir()), [])
-            self.assertFalse((data_root / ".snapshot-transaction.json").exists())
-
+        podman.assert_not_called()
     def test_snapshot_overlay_layers_use_newest_frozen_upper_before_veyra_base(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_root = Path(directory)
@@ -849,197 +899,33 @@ class VforgeCommandTests(unittest.TestCase):
                 )
 
     def test_snapshot_journal_recovery_finishes_index_and_metadata_after_upper_rotation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            data_root = Path(directory)
-            layer_id = "e" * 32
-            active = vforge.layer_paths(layer_id, data_root)
-            (active["upper"] / "changed-file").write_text("new state", encoding="utf-8")
-            (active["rpmdb-upper"] / "rpm-state").write_text("new rpm state", encoding="utf-8")
-            snapshot = "after-update"
-            staging = ".pending-" + "f" * 32
-            metadata = {
-                "type": "named", "isolation": "integrated", "layer_id": layer_id,
-                "layer_stack": [], "data_root": str(data_root), "podman_root": str(data_root / "containers"),
-            }
-            entry = {
-                "name": snapshot, "image": vforge.snapshot_image("backend", snapshot),
-                "upper": str(data_root / "snapshots" / "backend" / snapshot),
-                "environment": metadata.copy(), "created": "test-time",
-            }
-            journal = {
-                "version": vforge.STATE_VERSION, "name": "backend", "data_root": str(data_root),
-                "snapshot": snapshot, "layer_id": layer_id, "staging_name": staging,
-                "before_stack": [], "entry": entry, "was_running": False,
-            }
-            journal_path = data_root / ".snapshot-transaction.json"
-            vforge.write_json_file(journal_path, journal)
-
-            snapshots = {"backend": []}
-            saved_metadata: list[dict[str, object]] = []
-            with patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
-                 patch.object(vforge, "save_environment", side_effect=lambda name, value: saved_metadata.append(value.copy())), \
-                 patch.object(vforge, "snapshots_state", side_effect=lambda: snapshots), \
-                 patch.object(vforge, "save_snapshots", side_effect=lambda name, value: snapshots.__setitem__(name, value)), \
-                 patch.object(vforge, "ensure_veyra_overlay"), \
-                 patch.object(vforge, "inspect", return_value={"State": {"Status": "exited"}}):
-                vforge.recover_snapshot_transaction("backend", metadata)
-
-            self.assertEqual(saved_metadata[-1]["layer_stack"], [snapshot])
-            self.assertEqual([item["name"] for item in snapshots["backend"]], [snapshot])
-            self.assertEqual((data_root / "snapshots" / "backend" / snapshot / "usr-upper/changed-file").read_text(encoding="utf-8"), "new state")
-            self.assertFalse(journal_path.exists())
-
+        with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+            vforge.recover_snapshot_transaction("backend", {"root_mode": "fedora-overlay"})
     def test_snapshot_journal_is_retained_when_snapshot_image_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            data_root = Path(directory)
-            layer_id = "a" * 32
-            active = vforge.layer_paths(layer_id, data_root)
-            (active["upper"] / "changed-file").write_text("new state", encoding="utf-8")
-            (active["rpmdb-upper"] / "rpm-state").write_text("new rpm state", encoding="utf-8")
-            snapshot = "after-update"
-            metadata = {
-                "isolation": "integrated", "layer_id": layer_id, "layer_stack": [],
-                "data_root": str(data_root), "podman_root": str(data_root / "containers"),
-            }
-            journal_path = data_root / ".snapshot-transaction.json"
-            vforge.write_json_file(journal_path, {
-                "version": vforge.STATE_VERSION, "name": "backend", "data_root": str(data_root),
-                "snapshot": snapshot, "layer_id": layer_id, "staging_name": ".pending-" + "b" * 32,
-                "before_stack": [], "entry": {"name": snapshot, "image": vforge.snapshot_image("backend", snapshot),
-                "upper": str(data_root / "snapshots" / "backend" / snapshot)}, "was_running": False,
-            })
-            result = subprocess.CompletedProcess([], 1, "", "")
-            with patch.object(vforge, "podman", return_value=result):
-                with self.assertRaisesRegex(vforge.VforgeError, "snapshot image.*missing"):
-                    vforge.recover_snapshot_transaction("backend", metadata)
-            self.assertTrue(journal_path.exists())
-            self.assertTrue((active["upper"] / "changed-file").exists())
-
+        with patch.object(vforge, "podman") as podman:
+            with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+                vforge.recover_snapshot_transaction("backend", {"root_mode": "fedora-overlay"})
+        podman.assert_not_called()
     def test_rollback_journal_recovery_recreates_checkpoint_after_interrupted_switch(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            data_root = Path(directory)
-            layer_id = "c" * 32
-            vforge.layer_paths(layer_id, data_root)
-            checkpoint = "rollback-checkpoint"
-            checkpoint_image = vforge.snapshot_image("backend", checkpoint)
-            checkpoint_metadata = {
-                "type": "named", "isolation": "integrated", "layer_id": layer_id,
-                "layer_stack": [checkpoint], "data_root": str(data_root),
-                "podman_root": str(data_root / "containers"), "image": checkpoint_image,
-                "network": "none", "mounts": [], "permissions": {"home": "none"},
-            }
-            frozen = data_root / "snapshots" / "backend" / checkpoint
-            (frozen / "usr-upper").mkdir(parents=True)
-            (frozen / "rpmdb-upper").mkdir()
-            journal_path = data_root / ".rollback-transaction.json"
-            vforge.write_json_file(journal_path, {
-                "version": vforge.STATE_VERSION, "kind": "rollback", "name": "backend",
-                "data_root": str(data_root), "checkpoint": checkpoint,
-                "checkpoint_image": checkpoint_image, "checkpoint_metadata": checkpoint_metadata,
-                "was_running": True, "backup_name": "vforge-backend-rollback-012345",
-            })
-            created: list[dict[str, object]] = []
-            saved: list[dict[str, object]] = []
-            with patch.object(vforge, "exists", return_value=False), \
-                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
-                 patch.object(vforge, "create_container", side_effect=lambda *args, **kwargs: created.append(kwargs)), \
-                 patch.object(vforge, "save_environment", side_effect=lambda name, value: saved.append(value.copy())), \
-                 patch.object(vforge, "ensure_veyra_overlay"), \
-                 patch.object(vforge, "unmount_veyra_overlay"), \
-                 patch.object(vforge, "inspect", return_value={"State": {"Status": "exited"}}):
-                vforge.recover_rollback_transaction("backend", checkpoint_metadata)
-
-            self.assertEqual(created[0]["image"], checkpoint_image)
-            self.assertEqual(created[0]["layer_stack"], [checkpoint])
-            self.assertEqual(saved[-1]["layer_stack"], [checkpoint])
-            self.assertFalse(journal_path.exists())
-
+        with patch.object(vforge, "podman") as podman, patch.object(vforge, "create_container") as create:
+            with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+                vforge.recover_rollback_transaction("backend", {"root_mode": "fedora-overlay"})
+        podman.assert_not_called()
+        create.assert_not_called()
     def test_rollback_selects_frozen_snapshot_stack_without_copying_upper_trees(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            data_root = Path(directory)
-            layer_id = "9" * 32
-            vforge.layer_paths(layer_id, data_root)
-            frozen = data_root / "snapshots" / "backend" / "known-good"
-            (frozen / "usr-upper").mkdir(parents=True)
-            (frozen / "rpmdb-upper").mkdir()
-            metadata = {
-                "type": "named", "isolation": "integrated", "layer_id": layer_id,
-                "layer_stack": ["current"], "data_root": str(data_root),
-                "podman_root": str(data_root / "containers"), "network": "none",
-                "mounts": [], "permissions": {"home": "none"},
-            }
-            target_metadata = metadata.copy()
-            target_metadata["layer_stack"] = ["known-good"]
-            target_image = vforge.snapshot_image("backend", "known-good")
-            checkpoint_image = vforge.snapshot_image("backend", "rollback-point")
-            snapshots = {
-                "backend": [
-                    {"name": "known-good", "image": target_image, "upper": str(frozen),
-                     "environment": target_metadata, "host_runtime": "runtime-test"},
-                    {"name": "rollback-point", "image": checkpoint_image, "upper": None,
-                     "environment": {**metadata, "layer_stack": ["current", "rollback-point"]}},
-                ]
-            }
-            created: list[dict[str, object]] = []
-            with patch.object(vforge, "require_environment", return_value=("vforge-backend", {"State": {"Status": "running"}})), \
-                 patch.object(vforge, "env_state", return_value={"backend": metadata}), \
-                 patch.object(vforge, "snapshots_state", side_effect=lambda: snapshots), \
-                 patch.object(vforge, "make_snapshot", return_value="rollback-point"), \
-                 patch.object(vforge, "exists", return_value=False), \
-                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
-                 patch.object(vforge, "unmount_veyra_overlay"), \
-                 patch.object(vforge, "ensure_veyra_overlay"), \
-                 patch.object(vforge, "create_container", side_effect=lambda *args, **kwargs: created.append(kwargs)), \
-                 patch.object(vforge, "save_environment"), \
-                 patch.object(vforge, "host_runtime_id", return_value="runtime-test"):
-                vforge.rollback_to("backend", "known-good", confirm=False)
-
-            self.assertEqual(created[0]["layer_stack"], ["known-good"])
-            self.assertEqual(created[0]["image"], target_image)
-            self.assertFalse((data_root / ".rollback-transaction.json").exists())
-
+        with patch.object(vforge, "require_environment", return_value=("vforge-backend", {})) as environment, patch.object(vforge, "podman") as podman:
+            with patch.object(vforge, "env_state", return_value={"backend": {"root_mode": "fedora-overlay"}}):
+                with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+                    vforge.rollback_to("backend", "known-good", confirm=False)
+        environment.assert_called_once()
+        podman.assert_not_called()
     def test_legacy_snapshot_rollback_uses_a_fresh_layer_to_preserve_checkpoint_upper(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            data_root = Path(directory)
-            old_layer_id = "8" * 32
-            vforge.layer_paths(old_layer_id, data_root)
-            legacy_upper = data_root / "snapshots" / "backend" / "legacy"
-            (legacy_upper / "usr-upper").mkdir(parents=True)
-            (legacy_upper / "rpmdb-upper").mkdir()
-            metadata = {
-                "type": "named", "isolation": "integrated", "layer_id": old_layer_id,
-                "layer_stack": [], "data_root": str(data_root),
-                "podman_root": str(data_root / "containers"), "network": "none",
-                "mounts": [], "permissions": {"home": "none"},
-            }
-            target_image = vforge.snapshot_image("backend", "legacy")
-            checkpoint_image = vforge.snapshot_image("backend", "rollback-point")
-            snapshots = {"backend": [
-                {"name": "legacy", "image": target_image, "upper": str(legacy_upper),
-                 "environment": metadata.copy(), "host_runtime": "runtime-test"},
-                {"name": "rollback-point", "image": checkpoint_image, "upper": None,
-                 "environment": {**metadata, "layer_stack": ["rollback-point"]}},
-            ]}
-            created: list[dict[str, object]] = []
-            restored: list[str] = []
-            with patch.object(vforge, "require_environment", return_value=("vforge-backend", {"State": {"Status": "running"}})), \
-                 patch.object(vforge, "env_state", return_value={"backend": metadata}), \
-                 patch.object(vforge, "snapshots_state", side_effect=lambda: snapshots), \
-                 patch.object(vforge, "make_snapshot", return_value="rollback-point"), \
-                 patch.object(vforge, "exists", return_value=False), \
-                 patch.object(vforge, "podman", return_value=subprocess.CompletedProcess([], 0, "", "")), \
-                 patch.object(vforge, "unmount_veyra_overlay"), \
-                 patch.object(vforge, "ensure_veyra_overlay"), \
-                 patch.object(vforge, "restore_upper_layer", side_effect=lambda layer_id, *_: restored.append(layer_id)), \
-                 patch.object(vforge, "create_container", side_effect=lambda *args, **kwargs: created.append(kwargs)), \
-                 patch.object(vforge, "save_environment"), \
-                 patch.object(vforge, "host_runtime_id", return_value="runtime-test"):
-                vforge.rollback_to("backend", "legacy", confirm=False)
-
-            self.assertNotEqual(created[0]["layer_id"], old_layer_id)
-            self.assertEqual(restored, [created[0]["layer_id"]])
-            self.assertFalse((data_root / ".rollback-transaction.json").exists())
-
+        with patch.object(vforge, "require_environment", return_value=("vforge-backend", {})) as environment, patch.object(vforge, "podman") as podman:
+            with patch.object(vforge, "env_state", return_value={"backend": {"root_mode": "fedora-overlay"}}):
+                with self.assertRaisesRegex(vforge.VforgeError, "legacy Fedora/host-overlay"):
+                    vforge.rollback_to("backend", "legacy", confirm=False)
+        environment.assert_called_once()
+        podman.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
