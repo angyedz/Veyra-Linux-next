@@ -30,7 +30,7 @@ class RecoveryUkiInstallTests(unittest.TestCase):
         self.assertIn("rdinit=/init", recovery_config)
         self.assertTrue(init_script.is_file())
         self.assertIn("Initrds=%O/initrd", main_config)
-        self.assertRegex(main_config, r"(?m)^Dependencies=recovery$")
+        self.assertRegex(main_config, r"(?m)^Dependencies=initrd recovery$")
         self.assertIn("not mount or execute the installed Veyra root", recovery_doc)
 
         finalizer = (ROOT / "mkosi.finalize").read_text(encoding="utf-8")
