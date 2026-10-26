@@ -51,19 +51,17 @@ The image is configured to offer KDE Plasma Setup on first boot so the user can 
 
 - The user signs into KDE Plasma and installs desktop apps from Discover.
 - Steam and Discord are ordinary desktop apps, not separate operating systems. Steam runs games with Proton; Discord receives Wayland screen sharing through KDE's portal and PipeWire.
-- Git, SSH, GCC, Clang, Python, Node.js and CMake are available in the native Fedora userspace. `vforge` provides rootless named and project environments on Fedora 44, permission profiles, snapshots and rollback. Its integrated Veyra lower currently covers `/usr` and the RPM database only; see the implementation limits in [docs/vforge.md](docs/vforge.md).
+- Git, SSH, GCC, Clang, Python, Node.js and CMake are available in the native Fedora userspace. `vforge` has an early native OverlayFS implementation with persistent named and project layers over the current Veyra root. Guest validation and several permission integrations remain pending; see [docs/vforge.md](docs/vforge.md).
 - System updates preserve personal files and install a complete new OS version beside the active one. A failed trial boot returns to the previous version.
 - Optional Veyra add-ons install as signed system extensions, while system packages go through A/B image updates.
 
 Those are product goals, not claims that this image already provides them.
 
-`vforge` supports project `.vforge.toml`, named and project storage, explicit
-mount permissions, isolation profiles, snapshots/rollback, Veyra runtime
-compatibility checks, sparse ext4 size caps and journaled frozen-layer
-snapshots. Size-cap, snapshot recovery and rollback behavior still need Fedora
-44 QEMU validation. The filtered `/etc` lower and whole-root Veyra integration
-remain unimplemented; snapshots are not native filesystem CoW. See [the vforge
-implementation and limits](docs/vforge.md).
+`vforge` supports native OverlayFS upper/work storage, named and project-local
+environments, and explicitly approved bind mounts. Namespace and OverlayFS
+runtime behavior still needs Fedora 44 guest validation. Snapshot/rollback,
+permission profiles, trusted desktop resources, and compatibility management
+are not implemented. See [the vforge implementation and limits](docs/vforge.md).
 
 ## Architectural direction
 

@@ -1,4 +1,4 @@
-name: Vforge source checks
+name: Vforge native checks
 
 on:
   pull_request:
@@ -6,32 +6,20 @@ on:
       - '.github/workflows/vforge-source-tests.yml'
       - 'mkosi.conf'
       - 'mkosi.veyra-base.conf'
-      - 'mkosi.images/veyra-oci-rootfs/**'
       - 'mkosi.extra/usr/bin/vforge'
-      - 'mkosi.extra/usr/bin/vpkg'
-      - 'mkosi.extra/usr/lib/veyra/**'
-      - 'mkosi.extra/usr/share/veyra/vpkg/**'
-      - 'mkosi.extra/etc/yum.repos.d/rpmfusion.repo'
-      - 'mkosi.extra/usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-*'
-      - 'scripts/check-vforge-oci-artifact.py'
       - 'scripts/**'
-      - 'tests/**'
+      - 'tests/test_vforge.py'
+      - 'tests/test_build_environment.py'
   push:
     branches: [feature/vforge]
     paths:
       - '.github/workflows/vforge-source-tests.yml'
       - 'mkosi.conf'
       - 'mkosi.veyra-base.conf'
-      - 'mkosi.images/veyra-oci-rootfs/**'
       - 'mkosi.extra/usr/bin/vforge'
-      - 'mkosi.extra/usr/bin/vpkg'
-      - 'mkosi.extra/usr/lib/veyra/**'
-      - 'mkosi.extra/usr/share/veyra/vpkg/**'
-      - 'mkosi.extra/etc/yum.repos.d/rpmfusion.repo'
-      - 'mkosi.extra/usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-*'
-      - 'scripts/check-vforge-oci-artifact.py'
       - 'scripts/**'
-      - 'tests/**'
+      - 'tests/test_vforge.py'
+      - 'tests/test_build_environment.py'
   workflow_dispatch:
 
 permissions:
@@ -47,15 +35,12 @@ jobs:
         run: python3 -m unittest discover -s tests -q
       - name: Run repository smoke checks
         run: python3 scripts/smoke.py
-      - name: Check Python and shell syntax
+      - name: Check Python syntax and patch whitespace
         run: |
-          python3 -m py_compile scripts/check-build-environment.py scripts/check-vforge-oci-artifact.py scripts/run-vforge-qemu.py scripts/test-vforge-integration-qemu.py
-          bash -n scripts/test-vforge-qemu.sh
-          bash -n scripts/check-build-environment.sh
-      - name: Check patch whitespace
-        run: git diff --check
+          python3 -m py_compile mkosi.extra/usr/bin/vforge scripts/check-build-environment.py
+          git diff --check
 
-  build-oci-rootfs:
+  build-veyra-image:
     if: >-
       github.event_name == 'pull_request' ||
       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -79,13 +64,13 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Install mkosi and OCI build dependencies
+      - name: Install image build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
             btrfs-progs ca-certificates cpio curl dnf dosfstools e2fsprogs \
             debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl \
-            podman python3 squashfs-tools cryptsetup-bin systemd-container \
+            python3 squashfs-tools cryptsetup-bin systemd-container \
             systemd-ukify xz-utils zstd qemu-system-x86 ovmf fuse2fs fuse3
       - name: Check image configuration
         run: python3 scripts/smoke.py
@@ -100,69 +85,7 @@ jobs:
       - name: Verify native mkosi build capability
         run: |
           sudo python3 -c 'import pathlib, sys; caps = int(next(line.split()[1] for line in pathlib.Path("/proc/self/status").read_text().splitlines() if line.startswith("CapEff:")), 16); available = bool(caps & (1 << 21)); print(f"CAP_SYS_ADMIN available to the ephemeral runner root: {available}"); sys.exit(0 if available else 1)'
-      - name: Build installed Veyra and dependent OCI rootfs images
+      - name: Build installed Veyra image with native Vforge
         run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
-      - name: Validate OCI archive and Vpkg runtime
-        run: |
-          python3 scripts/check-image.py mkosi.output/veyra-next.raw
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          manifest = json.loads(Path("mkosi.output/veyra-next.manifest").read_text())
-          assert any(p.get("type") == "rpm" and p.get("name") == "e2fsprogs" for p in manifest["packages"])
-          print(f"Validated mkosi RPM manifest with {len(manifest['packages'])} packages.")
-          PY
-          python3 scripts/check-vforge-oci-artifact.py \
-            mkosi.output/veyra-next-vforge-base.tar --require-sources
-          sudo podman load --input mkosi.output/veyra-next-vforge-base.tar
-          image_id="$(sudo podman images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' | awk '$2 ~ /veyra-next/ { print $1; exit }')"
-          test -n "$image_id"
-          sudo podman run --rm --entrypoint /usr/bin/vpkg "$image_id" container --help
-          sudo podman run --rm --entrypoint /bin/sh "$image_id" -ec '
-            test "$(. /usr/lib/os-release; printf %s "$VERSION_ID")" = 44
-            test -d /usr/lib/sysimage/rpm
-            test -x /usr/bin/vpkg
-            test -s /usr/share/veyra/vpkg/protected-core.json
-            test -s /etc/yum.repos.d/rpmfusion.repo
-          '
-      - name: Compare installed image and OCI rootfs package inventories
-        run: |
-          sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- rpm -qa --qf '%{NAME}-%{EVR}.%{ARCH}\n' | sort > "$RUNNER_TEMP/main-rpms.txt"
-          image_id="$(sudo podman images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' | awk '$2 ~ /veyra-next/ { print $1; exit }')"
-          sudo podman run --rm --entrypoint rpm "$image_id" -qa --qf '%{NAME}-%{EVR}.%{ARCH}\n' | sort > "$RUNNER_TEMP/oci-rpms.txt"
-          diff -u "$RUNNER_TEMP/main-rpms.txt" "$RUNNER_TEMP/oci-rpms.txt"
-      - name: Check whether this runner exposes KVM to the Vforge runtime test
-        id: kvm
-        run: |
-          if [[ -r /dev/kvm && -w /dev/kvm ]] && qemu-system-x86_64 -accel help 2>&1 | grep -qw kvm; then
-            echo 'available=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'available=false' >> "$GITHUB_OUTPUT"
-          fi
-      - name: Run Vforge rootless lifecycle with the built OCI artifact in QEMU/KVM
-        id: vforge_kvm
-        if: steps.kvm.outputs.available == 'true'
-        run: |
-          python3 scripts/run-vforge-qemu.py \
-            --image mkosi.output/veyra-next.raw \
-            --oci-archive mkosi.output/veyra-next-vforge-base.tar \
-            --work-dir "$RUNNER_TEMP/vforge-qemu"
-      - name: Run Vforge rootless lifecycle with the built OCI artifact in QEMU/TCG
-        id: vforge_tcg
-        if: steps.kvm.outputs.available != 'true'
-        run: |
-          python3 scripts/run-vforge-qemu.py \
-            --image mkosi.output/veyra-next.raw \
-            --oci-archive mkosi.output/veyra-next-vforge-base.tar \
-            --work-dir "$RUNNER_TEMP/vforge-qemu" \
-            --acceleration tcg --timeout 5400
-      - name: Record Vforge QEMU runtime test status
-        if: always()
-        run: |
-          if [[ '${{ steps.vforge_kvm.outcome }}' == 'success' ]]; then
-            echo 'Vforge guest lifecycle passed under QEMU/KVM against mkosi.output/veyra-next-vforge-base.tar.' >> "$GITHUB_STEP_SUMMARY"
-          elif [[ '${{ steps.vforge_tcg.outcome }}' == 'success' ]]; then
-            echo 'Vforge guest lifecycle passed under QEMU/TCG against mkosi.output/veyra-next-vforge-base.tar.' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'Vforge guest lifecycle did not pass; source and OCI build checks are not runtime evidence.' >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Validate installed Veyra image
+        run: python3 scripts/check-image.py mkosi.output/veyra-next.raw

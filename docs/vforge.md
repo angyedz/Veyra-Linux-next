@@ -1,108 +1,87 @@
-# Vforge development environments
+# vforge native environments
 
-Vforge creates persistent rootless Podman environments from an imported Veyra OCI
-rootfs. The artifact is built from the same Fedora 44 mkosi image definition as
-the installed Veyra system; Vforge does not compose a Fedora container with
-host `/usr` or RPM database mounts. Run Vforge as the logged-in user, never with
-`sudo`.
+`vforge` creates persistent environments over the Veyra system root currently
+running on the machine. The lower directory is `/`, mounted read-only in a
+private mount namespace. OverlayFS directs writes into an environment's
+persistent `upper` and `work` directories. Vforge does not import a separate
+distribution root or use a container engine.
 
-Import the OCI archive produced by the Veyra image build before creating an
-environment:
-
-```sh
-vforge base import /path/to/veyra-oci-rootfs.oci.tar
-vforge base status
-vforge create backend
-vforge enter backend
-vforge exec backend -- vpkg container --help
-```
-
-Import validates the Veyra image labels, Fedora 44 `/etc/os-release`, image
-version and manifest digest, private `/usr/lib/sysimage/rpm`, and the container
-Vpkg API. It rejects a Fedora-only image. There is not yet an automatic release
-or download path; users must provide the built OCI archive. Vforge requires
-rootless Podman's `overlay` graph driver. It keeps the OCI base and environment
-layer in the selected Podman graphroot, with an immutable base and a persistent
-Podman-managed writable layer. No host `/etc`, `/usr`, RPM DB, `/var`, or root
-filesystem is mounted into the container.
-
-## Environments
+## Create and enter environments
 
 ```sh
 vforge create backend
 vforge enter backend
-vforge exec backend -- vpkg container install ripgrep
-vforge snapshot backend before-upgrade
-vforge upgrade backend
-vforge rollback backend before-upgrade
-vforge stop backend
-vforge start backend
+vforge exec backend -- rpm -q bash
+vforge list
 vforge delete backend
 ```
 
-Project environments are configured in `.vforge.toml` and started with
-`vforge up`. Project source and explicitly approved user resources are bind
-mounts; they remain outside rootfs snapshots. `vforge upgrade` takes a snapshot,
-connects the environment to the bridge if necessary, runs
-`vpkg container upgrade` inside the Veyra root, and rolls back to the checkpoint
-if the transaction fails. Package commands run inside the container namespace,
-where container-mode Vpkg may execute RPM scriptlets. Vpkg state, RPM DB, and
-cache belong to that rootfs environment.
+The default storage root is `$XDG_DATA_HOME/vforge` or
+`~/.local/share/vforge`. Choose another persistent location with
+`vforge config storage-root /path/to/vforge-data` or
+`VFORGE_STORAGE_ROOT=/path/to/vforge-data`. Each named environment stores its
+metadata, OverlayFS upper layer, and work directory under
+`<storage-root>/environments/<name>/`.
 
-The root identity is mounted read-only at `/run/veyra-vforge/root.json`. Its
-schema-1 marker records the Veyra image id/version, manifest digest, a stable
-per-environment root id, `storage_driver=podman-overlay`, and
-`immutable_base=true`. Vforge checks the marker and Podman root-id/base-digest
-labels before reuse. The marker file is owned by the invoking user on the host;
-rootless Podman's user namespace maps that owner to container uid 0. Mounts under
-`/etc`, `/usr`, `/var`, or `/boot` are rejected.
+Project environments use `.vforge/` in the project directory. `vforge up`
+creates or refreshes the environment from `.vforge.toml`; `vforge enter` with no
+name enters the current project's environment. Project source is mounted at
+`/workspace`, and project state is hidden from that bind mount while running.
+The project directory remains outside the environment's OverlayFS layer.
 
-`strict` forbids host mounts, Home access, and exposed devices/sockets.
-`integrated` allows the project and explicitly configured mounts.
-`trusted` additionally permits individually approved GPU, Wayland, PipeWire,
-user session D-Bus, or Home access. Network is disabled by default; requesting
-bridge access requires interactive approval. Containers drop all Podman
-capabilities and re-add only the set required for RPM file ownership, metadata,
-and in-root scriptlets. These capabilities stay within rootless Podman's user
-namespace; no host privilege is granted.
+Example configuration:
 
-The common data root defaults to `$XDG_DATA_HOME/vforge` or
-`~/.local/share/vforge`; configure it with `vforge config storage-root PATH`.
-Project state lives in `<project>/.vforge/` and is excluded via
-`.git/info/exclude`. Optional `--size` storage uses a sparse ext4 image mounted
-through `fuse2fs`; it limits Podman storage and snapshots in that environment,
-but not explicit host bind mounts. It requires `e2fsprogs`, `/dev/fuse`, and
-working rootless FUSE support. A full image can cause package transactions or
-snapshots to fail with `ENOSPC`; resizing requires deleting and recreating the
-environment.
+```toml
+[environment]
+name = "backend"
+isolation = "integrated"
 
-## Snapshots and compatibility
+[permissions.home]
+mode = "project-only"
 
-Vforge snapshots use `podman container commit` to capture the whole writable
-container root, then recreate the container from the committed image during
-rollback. Each snapshot records the environment's root id, Veyra base digest,
-and image version; rollback refuses snapshots whose identity does not match the
-current environment. Project/Home/device/socket mounts are external and are not
-captured. Snapshot recovery and atomicity have source-level tests, but need
-runtime validation under Podman/QEMU before they can be treated as durable
-against power loss.
+[[permissions.mounts]]
+source = "~/Documents/shared"
+target = "/workspace/shared"
+access = "read-only"
+```
 
-Environments made by the older Fedora-root/host-overlay prototype are rejected
-by start, snapshot, rollback, upgrade, and project update. There is no implicit
-migration because those containers do not contain a complete Veyra root.
-Delete and recreate them after importing a valid Veyra OCI archive.
+Additional host mounts must use existing directories and safe absolute targets.
+They require interactive approval when first requested and again if the project
+configuration adds a mount. Mounts are read-only unless `access =
+"read-write"` is specified. Reserved system paths and paths that escape `/` are
+rejected. The whole host Home is never mounted.
 
-## Verification status and limits
+## Isolation and limits
 
-Local source tests cover identity and marker policy, creation arguments, Vpkg
-command routing, snapshot metadata, rollback identity checks, and refusal of
-legacy roots. GitHub Actions builds and checks the OCI artifact. The QEMU
-fixture now consumes the OCI archive from that same build and checks rootless
-Podman creation, marker visibility, a real `vpkg container install`, private RPM
-DB isolation, and snapshot/rollback. The Actions job runs it only when the
-runner exposes KVM. No Podman/QEMU runtime success is claimed until that guest
-scenario completes successfully.
+Vforge starts user, mount, PID, and network namespaces. Networking is disabled.
+It creates a private mount tree, recursively binds the current Veyra root and
+its active system mounts as a read-only lower, and mounts OverlayFS with the
+environment's persistent upper/work pair.
+The process starts inside that merged root. Only the project and individually
+approved mounts are exposed; `/proc`, a small `/dev`, `/tmp`, and `/run` are
+provided privately for the process. Host environment variables are not passed
+to commands; only locale and terminal settings are retained.
 
-Vforge uses the Veyra host kernel and rootless Podman, not a VM. Its isolation
-still depends on the host's Podman, user namespaces, seccomp, SELinux and storage
-configuration. An OCI container is not an absolute security boundary.
+This is an early native implementation. `strict`, `integrated`, and `trusted`
+are accepted as project metadata for forward compatibility but do not yet
+select different policies. GPU, Wayland, PipeWire, D-Bus, shared networking,
+capability selection, seccomp policy, SELinux policy, snapshot/rollback,
+automatic base compatibility management, and project package reconciliation
+are not implemented. Package installation and real OverlayFS behavior have not
+yet been validated in a Veyra guest. A user namespace and rootless OverlayFS
+supporting the host kernel/storage filesystem are required; Vforge reports the
+kernel or mount error when those prerequisites are unavailable.
+
+Vforge environments are compatible with the Veyra root from which they were
+created. After a Veyra system update, review or recreate environments before
+using them. Do not assume an upper layer is compatible with every system
+version.
+
+## Verification status
+
+Source tests cover persistent upper/work layout, project state placement,
+read-only explicit mounts, reserved targets, legacy metadata rejection, and
+namespace selection. GitHub Actions runs those checks and builds the installed
+Veyra image directly. A Fedora 44 Veyra guest run
+has not yet confirmed namespace creation, OverlayFS mount, package installation,
+or persistence across process restarts.

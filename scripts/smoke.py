@@ -81,14 +81,9 @@ def main() -> int:
     if "Dependencies=initrd" not in config_values:
         return fail("the bootable image must build its referenced initrd as an explicit dependency")
 
-    oci_config = ROOT / "mkosi.images/veyra-oci-rootfs/mkosi.conf"
-    oci_content = section_values(oci_config, "Content")
-    if "Initrds=" not in oci_content:
-        return fail("the OCI rootfs subimage must clear the installed image's inherited Initrds setting")
-
     shared_packages = ROOT / "mkosi.veyra-base.conf"
     if not shared_packages.is_file():
-        return fail("the shared installed-image and OCI package definition is missing")
+        return fail("the shared installed-image package definition is missing")
     shared_content = section_values(shared_packages, "Content")
     packages = {line.removeprefix("Packages=") for line in shared_content if line.startswith("Packages=")}
     if any(line.startswith("Packages=") for line in content):
