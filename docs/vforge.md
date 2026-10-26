@@ -1,75 +1,177 @@
-# Vforge development environments
+# vforge native environments
 
-**Status:** product design; no `vforge` command or runtime integration is
-implemented yet.
+`vforge` creates persistent environments over the Veyra system root currently
+running on the machine. A small system service exposes the immutable EROFS
+root at `/run/veyra/vforge/base` as a read-only, non-recursive bind mount.
+Inside the user's private mount namespace, rootless OverlayFS uses that base
+as its lower layer and directs writes into the environment's persistent
+`upper` and `work` directories. The bind mount leaves the host's persistent
+`/etc`, `/var`, and `/home` mounts outside the environment. Vforge does not
+import a separate distribution root or use Podman.
 
-`vforge` is the planned name of Veyra's development-environment manager. It
-will cover two use cases without making either one mandatory:
-
-1. **Project environment:** a project includes a small Vforge configuration
-   describing its base image, packages, environment variables and explicitly
-   mounted directories. A developer enters or runs commands in that environment
-   from the project directory. The configuration can be committed with the
-   source so teammates can recreate the toolchain.
-2. **Persistent named environment:** a user creates an environment such as
-   `web-dev`, `rust`, or `python-data` independently of any project. It has a
-   long-lived writable environment, so packages installed inside it and its
-   settings persist between sessions and host reboots. It can be entered from
-   any directory, renamed, stopped, started, upgraded and removed without
-   changing the host OS. A project directory is mounted only when the user
-   explicitly selects it.
-
-The first command shape is:
+## Create and enter environments
 
 ```sh
-vforge create web-dev
+vforge create backend --network shared
+vforge install --environment backend htop
+vforge enter backend
+vforge exec backend -- rpm -q bash
 vforge list
-vforge enter web-dev
-vforge exec web-dev -- node --version
-vforge stop web-dev
-vforge start web-dev
-vforge rename web-dev web-dev-old
-vforge delete web-dev
+vforge remove --environment backend htop
+vforge snapshot backend
+vforge snapshots backend
+vforge rollback backend
+vforge upgrade backend
+vforge delete backend
 ```
 
-Entering an environment is the normal place to install a toolchain with Fedora
-packages, for example `dnf install nodejs python3`. Those changes belong to the
-named environment; they do not update Veyra's host RPM database or system
-image. `vpkg` remains the route for applications installed into Veyra's shared
-app layer.
+Named environments start with isolated networking. `vforge create backend --network shared` requests access to the host network and asks for confirmation.
 
-For a project environment, a project-local config will select the environment
-definition and provide the corresponding run/enter command. The config format
-and final command names are still to be implemented and documented; the example
-above is the agreed direction, not a claim that these commands currently work.
+The default storage root is `$XDG_DATA_HOME/vforge` or
+`~/.local/share/vforge`. Choose another persistent location with
+`vforge config storage-root /path/to/vforge-data` or
+`VFORGE_STORAGE_ROOT=/path/to/vforge-data`. Each named environment stores its
+metadata, OverlayFS upper layer, and work directory under
+`<storage-root>/environments/<name>/`.
 
-## Language tools and packages
+Project environments use `.vforge/` in the project directory. `vforge up`
+creates or refreshes the environment from `.vforge.toml`; `vforge enter` with no
+name enters the current project's environment. Project source is mounted at
+`/workspace`, and project state is hidden from that bind mount while running.
+The project directory remains outside the environment's OverlayFS layer.
 
-The current image recipe includes Python, pip, Node.js and npm in the Fedora
-base image, so those versions are available directly on the host. In a Vforge
-environment, Fedora packages can install a separate Python or Node.js runtime;
-`pip` dependencies should normally live in a Python virtual environment, and
-`npm` dependencies in the project's `node_modules`. A user can choose host
-development, a project-configured environment, or a persistent named
-environment according to the project. Vforge is not a requirement for using
-these languages.
+Example configuration:
 
-## Isolation boundary
+```toml
+[environment]
+name = "backend"
+isolation = "integrated"
 
-The manager should use Fedora's maintained rootless container runtime rather
-than implement a new container engine. Environments must not write to the host
-`/usr`, RPM database, kernel, init system, bootloader or A/B slots. Project and
-home directories should only be mounted where the user explicitly requests
-them. Removing a named environment removes that environment's state, not the
-project source tree. Containers share the host kernel; Vforge is a development
-environment boundary, not a virtual machine or a substitute for the OS update
-and recovery security model.
+[packages]
+system = ["python3", "nodejs", "git"]
 
-Vforge is separate from the host's Developer Mode. It remains the normal way
-to create a mutable development environment without changing Veyra's system
-files or disabling A/B updates.
+[permissions]
+network = "shared"
+gpu = false
+wayland = false
+audio = false
+system_bus = false
 
-The first implementation still needs a precise command contract for image
-selection, image upgrades, persistent storage, network access, project mounts
-and backup/restore. These examples describe the intended behavior; Vforge is
-still a design and no `vforge` command or runtime integration exists yet.
+[permissions.home]
+mode = "project-only"
+
+[[permissions.mounts]]
+source = "~/Documents/shared"
+target = "/workspace/shared"
+access = "read-only"
+```
+
+Additional host mounts must use existing directories and safe absolute targets.
+They require interactive approval when first requested and again if the project
+configuration adds a mount. Mounts are read-only unless `access =
+"read-write"` is specified. Reserved system paths and paths that escape `/` are
+rejected. The whole host Home is never mounted by default.
+
+`permissions.home.mode` supports four levels. `none` keeps `HOME` private at
+`/tmp`; the project remains separately available at `/workspace`. The default
+`project-only` mode sets `HOME` to `/workspace` and exposes no other Home files.
+`read-only` mounts the current user's Home at `/home/<user>` as read-only.
+`read-write` mounts it read-write. The two full-Home modes require interactive
+approval; their grants live in Vforge's private user configuration, outside the
+project. A changed request stops environment entry until `vforge up` records
+the new decision. Revoking a stored grant blocks entry.
+
+Named environments default to no Home access. To grant one, use
+`vforge create backend --home read-only` or `--home read-write`; Vforge asks for
+interactive approval before creating or widening the access.
+
+Project networking is isolated unless `[permissions].network = "shared"` is
+requested. The first request requires an interactive approval; the approval is
+stored outside the project. Shared networking lets the environment reach the
+internet and local network services. Removing the request in `.vforge.toml`
+revokes it the next time the project is refreshed with `vforge up`.
+
+Project desktop access is disabled by default. Set `gpu`, `wayland`, `audio`,
+or `system_bus` to `true` under `[permissions]` to request only those resources.
+Vforge asks for interactive approval the first time a project requests them and
+stores the grant in the user's private Vforge configuration, outside the
+project. It checks that the saved grant still matches `.vforge.toml` before
+each entry. Removing a setting and running `vforge up` revokes its grant.
+
+`wayland` exposes the selected Wayland socket; `audio` exposes available
+PipeWire and PulseAudio user sockets; `gpu` exposes `/dev/dri` only when the
+current user can access a DRM device; and `system_bus` exposes the host system
+D-Bus socket. These switches allow the environment to communicate with those
+host services, so grant them only to project code you trust. The system bus
+can offer privileged host services. None of these sockets or devices are
+mounted when their setting is false.
+
+`vforge install`, `vforge remove`, `vforge search`, and `vforge info` run the
+matching regular `vpkg` command inside the selected environment. Use
+`--environment NAME` for a named environment; without it, Vforge targets the
+current project's environment. `vforge upgrade` updates a named environment
+and checks that it is compatible with the currently running Veyra base.
+
+`vforge up` installs each package listed in `[packages].system` by running
+`vpkg install` inside the project environment. Package names are validated
+and limited to Fedora/RPM Fusion packages. Removing a name from the list does
+not automatically uninstall it yet; use `vforge remove PACKAGE` from the
+project directory.
+
+## Isolation and limits
+
+Vforge starts user, mount, PID, and network namespaces. Networking is isolated
+by default; an approved project may share the host network namespace. The
+system service prepares a read-only bind of only the active EROFS root before
+user sessions start. Vforge binds that stable mount into its private namespace
+and mounts kernel OverlayFS with `userxattr`, so it does not need permission to
+bind the host's namespace root. The machine's persistent `/etc`, `/var`, and
+`/home` state is not exposed. The environment's own persistent upper/work pair
+receives writes.
+The process starts inside that merged root. Only the project and individually
+approved mounts are exposed; `/proc`, a small `/dev`, `/tmp`, and `/run` are
+provided privately for the process. Host environment variables are not passed
+to commands; only locale and terminal settings are retained.
+
+This is an early native implementation. Only the `integrated` project profile
+is accepted today. The four desktop permission switches are implemented, but
+their socket and device access still needs to pass the Fedora 44 guest workflow
+and real compositor/GPU hardware checks. Capability selection, seccomp policy,
+SELinux policy, and package removal reconciliation are not implemented.
+Snapshots copy the persistent OverlayFS upper into the same user-selected
+storage, using filesystem reflinks when available and a regular copy otherwise.
+They do not reserve disk space on a separate partition.
+
+Vforge records the active Veyra image ID, version, and root digest when an
+environment is first used. After an OTA changes that identity, `enter`, `exec`,
+and package commands stop until `vforge upgrade NAME` snapshots the existing
+state, runs `vpkg upgrade` against the new base, and records the new identity.
+If that package operation fails, Vforge restores the saved upper. A snapshot can
+be rolled back only while its recorded Veyra base is active; restore the system
+deployment first to use a snapshot from an older base. Active environments
+cannot be snapshotted, rolled back, upgraded, or deleted until their sessions
+close.
+
+Real namespace, OverlayFS, package, snapshot, and rollback behavior still needs
+to pass the Fedora 44 Veyra guest workflow. A user namespace and rootless
+OverlayFS support from the host kernel/storage filesystem are required;
+Vforge reports the kernel or mount error when those prerequisites are missing.
+
+## Verification status
+
+Source tests cover persistent upper/work layout, project state placement,
+read-only explicit mounts, network and desktop-resource approval, reserved
+targets, Veyra root identity, namespace selection, snapshot restore, and package
+command routing.
+GitHub Actions runs those checks and builds the installed Veyra image directly.
+The Fedora 44 QEMU guest scenario now checks package installation and project
+packages, then runs environment creation, namespace creation, OverlayFS writes,
+and snapshot rollback as an unprivileged guest UID. It also checks that those
+writes do not reach the host root. The desktop-resource scenario connects from
+inside a rootless project environment to disposable Wayland, PipeWire, and
+PulseAudio sockets. These runtime behaviors remain unverified until the current
+guest workflow passes.
+
+Inside the environment, `vpkg install`, `remove`, and `upgrade` act on that
+environment's private RPM database and OverlayFS upper. See
+[`vpkg-vforge.md`](vpkg-vforge.md) for package command behavior.

@@ -22,6 +22,7 @@ class PrepareVpkgImageTests(unittest.TestCase):
         required = {
             Path("mkosi.extra/usr/lib/veyra/veyra_repo.py"),
             Path("mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"),
+            Path("scripts/smoke.py"),
             Path("mkosi.extra/usr/share/veyra/vpkg/protected-core.json"),
             Path("mkosi.extra/usr/lib/sysupdate.d/10-root-verity.transfer"),
             Path("mkosi.extra/usr/lib/sysupdate.d/20-root.transfer"),

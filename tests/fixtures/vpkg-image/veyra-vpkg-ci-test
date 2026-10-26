@@ -14,6 +14,10 @@ complete=/var/lib/veyra/vpkg-ci-complete
 
 report_failure() {
     local status=$?
+    if [[ -n "${desktop_socket_server:-}" ]]; then
+        kill "$desktop_socket_server" 2>/dev/null || true
+        wait "$desktop_socket_server" 2>/dev/null || true
+    fi
     echo "Veyra vpkg CI failed at line ${BASH_LINENO[0]}: ${BASH_COMMAND} (status ${status})" >&2
     systemd-sysext status >&2 || true
     exit "$status"
@@ -51,6 +55,162 @@ if [[ -e "$complete" ]]; then
     echo "VEYRA_VPKG_CI_PASS"
     exit 0
 fi
+
+echo "Veyra QEMU test: create a native environment over the active Veyra root"
+export VFORGE_STORAGE_ROOT=/var/lib/veyra/vforge-ci
+export XDG_RUNTIME_DIR=/run/veyra-vforge-ci
+install -d -m 0700 "$VFORGE_STORAGE_ROOT" "$XDG_RUNTIME_DIR"
+vforge create vpkg-ci
+vforge_env="$VFORGE_STORAGE_ROOT/environments/vpkg-ci"
+vforge_upper="$vforge_env/upper"
+
+# Vforge intentionally excludes the host's persistent /etc and /var mounts.
+# Put the signed offline Fedora fixture into this environment's own upper and
+# replace the lower layer's network repository definitions with the local set.
+install -d -m 0755 "$vforge_upper/etc/yum.repos.d" \
+    "$vforge_upper/var/lib/veyra/vpkg-ci-repo"
+: > "$vforge_upper/etc/yum.repos.d/fedora.repo"
+: > "$vforge_upper/etc/yum.repos.d/fedora-updates.repo"
+: > "$vforge_upper/etc/yum.repos.d/rpmfusion.repo"
+cp /etc/yum.repos.d/veyra-vpkg-ci-upstream.repo "$vforge_upper/etc/yum.repos.d/"
+cp -a "$repo/local-upstream" "$vforge_upper/var/lib/veyra/vpkg-ci-repo/"
+
+vforge exec vpkg-ci -- rpm -q systemd >/dev/null
+vforge exec vpkg-ci -- sh -ec 'printf "private vforge upper\n" > /etc/veyra-vforge-ci-marker'
+vforge exec vpkg-ci -- grep -Fxq "private vforge upper" /etc/veyra-vforge-ci-marker
+test ! -e /etc/veyra-vforge-ci-marker
+
+host_htop_before="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+vforge install htop --environment vpkg-ci
+vforge exec vpkg-ci -- rpm -q htop
+vforge exec vpkg-ci -- htop --version
+vforge exec vpkg-ci -- test -x /usr/bin/htop
+host_htop_after="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+test "$host_htop_after" = "$host_htop_before"
+vforge exec vpkg-ci -- sh -ec 'printf "before rollback\n" > /var/lib/veyra/vforge-ci-snapshot-marker'
+snapshot_id="$(vforge snapshot vpkg-ci | awk '{print $4}')"
+test -n "$snapshot_id"
+vforge exec vpkg-ci -- sh -ec 'printf "after snapshot\n" > /var/lib/veyra/vforge-ci-snapshot-marker'
+vforge rollback vpkg-ci --snapshot "$snapshot_id"
+vforge exec vpkg-ci -- grep -Fxq "before rollback" /var/lib/veyra/vforge-ci-snapshot-marker
+vforge snapshots vpkg-ci | grep -Fq "$snapshot_id"
+echo "VEYRA_VFORGE_VPKG_CI_PASS"
+echo "Veyra QEMU test: vforge package and snapshot commands stayed inside the persistent native environment"
+
+# Exercise the supported rootless path with an ordinary guest user. The main
+# vpkg integration service runs as root, so it cannot prove that a desktop user
+# can own the environment storage and create the user/mount namespaces.
+vforge_ci_uid=65534
+vforge_ci_home=/var/lib/veyra/vforge-ci-rootless-home
+vforge_ci_storage=/var/lib/veyra/vforge-ci-rootless-storage
+vforge_ci_runtime=/run/veyra-vforge-rootless
+install -d -m 0700 -o "$vforge_ci_uid" -g "$vforge_ci_uid" \
+    "$vforge_ci_home" "$vforge_ci_storage" "$vforge_ci_runtime"
+vforge_as_unprivileged() {
+    setpriv --reuid="$vforge_ci_uid" --regid="$vforge_ci_uid" --clear-groups -- env \
+        HOME="$vforge_ci_home" \
+        XDG_CONFIG_HOME="$vforge_ci_home/.config" \
+        XDG_RUNTIME_DIR="$vforge_ci_runtime" \
+        VFORGE_STORAGE_ROOT="$vforge_ci_storage" \
+        "$@"
+}
+test "$(vforge_as_unprivileged id -u)" = "$vforge_ci_uid"
+vforge_as_unprivileged vforge create rootless-ci
+rootless_env="$vforge_ci_storage/environments/rootless-ci"
+test "$(stat -c %u "$rootless_env/environment.json")" = "$vforge_ci_uid"
+vforge_as_unprivileged vforge exec rootless-ci -- sh -ec \
+    'printf "rootless vforge upper\n" > /etc/veyra-vforge-rootless-marker'
+vforge_as_unprivileged vforge exec rootless-ci -- \
+    grep -Fxq "rootless vforge upper" /etc/veyra-vforge-rootless-marker
+test ! -e /etc/veyra-vforge-rootless-marker
+rootless_snapshot="$(vforge_as_unprivileged vforge snapshot rootless-ci | awk '{print $4}')"
+test -n "$rootless_snapshot"
+vforge_as_unprivileged vforge exec rootless-ci -- sh -ec \
+    'printf "after rootless snapshot\n" > /etc/veyra-vforge-rootless-marker'
+vforge_as_unprivileged vforge rollback rootless-ci --snapshot "$rootless_snapshot"
+vforge_as_unprivileged vforge exec rootless-ci -- \
+    grep -Fxq "rootless vforge upper" /etc/veyra-vforge-rootless-marker
+test ! -e /etc/veyra-vforge-rootless-marker
+echo "VEYRA_VFORGE_ROOTLESS_CI_PASS"
+
+# Prove the approved desktop permissions reach real Unix sockets, not just the
+# Vforge configuration. A fixture-owned project keeps this test rootless.
+desktop_project="$vforge_ci_home/vforge-desktop-ci"
+vforge_as_unprivileged install -d -m 0700 "$desktop_project"
+cat > "$desktop_project/.vforge.toml" <<'EOF'
+[environment]
+name = "desktop-ci"
+isolation = "integrated"
+
+[permissions]
+audio = true
+wayland = true
+EOF
+vforge_as_unprivileged install -d -m 0700 "$vforge_ci_home/.config/vforge"
+desktop_approvals="$vforge_ci_home/.config/vforge/approved-mounts.json"
+vforge_as_unprivileged python3 - "$desktop_project" "$desktop_approvals" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+project = str(Path(sys.argv[1]).resolve())
+approval_file = Path(sys.argv[2])
+approval_file.write_text(json.dumps({
+    "schema": 1,
+    "projects": {},
+    "network_projects": {},
+    "home_projects": {},
+    "resource_projects": {project: ["audio", "wayland"]},
+}) + "\n", encoding="utf-8")
+approval_file.chmod(0o600)
+PY
+desktop_ready="$vforge_ci_home/desktop-sockets-ready"
+rm -f "$desktop_ready"
+vforge_as_unprivileged python3 /usr/libexec/vforge-desktop-sockets-ci.py \
+    serve "$vforge_ci_runtime" "$desktop_ready" &
+desktop_socket_server=$!
+for _ in $(seq 1 100); do
+    if [[ -s "$desktop_ready" ]]; then
+        break
+    fi
+    sleep 0.1
+done
+grep -Fxq "ready" "$desktop_ready"
+(cd "$desktop_project" && vforge_as_unprivileged env WAYLAND_DISPLAY=wayland-0 vforge up)
+printf '%s\n' 'python3 /usr/libexec/vforge-desktop-sockets-ci.py client' \
+    | (cd "$desktop_project" && vforge_as_unprivileged env WAYLAND_DISPLAY=wayland-0 vforge enter)
+wait "$desktop_socket_server"
+grep -Fxq "complete" "$desktop_ready"
+echo "VEYRA_VFORGE_DESKTOP_CI_PASS"
+
+project=/var/lib/veyra/vforge-project-ci
+install -d -m 0700 "$project"
+cat > "$project/.vforge.toml" <<'EOF'
+[environment]
+name = "vpkg-project-ci"
+isolation = "integrated"
+EOF
+(cd "$project" && vforge up)
+project_env="$project/.vforge/vpkg-project-ci"
+project_upper="$project_env/upper"
+install -d -m 0755 "$project_upper/etc/yum.repos.d" \
+    "$project_upper/var/lib/veyra/vpkg-ci-repo"
+: > "$project_upper/etc/yum.repos.d/fedora.repo"
+: > "$project_upper/etc/yum.repos.d/fedora-updates.repo"
+: > "$project_upper/etc/yum.repos.d/rpmfusion.repo"
+cp /etc/yum.repos.d/veyra-vpkg-ci-upstream.repo "$project_upper/etc/yum.repos.d/"
+cp -a "$repo/local-upstream" "$project_upper/var/lib/veyra/vpkg-ci-repo/"
+cat >> "$project/.vforge.toml" <<'EOF'
+
+[packages]
+system = ["htop"]
+EOF
+host_htop_before="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+(cd "$project" && vforge up)
+test -x "$project_upper/usr/bin/htop"
+host_htop_after="$(rpm -q --qf '%{NEVRA}' htop 2>/dev/null || true)"
+test "$host_htop_after" = "$host_htop_before"
+echo "Veyra QEMU test: vforge up installed its declared project package through vpkg"
 
 echo "Veyra vpkg VM test: run package safety unit tests"
 python3 -m unittest discover \

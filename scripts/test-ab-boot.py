@@ -158,7 +158,12 @@ def main() -> int:
                 "VEYRA_BOOT_BLESS_CI_PASS",
             ]
             if args.expect_vpkg_test:
-                successful_markers.append("VEYRA_VPKG_CI_PASS")
+                successful_markers.extend((
+                    "VEYRA_VPKG_CI_PASS",
+                    "VEYRA_VFORGE_VPKG_CI_PASS",
+                    "VEYRA_VFORGE_ROOTLESS_CI_PASS",
+                    "VEYRA_VFORGE_DESKTOP_CI_PASS",
+                ))
             successful_log = boot_until(
                 image=test_image,
                 log_path=boot_log,
@@ -179,7 +184,7 @@ def main() -> int:
             print("systemd reached graphical.target, completed boot health checks, and blessed the UKI.", flush=True)
             if args.expect_vpkg_test:
                 print(
-                    "The signed vpkg RPM and OTA-generation contract tests passed inside Veyra.",
+                    "The signed vpkg, Vforge OverlayFS, and approved desktop-socket checks passed inside Veyra.",
                     flush=True,
                 )
 

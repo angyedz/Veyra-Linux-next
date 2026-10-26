@@ -51,14 +51,23 @@ The image is configured to offer KDE Plasma Setup on first boot so the user can 
 
 - The user signs into KDE Plasma and installs desktop apps from Discover.
 - Steam and Discord are ordinary desktop apps, not separate operating systems. Steam runs games with Proton; Discord receives Wayland screen sharing through KDE's portal and PipeWire.
-- Git, SSH, GCC, Clang, Python, Node.js and CMake are available in the native Fedora userspace. `vforge` is planned for both project-described environments and persistent, named development environments; it is optional, and projects can still be built directly on the host.
+- Git, SSH, GCC, Clang, Python, Node.js and CMake are available in the native Fedora userspace. `vforge` has an early native OverlayFS implementation with persistent named and project layers over the current Veyra root. Guest validation and several permission integrations remain pending; see [docs/vforge.md](docs/vforge.md).
 - System updates preserve personal files and install a complete new OS version beside the active one. A failed trial boot returns to the previous version.
 - Optional Veyra add-ons install as signed system extensions, while system packages go through A/B image updates.
 
 Those are product goals, not claims that this image already provides them.
 
-The `vforge` environment manager is a design goal and is not implemented yet. Its
-planned interface and isolation boundary are described in [the vforge design](docs/vforge.md).
+`vforge` supports native OverlayFS upper/work storage, named and project-local
+environments, explicitly approved bind mounts, and opt-in shared networking.
+It routes package commands through `vpkg`, stores snapshots in the selected
+environment location, and blocks use after a Veyra base change until
+`vforge upgrade` succeeds. Fedora 44 QEMU validation for namespace creation,
+rootless OverlayFS, package operations, snapshot rollback, and OTA compatibility
+is running; these runtime behaviors remain unverified until that guest check
+passes. Project GPU, Wayland, PipeWire, and system D-Bus access now have
+explicit opt-in permissions; Fedora guest and real hardware checks are still
+pending. Seccomp and SELinux policies remain incomplete. See
+[the vforge implementation and limits](docs/vforge.md).
 
 ## Architectural direction
 

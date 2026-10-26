@@ -11,7 +11,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "mkosi.extra/usr/bin/vpkg"
@@ -156,7 +156,7 @@ class VpkgSystemGenerationContractTests(unittest.TestCase):
             build.assert_not_called()
 
 
-class VpkgVforgeEnvironmentContractTests(unittest.TestCase):
+class VforgePackageDispatchTests(unittest.TestCase):
     def _validate(self, root: Path, marker: Path, mountinfo: Path):
         original_stat = Path.stat
 
@@ -197,6 +197,83 @@ class VpkgVforgeEnvironmentContractTests(unittest.TestCase):
         mountinfo.write_text(f"31 1 0:1 / {marker} ro,relatime - tmpfs tmpfs ro\n", encoding="utf-8")
         return root, marker, mountinfo
 
+    def test_vforge_uses_the_regular_package_commands(self) -> None:
+        with (
+            patch.object(vpkg, "is_vforge_environment", return_value=True),
+            patch.object(vpkg, "validate_vforge_environment"),
+            patch.object(vpkg, "vforge_package_transaction") as transaction,
+        ):
+            self.assertEqual(vpkg.main(["install", "htop"]), 0)
+            self.assertEqual(vpkg.main(["remove", "htop"]), 0)
+            self.assertEqual(vpkg.main(["upgrade"]), 0)
+
+        self.assertEqual(transaction.call_args_list, [
+            call("install", ["htop"]),
+            call("remove", ["htop"]),
+            call("upgrade", None),
+        ])
+
+    def test_host_package_commands_keep_their_existing_behavior(self) -> None:
+        with (
+            patch.object(vpkg, "is_vforge_environment", return_value=False),
+            patch.object(vpkg, "validate_vforge_environment"),
+            patch.object(vpkg, "install") as install,
+            patch.object(vpkg, "remove") as remove,
+            patch.object(vpkg, "upgrade") as upgrade,
+        ):
+            self.assertEqual(vpkg.main(["install", "htop"]), 0)
+            self.assertEqual(vpkg.main(["remove", "htop"]), 0)
+            self.assertEqual(vpkg.main(["upgrade"]), 0)
+
+        install.assert_called_once_with(["htop"])
+        remove.assert_called_once_with(["htop"])
+        upgrade.assert_called_once_with()
+
+    def test_host_only_package_generation_commands_are_blocked_in_vforge(self) -> None:
+        with (
+            patch.object(vpkg, "is_vforge_environment", return_value=True),
+            patch.object(vpkg, "validate_vforge_environment"),
+            patch.object(vpkg, "stage_user_apps") as stage,
+        ):
+            self.assertEqual(vpkg.main(["stage", "install", "htop"]), 1)
+
+        stage.assert_not_called()
+
+    def test_invalid_vforge_marker_never_falls_back_to_host_install(self) -> None:
+        with (
+            patch.object(vpkg, "is_vforge_environment", return_value=True),
+            patch.object(vpkg, "validate_vforge_environment", side_effect=vpkg.VpkgReject("invalid marker")),
+            patch.object(vpkg, "install") as install,
+        ):
+            self.assertEqual(vpkg.main(["install", "htop"]), 1)
+
+        install.assert_not_called()
+
+    def test_vforge_rejects_veyra_system_extension_packages(self) -> None:
+        with (
+            patch.object(vpkg, "require_root"),
+            patch.object(vpkg, "validate_vforge_environment"),
+            patch.object(vpkg, "with_vforge_lock") as lock,
+        ):
+            with self.assertRaisesRegex(vpkg.VpkgError, "system-extension packages"):
+                vpkg.vforge_package_transaction("install", ["veyra-sample"])
+
+        lock.assert_not_called()
+
+    def test_vforge_marker_detection_does_not_follow_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "root.json"
+            marker.symlink_to(Path(temporary) / "missing.json")
+            self.assertTrue(vpkg.is_vforge_environment(marker))
+
+    def test_vforge_marker_detection_returns_false_when_marker_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertFalse(vpkg.is_vforge_environment(Path(temporary) / "missing.json"))
+
+    def test_public_cli_does_not_expose_container_subcommand(self) -> None:
+        with self.assertRaises(SystemExit):
+            vpkg.build_parser().parse_args(["container", "install", "htop"])
+
     def test_vforge_environment_uses_regular_package_verbs(self) -> None:
         install = vpkg.build_parser().parse_args(["install", "htop"])
         remove = vpkg.build_parser().parse_args(["remove", "htop"])
@@ -209,14 +286,16 @@ class VpkgVforgeEnvironmentContractTests(unittest.TestCase):
 
     def test_regular_package_verbs_route_to_vforge_only_with_its_marker(self) -> None:
         with (
-            patch.object(vpkg, "vforge_marker_present", return_value=True),
+            patch.object(vpkg, "is_vforge_environment", return_value=True),
+            patch.object(vpkg, "validate_vforge_environment"),
             patch.object(vpkg, "vforge_package_transaction") as transaction,
         ):
             self.assertEqual(vpkg.main(["install", "htop"]), 0)
         transaction.assert_called_once_with("install", ["htop"])
 
         with (
-            patch.object(vpkg, "vforge_marker_present", return_value=False),
+            patch.object(vpkg, "is_vforge_environment", return_value=False),
+            patch.object(vpkg, "validate_vforge_environment"),
             patch.object(vpkg, "install") as host_install,
         ):
             self.assertEqual(vpkg.main(["install", "htop"]), 0)

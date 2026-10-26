@@ -23,28 +23,59 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=True, text=True, **kwargs)
 
 
-def package_set_from_mkosi() -> list[str]:
-    in_content = False
-    in_packages = False
-    packages: list[str] = []
-    for raw_line in MKOSI_CONFIG.read_text(encoding="utf-8").splitlines():
-        line = raw_line.rstrip()
+def mkosi_config_files(config: Path, seen: set[Path] | None = None) -> list[Path]:
+    config = config.resolve()
+    seen = seen if seen is not None else set()
+    if config in seen:
+        return []
+    if not config.is_file():
+        raise RuntimeError(f"Missing mkosi configuration: {config}")
+    seen.add(config)
+
+    included: list[Path] = []
+    section = ""
+    for raw_line in config.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
         if line.startswith("[") and line.endswith("]"):
-            in_content = line == "[Content]"
-            in_packages = False
-            continue
-        if not in_content or not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if line.startswith("Packages="):
-            packages.append(line.split("=", 1)[1].strip())
-            in_packages = True
-        elif in_packages and line[:1].isspace():
-            packages.append(line.strip())
-        else:
-            in_packages = False
+            section = line[1:-1]
+        elif section == "Include" and line.startswith("Include="):
+            included.append(Path(line.split("=", 1)[1].strip()))
+
+    configs = [config]
+    for pattern in included:
+        matches = sorted(config.parent.glob(str(pattern)))
+        if not matches:
+            raise RuntimeError(f"mkosi Include has no matching files: {pattern}")
+        for path in matches:
+            if not path.is_file():
+                raise RuntimeError(f"mkosi Include is not a file: {path}")
+            configs.extend(mkosi_config_files(path, seen))
+    return configs
+
+
+def package_set_from_mkosi(config: Path = MKOSI_CONFIG) -> list[str]:
+    packages: list[str] = []
+    for source in mkosi_config_files(config):
+        in_content = False
+        in_packages = False
+        for raw_line in source.read_text(encoding="utf-8").splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("[") and line.endswith("]"):
+                in_content = line == "[Content]"
+                in_packages = False
+                continue
+            if not in_content or not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if line.startswith("Packages="):
+                packages.append(line.split("=", 1)[1].strip())
+                in_packages = True
+            elif in_packages and line[:1].isspace():
+                packages.append(line.strip())
+            else:
+                in_packages = False
     result = list(dict.fromkeys(package for package in packages if package))
     if not result:
-        raise RuntimeError("Could not find the Veyra base package set in mkosi.conf.")
+        raise RuntimeError("Could not find the Veyra base package set in mkosi.conf or its Include files.")
     return result
 
 

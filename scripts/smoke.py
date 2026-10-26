@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import pathlib
 import json
+import pathlib
 import re
 import sys
 
@@ -26,6 +26,39 @@ def section_values(path: pathlib.Path, section: str) -> list[str]:
     return values
 
 
+def included_configs(config: pathlib.Path, seen: set[pathlib.Path] | None = None) -> list[pathlib.Path]:
+    config = config.resolve()
+    seen = seen if seen is not None else set()
+    if config in seen:
+        return []
+    if not config.is_file():
+        raise FileNotFoundError(f"included mkosi config does not exist: {config}")
+    seen.add(config)
+
+    configs = [config]
+    for line in section_values(config, "Include"):
+        key, separator, value = line.partition("=")
+        if key != "Include" or not separator:
+            continue
+        matches = sorted(config.parent.glob(value.strip()))
+        if not matches:
+            raise FileNotFoundError(f"mkosi Include has no matching files: {value.strip()}")
+        for included in matches:
+            if not included.is_file():
+                raise ValueError(f"mkosi Include is not a file: {included}")
+            configs.extend(included_configs(included, seen))
+    return configs
+
+
+def image_packages(config: pathlib.Path) -> set[str]:
+    packages: set[str] = set()
+    for source in included_configs(config):
+        for line in section_values(source, "Content"):
+            if line.startswith("Packages="):
+                packages.add(line.removeprefix("Packages="))
+    return packages
+
+
 def fail(message: str) -> int:
     print(f"Veyra Next smoke check failed: {message}", file=sys.stderr)
     return 1
@@ -34,6 +67,7 @@ def fail(message: str) -> int:
 def main() -> int:
     config = ROOT / "mkosi.conf"
     output = section_values(config, "Output")
+    config_values = section_values(config, "Config")
     content = section_values(config, "Content")
     distribution = section_values(config, "Distribution")
     build = section_values(config, "Build")
@@ -52,6 +86,7 @@ def main() -> int:
         "ElTorito=no",
         "Output=veyra-next",
         "OutputDirectory=mkosi.output",
+        "ManifestFormat=json",
     ):
         if expected not in output:
             return fail(f"{config.name} must contain {expected!r} in [Output]")
@@ -65,17 +100,29 @@ def main() -> int:
     ):
         if expected not in content:
             return fail(f"{config.name} must contain {expected!r} in [Content]")
-    if "ToolsTree=yes" not in build:
-        return fail(f"{config.name} must build through mkosi's isolated tools tree")
+    for expected in (
+        "ToolsTree=yes",
+        "ToolsTreeDistribution=fedora",
+        "ToolsTreeRelease=44",
+    ):
+        if expected not in build:
+            return fail(f"{config.name} must contain {expected!r} in [Build]")
     if "Firmware=uefi" not in runtime:
         return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
     if "KernelCommandLine=systemd.unit=graphical.target" not in content:
         return fail("the image must boot into the graphical desktop target")
+    if "Dependencies=initrd" not in config_values:
+        return fail("the bootable image must build its referenced initrd as an explicit dependency")
 
-    packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
+    try:
+        packages = image_packages(config)
+    except (OSError, ValueError) as error:
+        return fail(f"could not read image package configuration: {error}")
     required_packages = {
         "kernel",
         "libdnf5",
+        "policycoreutils",
+        "selinux-policy-targeted",
         "systemd-udev",
         "NetworkManager",
         "firewalld",
@@ -97,6 +144,7 @@ def main() -> int:
         "cmake",
         "python3",
         "nodejs",
+        "e2fsprogs",
     }
     missing = sorted(required_packages - packages)
     if missing:
@@ -374,8 +422,57 @@ def main() -> int:
     configure_content = (ROOT / "mkosi.configure").read_text(encoding="utf-8")
     if "veyra.image_version=" not in configure_content:
         return fail("the UKI must embed its image version in the kernel command line")
-    if not (ROOT / "scripts/test-ab-boot.py").is_file():
+    boot_test = ROOT / "scripts/test-ab-boot.py"
+    if not boot_test.is_file():
         return fail("CI must boot a staged A/B update and exercise boot-count rollback")
+    boot_test_content = boot_test.read_text(encoding="utf-8")
+    vforge_guest_test = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-ci-test"
+    vforge_command = ROOT / "mkosi.extra/usr/bin/vforge"
+    vforge_base_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vforge-base.service"
+    vforge_tmpfiles = ROOT / "mkosi.extra/usr/lib/tmpfiles.d/veyra-vforge.conf"
+    veyra_preset = ROOT / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset"
+    vforge_base_link = ROOT / "mkosi.extra/usr/lib/systemd/system/multi-user.target.wants/veyra-vforge-base.service"
+    if not all(path.is_file() for path in (vforge_command, vforge_base_service, vforge_tmpfiles, veyra_preset)):
+        return fail("rootless Vforge requires its command, immutable-base service, tmpfiles entry, and preset")
+    vforge_command_content = vforge_command.read_text(encoding="utf-8")
+    if "VFORGE_BASE_ROOT = \"/run/veyra/vforge/base\"" not in vforge_command_content:
+        return fail("Vforge must bind its lower layer from the prepared immutable system base")
+    if "podman" in vforge_command_content.lower() or "registry.fedoraproject.org/fedora:44" in vforge_command_content:
+        return fail("Vforge must run directly over the Veyra base without a Fedora container runtime")
+    base_service_content = vforge_base_service.read_text(encoding="utf-8")
+    for expected in (
+        "After=local-fs.target systemd-tmpfiles-setup.service",
+        "mount --bind / /run/veyra/vforge/base",
+        "mount -o remount,bind,ro /run/veyra/vforge/base",
+        "WantedBy=multi-user.target",
+    ):
+        if expected not in base_service_content:
+            return fail(f"the Vforge base service must provide a read-only, non-recursive EROFS bind: {expected!r}")
+    if "rbind" in base_service_content:
+        return fail("the Vforge base service must not expose persistent host submounts")
+    if "enable veyra-vforge-base.service" not in veyra_preset.read_text(encoding="utf-8"):
+        return fail("the immutable Vforge base service must be enabled in the image")
+    if (not vforge_base_link.is_symlink()
+            or vforge_base_link.readlink().as_posix() != "/usr/lib/systemd/system/veyra-vforge-base.service"):
+        return fail("mkosi must install the Vforge base service enablement link in multi-user.target.wants")
+    if "/run/veyra/vforge/base" not in vforge_tmpfiles.read_text(encoding="utf-8"):
+        return fail("tmpfiles must create the immutable Vforge base mountpoint")
+    if (not vforge_guest_test.is_file()
+            or "VEYRA_VFORGE_VPKG_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
+            or "VEYRA_VFORGE_ROOTLESS_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
+            or "VEYRA_VFORGE_DESKTOP_CI_PASS" not in vforge_guest_test.read_text(encoding="utf-8")
+            or "VEYRA_VFORGE_VPKG_CI_PASS" not in boot_test_content):
+        return fail("QEMU CI must prove native Vforge package, rootless environment, and desktop resource behavior")
+    if "VEYRA_VFORGE_ROOTLESS_CI_PASS" not in boot_test_content:
+        return fail("QEMU CI must wait for the normal-user Vforge OverlayFS test to pass")
+    if "VEYRA_VFORGE_DESKTOP_CI_PASS" not in boot_test_content:
+        return fail("QEMU CI must wait for the approved Vforge desktop-socket test to pass")
+    desktop_socket_fixture = ROOT / "tests/fixtures/vpkg-image/vforge-desktop-sockets-ci.py"
+    ci_workflow = ROOT / ".github/workflows/ci.yml"
+    if (not desktop_socket_fixture.is_file()
+            or "def connect_from_environment" not in desktop_socket_fixture.read_text(encoding="utf-8")
+            or "vforge-desktop-sockets-ci.py" not in ci_workflow.read_text(encoding="utf-8")):
+        return fail("QEMU CI must install a fixture that connects to the approved Wayland and audio sockets")
     update_image_test = ROOT / "scripts/test-sysupdate-image.py"
     if not update_image_test.is_file():
         return fail("CI must create the signed A/B test update")

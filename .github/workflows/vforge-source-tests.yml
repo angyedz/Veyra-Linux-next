@@ -1,0 +1,96 @@
+name: Vforge native checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/vforge-source-tests.yml'
+      - 'mkosi.conf'
+      - 'mkosi.veyra-base.conf'
+      - 'mkosi.extra/usr/bin/vforge'
+      - 'mkosi.extra/usr/bin/vpkg'
+      - 'scripts/**'
+      - 'docs/vpkg-*.md'
+      - 'tests/test_vforge.py'
+      - 'tests/test_vpkg.py'
+      - 'tests/test_build_environment.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/vforge-source-tests.yml'
+      - 'mkosi.conf'
+      - 'mkosi.veyra-base.conf'
+      - 'mkosi.extra/usr/bin/vforge'
+      - 'mkosi.extra/usr/bin/vpkg'
+      - 'scripts/**'
+      - 'docs/vpkg-*.md'
+      - 'tests/test_vforge.py'
+      - 'tests/test_vpkg.py'
+      - 'tests/test_build_environment.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Vforge source and policy tests
+        run: python3 -m unittest discover -s tests -q
+      - name: Run repository smoke checks
+        run: python3 scripts/smoke.py
+      - name: Check Python syntax and patch whitespace
+        run: |
+          python3 -m py_compile mkosi.extra/usr/bin/vforge scripts/check-build-environment.py
+          git diff --check
+
+  build-veyra-image:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/feature/vforge'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Vpkg target-branch sources for branch builds
+        if: github.event_name != 'pull_request'
+        run: |
+          git fetch origin feature/vpkg
+          git checkout FETCH_HEAD -- \
+            mkosi.extra/usr/bin/vpkg \
+            mkosi.extra/usr/lib/veyra/vpkg_libdnf.py \
+            mkosi.extra/usr/lib/veyra/veyra_repo.py \
+            mkosi.extra/usr/share/veyra/vpkg/protected-core.json \
+            mkosi.extra/etc/yum.repos.d/rpmfusion.repo \
+            mkosi.extra/usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-free-fedora-2020 \
+            mkosi.extra/usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-nonfree-fedora-2020
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install image build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            btrfs-progs ca-certificates cpio curl dnf dosfstools e2fsprogs \
+            debian-archive-keyring erofs-utils fdisk gpg kmod mtools openssl \
+            python3 squashfs-tools cryptsetup-bin systemd-container \
+            systemd-ukify xz-utils zstd qemu-system-x86 ovmf fuse2fs fuse3
+      - name: Check image configuration
+        run: python3 scripts/smoke.py
+      - name: Gate Ubuntu DNF and Fedora 44 tools tree
+        env:
+          VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
+        run: bash scripts/check-build-environment.sh
+      - name: Verify isolated Ubuntu DNF configuration
+        env:
+          VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
+        run: sudo --preserve-env=VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS python3 scripts/check-build-environment.py
+      - name: Verify native mkosi build capability
+        run: |
+          sudo python3 -c 'import pathlib, sys; caps = int(next(line.split()[1] for line in pathlib.Path("/proc/self/status").read_text().splitlines() if line.startswith("CapEff:")), 16); available = bool(caps & (1 << 21)); print(f"CAP_SYS_ADMIN available to the ephemeral runner root: {available}"); sys.exit(0 if available else 1)'
+      - name: Build installed Veyra image with native Vforge
+        run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
+      - name: Validate installed Veyra image
+        run: python3 scripts/check-image.py mkosi.output/veyra-next.raw

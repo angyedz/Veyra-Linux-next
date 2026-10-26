@@ -4,3 +4,4 @@ enable plasma-setup.service
 enable plasmalogin.service
 enable systemd-sysext.service
 enable systemd-boot-check-no-failures.service
+enable veyra-vforge-base.service
