@@ -1,0 +1,19 @@
+{
+  "KPlugin": {
+    "Id": "VeyraGlacier",
+    "Name": "Veyra Glacier — Light & Dark",
+    "Description": "Original glacier flow wallpaper for Veyra Next",
+    "Version": "0.3.0",
+    "License": "CC0-1.0",
+    "Authors": [
+      {
+        "Name": "Veyra Linux contributors"
+      }
+    ]
+  },
+  "X-KDE-PlasmaImageWallpaper-AccentColor": {
+    "Light": "#1972BB",
+    "Dark": "#69C8FF"
+  },
+  "X-KDE-CrossFade": false
+}

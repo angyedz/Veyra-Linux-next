@@ -13,3 +13,6 @@ name=veyra-glacier-dark
 [kwinrc][org.kde.kdecoration2]
 ButtonsOnLeft=
 ButtonsOnRight=IAX
+
+[Wallpaper]
+Image=VeyraGlacier
