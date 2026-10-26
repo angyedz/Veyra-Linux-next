@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -16,7 +17,7 @@ SPEC = importlib.util.spec_from_file_location("ota_fetch", ROOT / "scripts/ota_f
 assert SPEC and SPEC.loader
 fetch = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fetch)
-from ota_chunks import plan
+from ota_chunks import PACKED_FORMAT, plan
 
 
 class Response(io.BytesIO):
@@ -48,6 +49,33 @@ class FetchTests(unittest.TestCase):
             self.assertEqual(fetch.fetch_asset("https://example.invalid/releases", self.cache, self.name, self.size), "downloaded")
             self.assertEqual(fetch.fetch_asset("https://example.invalid/releases", self.cache, self.name, self.size), "cached")
             self.assertEqual(request.call_count, 1)
+
+    def test_download_and_verify_content_addressed_pack(self):
+        pack_path = self.root / "pack.tar"
+        with tarfile.open(pack_path, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            member = tarfile.TarInfo(self.name)
+            member.size = len(self.payload)
+            archive.addfile(member, io.BytesIO(self.payload))
+        payload = pack_path.read_bytes()
+        pack_sha = fetch.asset_digest(pack_path)
+        pack_name = f"chunks-{pack_sha}.tar"
+        with patch.object(fetch.urllib.request, "urlopen", return_value=Response(payload)) as request:
+            self.assertEqual(fetch.fetch_asset("https://example.invalid/releases", self.cache, pack_name, len(payload)), "downloaded")
+            self.assertEqual(fetch.fetch_asset("https://example.invalid/releases", self.cache, pack_name, len(payload)), "cached")
+            self.assertEqual(request.call_count, 1)
+
+    def test_required_assets_downloads_a_pack_once_for_many_chunks(self):
+        manifest = json.loads((self.bundle / "manifest.json").read_text())
+        manifest["format"] = PACKED_FORMAT
+        record = manifest["chunks"][0]
+        pack_sha = "a" * 64
+        record.update(
+            pack=f"chunks-{pack_sha}.tar",
+            pack_sha256=pack_sha,
+            pack_size=1234,
+            member=record["asset"],
+        )
+        self.assertEqual(fetch.required_assets(manifest), {f"chunks-{pack_sha}.tar": 1234})
 
     def test_complete_partial_is_promoted_without_network(self):
         self.cache.mkdir()

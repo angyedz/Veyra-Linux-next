@@ -51,6 +51,30 @@ class ManifestValidationTests(unittest.TestCase):
     def test_base_chunk_without_base(self):
         self.reject(lambda m: m["chunks"][0].update(source="base"))
 
+    def test_packed_manifest_rejects_unsafe_pack_path(self):
+        def make_unsafe(manifest):
+            manifest["format"] = "veyra-ota-chunks-v2"
+            record = manifest["chunks"][0]
+            record.update(
+                pack="../outside.tar",
+                pack_sha256="a" * 64,
+                pack_size=1024,
+                member=record["asset"],
+            )
+        self.reject(make_unsafe)
+
+    def test_packed_manifest_rejects_inconsistent_pack_digest(self):
+        def make_inconsistent(manifest):
+            manifest["format"] = "veyra-ota-chunks-v2"
+            record = manifest["chunks"][0]
+            record.update(
+                pack="chunks-" + "a" * 64 + ".tar",
+                pack_sha256="b" * 64,
+                pack_size=1024,
+                member=record["asset"],
+            )
+        self.reject(make_inconsistent)
+
     def test_wrong_index(self):
         self.reject(lambda m: m["chunks"][0].update(index=2))
 

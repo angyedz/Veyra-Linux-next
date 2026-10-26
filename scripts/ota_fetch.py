@@ -14,7 +14,14 @@ import re
 import urllib.error
 import urllib.request
 
-from ota_chunks import CHUNK_SIZE, MAX_COMPRESSED_CHUNK_SIZE, validate_manifest
+from ota_chunks import (
+    CHUNK_SIZE,
+    MAX_COMPRESSED_CHUNK_SIZE,
+    MAX_PACK_SIZE,
+    PACKED_FORMAT,
+    PACK_ASSET,
+    validate_manifest,
+)
 
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 BUFFER = 1024 * 1024
@@ -33,12 +40,23 @@ def required_assets(manifest: dict) -> dict[str, int]:
     result = {}
     for record in manifest["chunks"]:
         if record["source"] == "asset":
-            name = record["asset"]
-            size = record["compressed_size"]
+            if manifest["format"] == PACKED_FORMAT:
+                name = record["pack"]
+                size = record["pack_size"]
+            else:
+                name = record["asset"]
+                size = record["compressed_size"]
             if name in result and result[name] != size:
                 raise ValueError("conflicting size for repeated asset")
             result[name] = size
     return result
+
+
+def asset_matches_digest(path: Path, name: str) -> bool:
+    if name.endswith(".zlib"):
+        return compressed_digest(path, name)
+    match = PACK_ASSET.fullmatch(name)
+    return match is not None and asset_digest(path) == match.group(1)
 
 
 def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
@@ -47,9 +65,13 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
     Returns 'cached' or 'downloaded'. The caller must authenticate release
     metadata; hashes alone cannot establish publisher authenticity.
     """
-    if not SHA256.fullmatch(name.removesuffix(".zlib")) or not name.endswith(".zlib"):
+    if name.endswith(".zlib") and SHA256.fullmatch(name.removesuffix(".zlib")):
+        max_size = MAX_COMPRESSED_CHUNK_SIZE
+    elif PACK_ASSET.fullmatch(name):
+        max_size = MAX_PACK_SIZE
+    else:
         raise ValueError("invalid asset name")
-    if not 0 < size <= MAX_COMPRESSED_CHUNK_SIZE:
+    if not 0 < size <= max_size:
         raise ValueError("invalid asset size")
     from urllib.parse import urlsplit
     parsed = urlsplit(base_url)
@@ -63,7 +85,7 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
     if target.is_symlink() or partial.is_symlink():
         raise ValueError("symlink asset forbidden")
     if target.exists():
-        if target.stat().st_size == size and compressed_digest(target, name):
+        if target.stat().st_size == size and asset_matches_digest(target, name):
             return "cached"
         target.unlink()
     offset = partial.stat().st_size if partial.exists() else 0
@@ -72,7 +94,7 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
         offset = 0
     # A complete .part may be left by a crash between fsync and rename.
     # Verify and promote it without another network request.
-    if offset == size and compressed_digest(partial, name):
+    if offset == size and asset_matches_digest(partial, name):
         os.replace(partial, target)
         return "cached"
     if offset == size:
@@ -102,7 +124,7 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
                 if downloaded > size:
                     raise ValueError("asset exceeds declared size")
                 dst.write(block)
-    if partial.stat().st_size != size or not compressed_digest(partial, name):
+    if partial.stat().st_size != size or not asset_matches_digest(partial, name):
         partial.unlink(missing_ok=True)
         raise ValueError("downloaded asset failed integrity check")
     os.replace(partial, target)

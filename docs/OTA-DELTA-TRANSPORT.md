@@ -6,13 +6,15 @@
 
 GitHub Releases allows up to 1,000 assets per release, with each file under
 2 GiB ([GitHub documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas)).
-The prototype keeps a 2,000,000,000-byte absolute file ceiling. Its current
-format puts one independently compressed 4 MiB image chunk in each asset, so
-validation imposes a much smaller **4 MiB + 64 KiB** compressed-chunk ceiling.
-This keeps each download and reconstruction step bounded. The current
-one-asset-per-chunk format can exceed GitHub's asset-count limit for large
-fully changed images; packing chunks into fewer release assets is still
-required before publishing a real update. An ISO is **not** an OTA payload.
+The prototype keeps a 2,000,000,000-byte absolute file ceiling. Each image
+chunk is independently compressed and capped at **4 MiB + 64 KiB**. The
+central release builder places those chunks into deterministic tar packs capped
+at **256 MiB of chunk data**, **257 MiB per pack**, and **128 members per pack**.
+Packed manifests use schema v2; the downloader fetches and resumes a pack once
+even when many chunks refer to it. Reconstruction validates the pack digest,
+member names, member sizes, and each decompressed chunk. The builder counts
+`release.json`, manifests, and packs, then refuses output above GitHub's
+1,000-asset release limit. An ISO is **not** an OTA payload.
 
 Release assets should eventually contain:
 - a small **signed** manifest identifying target version, exact base version/image digest, target root digest, chunk hashes, artifact sizes and signatures;
@@ -20,7 +22,12 @@ Release assets should eventually contain:
 - a complete fallback root image split into individually bounded assets when needed, **not** the installer ISO;
 - matching UKI, dm-verity metadata, and any other resources needed for one coherent A/B generation.
 
-The current `scripts/ota_chunks.py` emits a **non-signed JSON manifest** and independently compressed zlib chunks. It does not implement secure publication, downloading, signatures, verity, UKI, slot activation or rollback. Do not distribute it as a production update.
+The current `scripts/ota_chunks.py` emits a **non-signed JSON manifest** and
+independently compressed zlib chunks. `scripts/veyra-release.py` converts those
+into bounded packs, verifies full and delta reconstruction, and emits one flat
+directory for upload. It does not publish the release or implement signatures,
+verity, UKI, slot activation, or rollback. Do not distribute it as a
+production update.
 
 ## Atomic installation requirements
 
@@ -71,9 +78,10 @@ python3 scripts/veyra-release.py \\
 For the first release, omit `--base` and `--base-version`.
 The output is a flat directory of GitHub-uploadable individual files:
 `release.json`, `ota-full.json`, optional `ota-delta.json`, and
-content-addressed `*.zlib` assets. The builder reconstructs and checks
-both variants **before** publishing the output directory, deduplicates
-shared chunks and rejects assets larger than the configured cap.
+content-addressed `chunks-*.tar` packs. The builder reconstructs and checks
+both variants **before** publishing the output directory, deduplicates shared
+chunks, caps each pack, and rejects releases that exceed the configured file
+size or GitHub's asset-count limit.
 
 **Critical:** this is an UNSIGNED EXPERIMENTAL artifact bundle. The
 `release.json` marker explicitly says NOT INSTALLABLE. Do not attach it to
