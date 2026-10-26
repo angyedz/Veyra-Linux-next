@@ -33,6 +33,47 @@ assert_extension_active() {
     fi
 }
 
+echo "Veyra vforge VM test: exercise rootless native OverlayFS"
+vforge_state=/var/lib/veyra/vforge-ci
+vforge_runtime=/run/veyra-vforge-ci
+vforge_marker=/usr/share/veyra-vforge-ci-overlay-marker
+vforge_uid="$(id -u nobody)"
+vforge_gid="$(id -g nobody)"
+install -d -o "$vforge_uid" -g "$vforge_gid" -m 0700 \
+    "$vforge_state" "$vforge_state/config" "$vforge_state/store" "$vforge_runtime"
+vforge_ci() {
+    runuser -u nobody -- env \
+        HOME="$vforge_state" \
+        XDG_CONFIG_HOME="$vforge_state/config" \
+        XDG_RUNTIME_DIR="$vforge_runtime" \
+        VFORGE_STORAGE_ROOT="$vforge_state/store" \
+        /usr/bin/vforge "$@"
+}
+vforge_ci delete vm-smoke >/dev/null 2>&1 || true
+vforge_ci create vm-smoke
+test ! -e "$vforge_marker"
+vforge_ci exec vm-smoke -- /usr/bin/bash -ceu '
+    grep -Fxq ID=fedora /usr/lib/os-release
+    grep -Fxq VERSION_ID=44 /usr/lib/os-release
+    rpm -q bash >/dev/null
+    python3 -c '\''
+import json
+from pathlib import Path
+marker = json.loads(Path("/run/veyra-vforge/root.json").read_text())
+cmdline = Path("/proc/cmdline").read_text()
+assert marker["kind"] == "vforge-veyra-root"
+assert marker["storage_driver"] == "overlayfs"
+assert marker["immutable_base"] is True
+assert marker["base_digest"] in cmdline
+'\''
+    printf "upper-layer-persisted\\n" > /usr/share/veyra-vforge-ci-overlay-marker
+'
+vforge_ci exec vm-smoke -- /usr/bin/bash -ceu \
+    'grep -Fxq upper-layer-persisted /usr/share/veyra-vforge-ci-overlay-marker'
+test ! -e "$vforge_marker"
+vforge_ci delete vm-smoke
+echo "Veyra vforge VM test: Veyra lower identity, rootless OverlayFS persistence, and host isolation passed"
+
 grep -Fxq "$marker" /etc/veyra/vpkg-ci-persisted
 grep -Fxq "$marker" /var/lib/veyra/vpkg-ci-persisted
 grep -Fxq "$marker" /home/.veyra-vpkg-ci-persisted
