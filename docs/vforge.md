@@ -54,8 +54,8 @@ rejected. The whole host Home is never mounted.
 ## Isolation and limits
 
 Vforge starts user, mount, PID, and network namespaces. Networking is disabled.
-It creates a private mount tree and binds only the active read-only Veyra EROFS
-root as OverlayFS's lower. The bind is deliberately non-recursive, so the
+It creates a private mount tree, recursively binds the active read-only Veyra
+EROFS root as OverlayFS's lower, then detaches inherited submounts. The
 machine's persistent `/etc`, `/var`, and `/home` mounts are not exposed. The
 environment's own persistent upper/work pair receives writes.
 The process starts inside that merged root. Only the project and individually
