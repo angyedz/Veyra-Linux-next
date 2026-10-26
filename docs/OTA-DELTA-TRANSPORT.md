@@ -48,3 +48,27 @@ or dm-verity artifacts, and must not be mistaken for production download size.
 
 Fixed-offset chunks are particularly weak when filesystem image offsets shift.
 Benchmark real consecutive EROFS builds before adopting this as the OTA format.
+
+## Centralized experimental release builder
+
+One command packages both a complete fallback and an optional delta:
+
+```sh
+python3 scripts/veyra-release.py \\
+  --version 0.2.0 --base-version 0.1.0 \\
+  --base ./old-root.img --target ./new-root.img \\
+  --output ./release-0.2.0
+```
+
+For the first release, omit `--base` and `--base-version`.
+The output is a flat directory of GitHub-uploadable individual files:
+`release.json`, `ota-full.json`, optional `ota-delta.json`, and
+content-addressed `*.zlib` assets. The builder reconstructs and checks
+both variants **before** publishing the output directory, deduplicates
+shared chunks and rejects assets larger than the configured cap.
+
+**Critical:** this is an UNSIGNED EXPERIMENTAL artifact bundle. The
+`release.json` marker explicitly says NOT INSTALLABLE. Do not attach it to
+a production updater or publish as an official secure update. Signing,
+release channels, GitHub upload automation, UKI/verity artifacts and A/B
+activation belong to a later integration step with the OTA owner.
