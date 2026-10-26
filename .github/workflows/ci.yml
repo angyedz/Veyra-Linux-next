@@ -264,6 +264,7 @@ jobs:
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
       - name: Gate root, UKI and core RPMs on Fedora 44
+        id: image_assets
         run: |
           version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
           test -s mkosi.output/veyra-next.raw
@@ -437,6 +438,8 @@ jobs:
             --log-directory build/bios-ota-logs \
             --boot-timeout 1200
       - name: Prepare Recovery UKI for the Live Installer ISO
+        id: prepare_recovery
+        if: ${{ always() && steps.image_assets.outcome == 'success' }}
         run: |
           set -euo pipefail
           mapfile -t recovery_ukis < <(find mkosi.output -maxdepth 1 -type f -name 'veyra-recovery*.efi' -print)
@@ -446,6 +449,7 @@ jobs:
           fi
           install -D -m 0644 "${recovery_ukis[0]}" build/recovery-uki/veyra-recovery.efi
       - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.prepare_recovery.outcome == 'success' }}
         with:
           name: veyra-recovery-uki
           path: build/recovery-uki/veyra-recovery.efi
@@ -462,6 +466,7 @@ jobs:
 
   live-installer-iso:
     needs: build
+    if: ${{ always() && needs.build.result != 'cancelled' }}
     runs-on: ubuntu-24.04
     container:
       image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608

@@ -80,9 +80,12 @@ def main() -> int:
         "build-live-iso.sh",
         "VEYRA_FEDORA_BOOT_ISO",
         "sha256sum",
+        "always() && needs.build.result != 'cancelled'",
     ):
         if expected not in live_iso_job.group(1):
             return fail(f"the Live Installer job must include {expected!r}")
+    if "always() && steps.image_assets.outcome == 'success'" not in build_job.group(1):
+        return fail("the Recovery UKI must be uploaded after image composition even if an unrelated later test fails")
     installer_script = ROOT / "scripts/veyra-install.py"
     if not installer_script.is_file():
         return fail("the Live ISO needs an installer that composes the target from Fedora packages")
