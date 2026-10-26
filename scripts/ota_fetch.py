@@ -68,6 +68,14 @@ def fetch_asset(base_url: str, cache: Path, name: str, size: int) -> str:
     if offset > size:
         partial.unlink()
         offset = 0
+    # A complete .part may be left by a crash between fsync and rename.
+    # Verify and promote it without another network request.
+    if offset == size and compressed_digest(partial, name):
+        os.replace(partial, target)
+        return "cached"
+    if offset == size:
+        partial.unlink()
+        offset = 0
     url = base_url.rstrip("/") + "/" + name
     headers = {"Range": f"bytes={offset}-"} if offset else {}
     req = urllib.request.Request(url, headers=headers)
