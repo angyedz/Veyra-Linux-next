@@ -292,11 +292,9 @@ jobs:
           check systemd-sysupdate test -x /usr/lib/systemd/systemd-sysupdate
           check vpkg test -x /usr/bin/vpkg
           check vpkg-generation-helper test -x /usr/libexec/veyra-vpkg-initrd.py
-          check vpkg-generation-helper-mode sh -eu -c '
-            mode="$(stat -c %a /usr/libexec/veyra-vpkg-initrd.py)"
-            printf "Installed Vpkg initrd helper mode: %s\\n" "$mode"
-            test "$mode" = 755
-          '
+          helper_mode="$(stat -c %a /usr/libexec/veyra-vpkg-initrd.py)"
+          printf "Installed Vpkg initrd helper mode: %s\\n" "$helper_mode"
+          check vpkg-generation-helper-mode test "$helper_mode" = 755
           check vpkg-generation-helper-label matchpathcon -V /usr/libexec/veyra-vpkg-initrd.py
           check vpkg-generation-health-unit test -s /usr/lib/systemd/system/veyra-vpkg-check.service
           check vpkg-generation-health-label matchpathcon -V /usr/lib/systemd/system/veyra-vpkg-check.service
