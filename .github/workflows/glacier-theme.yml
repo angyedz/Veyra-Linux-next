@@ -5,6 +5,7 @@ on:
     paths:
       - 'mkosi.extra/usr/share/color-schemes/**'
       - 'mkosi.extra/usr/share/plasma/**'
+      - 'mkosi.extra/usr/share/wallpapers/**'
       - 'mkosi.extra/etc/xdg/**'
       - 'mkosi.extra/usr/bin/veyra-theme'
       - 'tests/test_glacier*.py'
@@ -14,6 +15,7 @@ on:
     paths:
       - 'mkosi.extra/usr/share/color-schemes/**'
       - 'mkosi.extra/usr/share/plasma/**'
+      - 'mkosi.extra/usr/share/wallpapers/**'
       - 'mkosi.extra/etc/xdg/**'
       - 'mkosi.extra/usr/bin/veyra-theme'
       - 'tests/test_glacier*.py'

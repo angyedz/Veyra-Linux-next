@@ -93,6 +93,22 @@ class GlacierAssetTests(unittest.TestCase):
         self.assertEqual(kwin["org.kde.kdecoration2"]["ButtonsOnLeft"], "")
         self.assertFalse((ROOT / "mkosi.extra/home").exists())
 
+    def test_day_night_wallpaper_package(self):
+        base = SHARE / "wallpapers/VeyraGlacier"
+        meta = json.loads((base / "metadata.json").read_text())
+        self.assertEqual(meta["KPlugin"]["Id"], base.name)
+        self.assertIn("Light", meta["X-KDE-PlasmaImageWallpaper-AccentColor"])
+        self.assertIn("Dark", meta["X-KDE-PlasmaImageWallpaper-AccentColor"])
+        for folder in ("images", "images_dark"):
+            root = ET.parse(base / "contents" / folder / "1920x1080.svg").getroot()
+            self.assertEqual(root.tag, SVG_NS + "svg")
+            self.assertEqual(root.get("viewBox"), "0 0 1920 1080")
+        for mode in ("light", "dark"):
+            package = SHARE / f"plasma/look-and-feel/org.veyra.glacier.{mode}/contents/defaults"
+            self.assertIn("Image=VeyraGlacier", package.read_text())
+            style = SHARE / f"plasma/desktoptheme/veyra-glacier-{mode}/plasmarc"
+            self.assertEqual(load_ini(style)["Wallpaper"]["defaultWallpaperTheme"], "VeyraGlacier")
+
     def test_safe_selector(self):
         selector = (ROOT / "mkosi.extra/usr/bin/veyra-theme").read_text()
         self.assertIn("plasma-apply-lookandfeel --apply", selector)

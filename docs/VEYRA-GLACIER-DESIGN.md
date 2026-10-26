@@ -1,42 +1,75 @@
-# Veyra Glacier — design system v0.2
+# Veyra Glacier — Plasma 6 visual system (v0.3)
 
-A native KDE Plasma 6 visual language inspired by the **principles** of
-Fluent and modern macOS: hierarchy, restraint, readable surfaces and depth.
-Not a Windows clone, not macOS traffic lights, and not a translucent-everywhere
-theme.
+Veyra Next ships a two-mode original desktop theme inspired by the **design
+principles** of Fluent: quiet visual hierarchy, modest rounded geometry,
+careful contrast, and consistent application surfaces. It is not a Windows
+or macOS clone. It does not include macOS traffic-light window controls.
 
-## Two modes
+## Included components
 
-- `VeyraGlacier.colors`: midnight navy surfaces, cool ice-blue accents.
-- `VeyraGlacierLight.colors`: pearl-white surfaces, slate text and blue accents.
+- `VeyraGlacier.colors` and `VeyraGlacierLight.colors`: tested KDE
+  color schemes (normal text/background contrast >= 4.5:1).
+- `/usr/share/plasma/desktoptheme/veyra-glacier-{dark,light}`: two
+  native Plasma styles with 9-slice vector surfaces for floating panels,
+  popups, desktop widgets, tooltips, task buttons, and selection states.
+  Missing components use the upstream Breeze fallback.
+- `/usr/share/plasma/look-and-feel/org.veyra.glacier.{dark,light}`: two
+  independently selectable KDE Global Themes bundling Plasma style,
+  icon style, color scheme and right-aligned native window controls.
+- `/usr/share/wallpapers/VeyraGlacier/`: original lightweight vector
+  wallpaper in both light and dark variants using Plasma's day/night
+  wallpaper package convention (`images/` and `images_dark/`).
+- `/usr/bin/veyra-theme`: unprivileged opt-in theme switcher.
 
-Both ship under `/usr/share/color-schemes`. The distribution default is
-dark, but users can switch in **System Settings → Colors** without a
-reboot. User overrides in `~/.config` must remain intact.
+## How to use
 
-## Visual contract
+Log in to the graphical KDE Plasma session. Either use **System Settings
+→ Colors & Themes → Global Theme → Veyra Glacier Dark/Light**, or run:
 
-- **Window buttons:** right aligned, conventional minimize / maximize /
-  close (`IAX`); never macOS red/yellow/green traffic-light controls.
-- **Spacing:** use KDE/Qt's native scaling and accessible hit targets;
-  avoid custom per-app overrides and tiny controls.
-- **Geometry:** modest corner rounding, not oversized pill shapes.
-- **Materials:** mostly opaque surfaces; reserve blur/translucency for
-  temporary menus and overlays after GPU cost is measured.
-- **Motion:** brief functional transitions only, respecting reduced-motion
-  preferences. Do not enable expensive effects just for screenshots.
-- **Typography:** native system font stack; no redistribution of
-  proprietary Apple/Microsoft fonts.
-- **Accessibility:** preserve keyboard focus, selection contrast and
-  KDE's high-contrast options.
+```sh
+veyra-theme dark
+veyra-theme light
+veyra-theme status
+```
 
-## Scope and next phases
+The selector refuses root users and headless sessions and applies KDE
+Global Theme packages through `plasma-apply-lookandfeel`. KDE's own
+day/night switching can also use the separately installed light and dark
+packages. This does **not** silently enable time-based automation.
+Users can keep their preferred wallpaper and choose components individually.
 
-Current implementation: two KDE/Qt color schemes, Breeze-based defaults,
-right-side window-control layout and source validation. This is **not yet**
-a complete custom Plasma SVG style, KWin decoration or Global Theme.
-Those should be implemented and tested in separate changes, including
-actual light/dark screenshots in a disposable Plasma Wayland session.
+The default distribution theme is Dark through `/etc/xdg/kdeglobals`
+and `/etc/xdg/plasmarc`. User files under `~/.config` are never
+overwritten by image construction. KDE may ask whether to apply its
+global theme components; selection is up to the user.
 
-No modifications to an existing user's home directory. No system services
-are disabled as a supposed performance optimization.
+## Invariants / ergonomics
+
+- **Titlebars:** right-hand Minimize / Maximize / Close, `IAX`.
+  No left-side traffic lights or titlebars stolen by maximized windows.
+- **Controls:** Breeze QStyle preserves tested hit targets, keyboard
+  navigation, accessibility, high-contrast alternatives, and app
+  compatibility. We theme the Plasma shell separately via SVG assets.
+- **Effects:** no custom QML animation loops, raster blur filters,
+  compositor hacks, forced translucency, user session services, or
+  permanently running helper daemons. No performance improvement is
+  claimed without cold-boot and frametime measurements.
+- **Wallpaper:** SVG graphics are static; Plasma's built-in image
+  plugin handles rendering and may dynamically select the light/dark
+  variant. Actual guest-visible image selection still needs QA.
+- **Independence:** UEFI, BIOS/CSM, OTA and Recovery boot logic are
+  outside the theme PR. Never modify the host bootloader.
+
+## Verification
+
+Source contract checks: `python3 -m unittest discover -s tests -p
+'test_glacier*.py' -v`. CI also builds the full Fedora 44 image and
+checks on-image files and KDE Global Theme registration in mkosi shell.
+
+**Visual QA still required before merging:** run a disposable Fedora 44
+KDE Plasma Wayland VM. Confirm both global themes appear in System
+Settings; switch dark → light → dark; check wallpaper changes, button
+position, Plasma panels and popups, disabled/reduced-motion preference,
+125%/200% scaling, and at least one non-Qt/GTK app. Check session logs
+for SVG or KPackage warnings. No real screenshots or measured speedups
+are claimed by these source tests.

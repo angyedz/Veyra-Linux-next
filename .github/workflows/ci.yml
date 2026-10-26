@@ -38,5 +38,22 @@ jobs:
           test -s /usr/share/veyra/branding/veyra-logo.svg
           test -L /etc/systemd/system/multi-user.target.wants/plasma-setup.service
           '
+      - name: Verify Glacier styles, wallpaper and global theme registration
+        run: |
+          sudo --preserve-env=PATH scripts/mkosi.sh shell -- sh -eu -c '
+            test -x /usr/bin/veyra-theme
+            test -s /usr/share/wallpapers/VeyraGlacier/contents/images/1920x1080.svg
+            test -s /usr/share/wallpapers/VeyraGlacier/contents/images_dark/1920x1080.svg
+            for mode in dark light; do
+              test -s "/usr/share/plasma/desktoptheme/veyra-glacier-$mode/metadata.json"
+              test -s "/usr/share/plasma/desktoptheme/veyra-glacier-$mode/widgets/panel-background.svg"
+              test -s "/usr/share/plasma/look-and-feel/org.veyra.glacier.$mode/metadata.json"
+              test -s "/usr/share/plasma/look-and-feel/org.veyra.glacier.$mode/contents/defaults"
+            done
+            command -v plasma-apply-lookandfeel
+            QT_QPA_PLATFORM=offscreen plasma-apply-lookandfeel --list | tee /tmp/veyra-theme-list
+            grep -Fx org.veyra.glacier.dark /tmp/veyra-theme-list
+            grep -Fx org.veyra.glacier.light /tmp/veyra-theme-list
+          '
       - name: Check that mkosi produced a disk image
         run: test -s mkosi.output/veyra-next.raw
