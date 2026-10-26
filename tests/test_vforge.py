@@ -117,6 +117,16 @@ class VforgeCommandTests(unittest.TestCase):
                     {"Destination": "/run/veyra-vforge/root.json", "RW": False},
                 ]})
 
+    def test_foreign_owned_base_archive_requires_a_read_only_mount(self) -> None:
+        ro = subprocess.CompletedProcess([], 0, "ro,relatime,trans=9p", "")
+        rw = subprocess.CompletedProcess([], 0, "rw,relatime,trans=9p", "")
+        with patch.object(vforge.subprocess, "run", return_value=ro):
+            self.assertTrue(vforge.archive_is_on_read_only_mount(Path("/run/vforge-base/base.tar")))
+        with patch.object(vforge.subprocess, "run", return_value=rw):
+            self.assertFalse(vforge.archive_is_on_read_only_mount(Path("/tmp/base.tar")))
+        with patch.object(vforge.subprocess, "run", side_effect=OSError("missing findmnt")):
+            self.assertFalse(vforge.archive_is_on_read_only_mount(Path("/tmp/base.tar")))
+
     def test_create_uses_fixed_image_and_network_none_without_mounts(self) -> None:
         with patch.object(vforge, "exists", return_value=False), \
              patch.object(vforge, "require_imported_veyra_base", return_value=self.BASE_IDENTITY), \

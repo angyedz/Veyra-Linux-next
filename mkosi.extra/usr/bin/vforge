@@ -505,12 +505,10 @@ def import_veyra_base(archive: Path) -> dict[str, str]:
         info = archive.stat()
     except OSError as error:
         raise VforgeError(f"Veyra OCI base archive is unavailable: {error}") from error
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid not in {0, os.geteuid()}
-        or stat.S_IMODE(info.st_mode) & 0o022
-    ):
-        raise VforgeError("Veyra OCI base archive must be a non-writable regular file owned by root or the current user")
+    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o022:
+        raise VforgeError("Veyra OCI base archive must be a regular file that is not group/world-writable")
+    if info.st_uid not in {0, os.geteuid()} and not archive_is_on_read_only_mount(archive):
+        raise VforgeError("a Veyra OCI base archive owned by another user must come from a read-only mount")
     podman_root = common_store_root() / "containers"
     verify_podman_overlay(podman_root)
     podman(["load", "--input", str(archive)], capture=True, root=podman_root)
@@ -556,6 +554,17 @@ def import_veyra_base(archive: Path) -> dict[str, str]:
     write_json_file(common_state_directory() / "veyra-base.json", state)
     print(f"Imported Veyra OCI base {identity['image_id']} {identity['image_version']} ({identity['base_digest']}).")
     return identity
+
+
+def archive_is_on_read_only_mount(archive: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["findmnt", "-n", "-o", "OPTIONS", "--target", str(archive)],
+            check=False, capture_output=True, text=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and "ro" in (result.stdout or "").strip().split(",")
 
 
 def require_imported_veyra_base(podman_root: Path | str | None = None) -> dict[str, str]:
