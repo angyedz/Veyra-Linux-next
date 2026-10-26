@@ -93,7 +93,7 @@ class VpkgSystemGenerationContractTests(unittest.TestCase):
             build.assert_not_called()
 
 
-class VpkgContainerModeContractTests(unittest.TestCase):
+class VpkgVforgeEnvironmentContractTests(unittest.TestCase):
     def _validate(self, root: Path, marker: Path, mountinfo: Path):
         original_stat = Path.stat
 
@@ -107,7 +107,7 @@ class VpkgContainerModeContractTests(unittest.TestCase):
 
         with patch.object(Path, "stat", autospec=True, side_effect=root_owned_stat):
             with patch.object(vpkg, "rpm_database_path", return_value=Path("/usr/lib/sysimage/rpm")):
-                return vpkg.validate_container_root(root, marker, mountinfo, root / "cmdline")
+                return vpkg.validate_vforge_environment(root, marker, mountinfo, root / "cmdline")
 
     def _fixture(self, temporary: str):
         root = Path(temporary)
@@ -134,22 +134,38 @@ class VpkgContainerModeContractTests(unittest.TestCase):
         mountinfo.write_text(f"31 1 0:1 / {marker} ro,relatime - tmpfs tmpfs ro\n", encoding="utf-8")
         return root, marker, mountinfo
 
-    def test_container_cli_is_separate_from_host_package_commands(self) -> None:
-        install = vpkg.build_parser().parse_args(["container", "install", "htop"])
-        remove = vpkg.build_parser().parse_args(["container", "remove", "htop"])
-        upgrade = vpkg.build_parser().parse_args(["container", "upgrade"])
-        self.assertEqual((install.command, install.container_command, install.packages),
-                         ("container", "install", ["htop"]))
-        self.assertEqual((remove.container_command, remove.packages), ("remove", ["htop"]))
-        self.assertEqual(upgrade.container_command, "upgrade")
+    def test_vforge_environment_uses_regular_package_verbs(self) -> None:
+        install = vpkg.build_parser().parse_args(["install", "htop"])
+        remove = vpkg.build_parser().parse_args(["remove", "htop"])
+        upgrade = vpkg.build_parser().parse_args(["upgrade"])
+        self.assertEqual((install.command, install.packages), ("install", ["htop"]))
+        self.assertEqual((remove.command, remove.packages), ("remove", ["htop"]))
+        self.assertEqual(upgrade.command, "upgrade")
+        parser = vpkg.build_parser()
+        self.assertNotIn("container", parser._subparsers._group_actions[0].choices)
 
-    def test_container_root_requires_private_marker_and_matching_veyra_identity(self) -> None:
+    def test_regular_package_verbs_route_to_vforge_only_with_its_marker(self) -> None:
+        with (
+            patch.object(vpkg, "vforge_marker_present", return_value=True),
+            patch.object(vpkg, "vforge_package_transaction") as transaction,
+        ):
+            self.assertEqual(vpkg.main(["install", "htop"]), 0)
+        transaction.assert_called_once_with("install", ["htop"])
+
+        with (
+            patch.object(vpkg, "vforge_marker_present", return_value=False),
+            patch.object(vpkg, "install") as host_install,
+        ):
+            self.assertEqual(vpkg.main(["install", "htop"]), 0)
+        host_install.assert_called_once_with(["htop"])
+
+    def test_vforge_environment_requires_private_marker_and_matching_veyra_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, marker, mountinfo = self._fixture(temporary)
             result = self._validate(root, marker, mountinfo)
             self.assertEqual(result["root_id"], "a" * 32)
 
-    def test_container_root_rejects_fedora_host_or_overlay_mounts(self) -> None:
+    def test_vforge_environment_rejects_fedora_host_or_overlay_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, marker, mountinfo = self._fixture(temporary)
             release = root / "usr/lib/os-release"
@@ -166,26 +182,26 @@ class VpkgContainerModeContractTests(unittest.TestCase):
                 "32 1 0:2 / /usr rw,relatime - fuse.overlay fuse.overlay rw\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(vpkg.VpkgReject, "container /usr"):
+            with self.assertRaisesRegex(vpkg.VpkgReject, "Vforge environment /usr"):
                 self._validate(root, marker, mountinfo)
 
-    def test_container_marker_must_be_read_only_mount(self) -> None:
+    def test_vforge_marker_must_be_read_only_mount(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, marker, mountinfo = self._fixture(temporary)
             mountinfo.write_text(f"31 1 0:1 / {marker} rw,relatime - tmpfs tmpfs rw\n", encoding="utf-8")
             with self.assertRaisesRegex(vpkg.VpkgReject, "mounted read-only"):
                 self._validate(root, marker, mountinfo)
 
-    def test_container_marker_must_match_active_verity_roothash(self) -> None:
+    def test_vforge_marker_must_match_active_verity_roothash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, marker, mountinfo = self._fixture(temporary)
             (root / "cmdline").write_text(f"quiet roothash={'c' * 64}\n", encoding="ascii")
             with self.assertRaisesRegex(vpkg.VpkgReject, "active dm-verity root hash"):
                 self._validate(root, marker, mountinfo)
 
-    def test_container_session_targets_root_and_private_state(self) -> None:
+    def test_vforge_session_targets_root_and_private_state(self) -> None:
         with patch.object(vpkg, "Session") as session_type:
-            vpkg.container_package_session(refresh=True)
+            vpkg.vforge_package_session(refresh=True)
         options = session_type.call_args.kwargs
         self.assertEqual(options["installroot"], Path("/"))
         self.assertEqual(options["repo_ids"], ("fedora", "updates", *vpkg.RPMFUSION_REPOS))
@@ -196,7 +212,7 @@ class VpkgContainerModeContractTests(unittest.TestCase):
         self.assertEqual(options["log_dir"], Path("/var/lib/veyra/vpkg/container/log"))
         self.assertFalse(options["no_scripts"])
 
-    def test_container_transaction_policy_rejects_protected_core_changes(self) -> None:
+    def test_vforge_package_transaction_policy_rejects_protected_core_changes(self) -> None:
         class Change:
             name = "glibc"
 
@@ -206,16 +222,16 @@ class VpkgContainerModeContractTests(unittest.TestCase):
         }
         with patch.object(vpkg, "read_json_object", return_value=policy):
             with self.assertRaisesRegex(vpkg.VpkgReject, "protected Veyra base packages"):
-                vpkg.validate_container_changes((Change(),))
+                vpkg.validate_vforge_changes((Change(),))
 
-    def test_container_transaction_stops_before_lock_when_root_guard_fails(self) -> None:
+    def test_vforge_package_transaction_stops_before_lock_when_root_guard_fails(self) -> None:
         with (
             patch.object(vpkg, "require_root"),
-            patch.object(vpkg, "validate_container_root", side_effect=vpkg.VpkgReject("invalid root")),
-            patch.object(vpkg, "with_container_lock") as lock,
+            patch.object(vpkg, "validate_vforge_environment", side_effect=vpkg.VpkgReject("invalid root")),
+            patch.object(vpkg, "with_vforge_lock") as lock,
         ):
             with self.assertRaisesRegex(vpkg.VpkgReject, "invalid root"):
-                vpkg.container_transaction("upgrade")
+                vpkg.vforge_package_transaction("upgrade")
         lock.assert_not_called()
 
 

@@ -39,10 +39,10 @@ RPMFUSION_REPOS = (
 CHANNEL_FILE = Path("/etc/veyra/vpkg/channel")
 VPKG_PUBLIC_KEY = Path("/usr/share/veyra/RPM-GPG-KEY-VEYRA")
 LOCK_FILE = Path("/run/lock/veyra-vpkg.lock")
-CONTAINER_LOCK_FILE = Path("/run/lock/veyra-vpkg-container.lock")
-CONTAINER_ROOT_MARKER = Path("/run/veyra-vforge/root.json")
-CONTAINER_STATE_DIR = Path("/var/lib/veyra/vpkg/container")
-CONTAINER_CACHE_DIR = Path("/var/cache/veyra/vpkg/container")
+VFORGE_LOCK_FILE = Path("/run/lock/veyra-vpkg-vforge.lock")
+VFORGE_ROOT_MARKER = Path("/run/veyra-vforge/root.json")
+VFORGE_STATE_DIR = Path("/var/lib/veyra/vpkg/container")
+VFORGE_CACHE_DIR = Path("/var/cache/veyra/vpkg/container")
 PROC_MOUNTINFO = Path("/proc/self/mountinfo")
 PACKAGE_EXTENSION_DIR = Path("/var/lib/extensions")
 SYSTEM_EXTENSION_LINK_DIR = Path("/etc/extensions")
@@ -242,7 +242,7 @@ def _mountinfo_mounts(mountinfo: str) -> dict[str, set[str]]:
     for line in mountinfo.splitlines():
         fields = line.split(" - ", 1)[0].split()
         if len(fields) < 6:
-            raise VpkgError("Container mount information is malformed.")
+            raise VpkgError("Vforge mount information is malformed.")
         mountpoint = fields[4]
         for escaped, value in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
             mountpoint = mountpoint.replace(escaped, value)
@@ -250,12 +250,12 @@ def _mountinfo_mounts(mountinfo: str) -> dict[str, set[str]]:
     return mounts
 
 
-def _read_container_release_identity(root: Path) -> tuple[str, str, str, str]:
+def _read_vforge_release_identity(root: Path) -> tuple[str, str, str, str]:
     release_file = resolve_path_in_root(root, "/usr/lib/os-release")
     try:
         lines = release_file.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
-        raise VpkgError("Cannot read the container Veyra deployment identity.") from error
+        raise VpkgError("Cannot read the Vforge deployment identity.") from error
     wanted = {"ID", "VERSION_ID", "IMAGE_ID", "IMAGE_VERSION"}
     fields: dict[str, str] = {}
     for line in lines:
@@ -266,26 +266,26 @@ def _read_container_release_identity(root: Path) -> tuple[str, str, str, str]:
         if key not in wanted:
             continue
         if key in fields:
-            raise VpkgError(f"Container os-release contains duplicate {key} fields.")
+            raise VpkgError(f"Vforge os-release contains duplicate {key} fields.")
         try:
             values = shlex.split(raw, comments=True, posix=True)
         except ValueError as error:
-            raise VpkgError(f"Container os-release has malformed {key} syntax.") from error
+            raise VpkgError(f"Vforge os-release has malformed {key} syntax.") from error
         if len(values) != 1 or not values[0]:
-            raise VpkgError(f"Container os-release has an invalid {key} value.")
+            raise VpkgError(f"Vforge os-release has an invalid {key} value.")
         fields[key] = values[0]
     if set(fields) != wanted:
-        raise VpkgError("Container root lacks a complete Veyra deployment identity.")
+        raise VpkgError("Vforge environment lacks a complete Veyra deployment identity.")
     if fields["ID"] != "fedora" or fields["VERSION_ID"] != FEDORA_RELEASE:
-        raise VpkgReject("REJECT: vpkg container requires a Fedora 44 Veyra rootfs.")
+        raise VpkgReject("REJECT: Vforge requires a Fedora 44 Veyra environment.")
     if fields["IMAGE_ID"] != "veyra-next" or not re.fullmatch(r"[A-Za-z0-9._+-]+", fields["IMAGE_VERSION"]):
         raise VpkgReject("REJECT: rootfs is not a supported Veyra deployment.")
     return fields["ID"], fields["VERSION_ID"], fields["IMAGE_ID"], fields["IMAGE_VERSION"]
 
 
-def validate_container_root(
+def validate_vforge_environment(
     root: Path = Path("/"),
-    marker_path: Path = CONTAINER_ROOT_MARKER,
+    marker_path: Path = VFORGE_ROOT_MARKER,
     mountinfo_path: Path = PROC_MOUNTINFO,
     cmdline_path: Path = Path("/proc/cmdline"),
 ) -> dict[str, object]:
@@ -295,11 +295,11 @@ def validate_container_root(
         marker_stat = marker_path.stat(follow_symlinks=False)
         marker = read_json_object(marker_path, "Vforge Veyra root marker")
     except (OSError, VpkgError) as error:
-        raise VpkgReject(f"REJECT: Veyra container root marker is unavailable: {error}") from error
+        raise VpkgReject(f"REJECT: Vforge root marker is unavailable: {error}") from error
     mounts = _mountinfo_mounts(mountinfo)
     marker_mount = mounts.get(str(marker_path))
     if marker_mount is None or "ro" not in marker_mount:
-        raise VpkgReject("REJECT: Vforge root marker must be mounted read-only into the container.")
+        raise VpkgReject("REJECT: Vforge root marker must be mounted read-only into the environment.")
     if not stat.S_ISREG(marker_stat.st_mode) or marker_stat.st_uid != 0 or marker_stat.st_mode & 0o222:
         raise VpkgReject("REJECT: Vforge root marker must be a root-owned, read-only regular file.")
     required_fields = {
@@ -329,35 +329,35 @@ def validate_container_root(
     active_roothashes = re.findall(r"(?:^|\s)roothash=([0-9a-f]{64})(?:\s|$)", command_line)
     if len(active_roothashes) != 1 or marker["base_digest"] != active_roothashes[0]:
         raise VpkgReject("REJECT: Vforge marker does not match the active dm-verity root hash.")
-    _, _, image_id, image_version = _read_container_release_identity(root)
+    _, _, image_id, image_version = _read_vforge_release_identity(root)
     if marker["image_id"] != image_id or marker["image_version"] != image_version:
         raise VpkgReject("REJECT: Vforge marker identity does not match the mounted Veyra rootfs.")
     if any(path == "/usr" or path.startswith("/usr/") for path in mounts):
-        raise VpkgReject("REJECT: container /usr and RPM database must come from the private Veyra OverlayFS rootfs.")
+        raise VpkgReject("REJECT: Vforge environment /usr and RPM database must come from the private Veyra OverlayFS rootfs.")
     database = rpm_database_path(root)
     expected_db = root / "usr/lib/sysimage/rpm"
     if database != Path("/usr/lib/sysimage/rpm") or any(
         path == "/usr/lib/sysimage/rpm" or path.startswith("/usr/lib/sysimage/rpm/")
         for path in mounts
     ):
-        raise VpkgReject("REJECT: container RPM database must be private at /usr/lib/sysimage/rpm.")
+        raise VpkgReject("REJECT: Vforge environment RPM database must be private at /usr/lib/sysimage/rpm.")
     if not expected_db.is_dir():
-        raise VpkgReject("REJECT: private container RPM database directory is missing.")
+        raise VpkgReject("REJECT: private Vforge environment RPM database directory is missing.")
     private_dirs = (
         expected_db,
-        CONTAINER_STATE_DIR,
-        CONTAINER_STATE_DIR / "history",
-        CONTAINER_STATE_DIR / "persist",
-        CONTAINER_STATE_DIR / "state",
-        CONTAINER_STATE_DIR / "log",
-        CONTAINER_CACHE_DIR,
+        VFORGE_STATE_DIR,
+        VFORGE_STATE_DIR / "history",
+        VFORGE_STATE_DIR / "persist",
+        VFORGE_STATE_DIR / "state",
+        VFORGE_STATE_DIR / "log",
+        VFORGE_CACHE_DIR,
     )
     for directory in private_dirs:
         if directory.resolve(strict=False) != directory:
             raise VpkgReject(f"REJECT: private Veyra package path resolves outside its root: {directory}")
-    for directory in (CONTAINER_STATE_DIR, CONTAINER_CACHE_DIR):
+    for directory in (VFORGE_STATE_DIR, VFORGE_CACHE_DIR):
         if directory == Path("/") or not str(directory).startswith("/var/"):
-            raise VpkgError("Internal error: container Vpkg state path is not private under /var.")
+            raise VpkgError("Internal error: Vforge package state path is not private under /var.")
         if any(
             mountpoint != "/"
             and (mountpoint == "/var"
@@ -366,8 +366,19 @@ def validate_container_root(
             or mountpoint.startswith(str(directory).rstrip("/") + "/"))
             for mountpoint in mounts
         ):
-            raise VpkgReject("REJECT: container Vpkg state and cache must remain in the private Veyra rootfs overlay.")
+            raise VpkgReject("REJECT: Vforge package state and cache must remain in the private Veyra rootfs overlay.")
     return marker
+
+
+def vforge_marker_present() -> bool:
+    """Detect a Vforge root without treating an invalid marker as a host context."""
+    try:
+        VFORGE_ROOT_MARKER.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise VpkgError(f"Cannot inspect the Vforge environment marker: {error}") from error
+    return True
 
 
 def run(
@@ -617,28 +628,28 @@ def package_session(
         raise VpkgError(f"Could not initialize the libdnf5 package session: {error}") from error
 
 
-def container_package_session(refresh: bool = False) -> Session:
+def vforge_package_session(refresh: bool = False) -> Session:
     """Create a libdnf session whose installroot and all mutable state are this Veyra root."""
     try:
         return Session(
             installroot=Path("/"),
             releasever=FEDORA_RELEASE,
             repo_ids=selected_repo_ids(None, include_rpmfusion=True, include_upstream=True, include_veyra=False),
-            cache_dir=CONTAINER_CACHE_DIR,
-            history_dir=CONTAINER_STATE_DIR / "history",
-            persist_dir=CONTAINER_STATE_DIR / "persist",
-            state_dir=CONTAINER_STATE_DIR / "state",
-            log_dir=CONTAINER_STATE_DIR / "log",
+            cache_dir=VFORGE_CACHE_DIR,
+            history_dir=VFORGE_STATE_DIR / "history",
+            persist_dir=VFORGE_STATE_DIR / "persist",
+            state_dir=VFORGE_STATE_DIR / "state",
+            log_dir=VFORGE_STATE_DIR / "log",
             no_scripts=False,
             refresh=refresh,
         )
     except LibdnfError as error:
         raise VpkgError(str(error)) from error
     except Exception as error:
-        raise VpkgError(f"Could not initialize the private container libdnf5 session: {error}") from error
+        raise VpkgError(f"Could not initialize the Vforge libdnf5 session: {error}") from error
 
 
-def container_protected_packages() -> tuple[set[str], tuple[str, ...]]:
+def vforge_protected_packages() -> tuple[set[str], tuple[str, ...]]:
     """Read only the stable protected-package policy, independent of generation policy sections."""
     policy = read_json_object(VPKG_POLICY_FILE, "protected-core policy")
     packages = policy.get("protected_packages")
@@ -657,12 +668,12 @@ def container_protected_packages() -> tuple[set[str], tuple[str, ...]]:
     return set(names), tuple(prefixes)
 
 
-def validate_container_changes(changes) -> None:
-    protected_names, protected_prefixes = container_protected_packages()
+def validate_vforge_changes(changes) -> None:
+    protected_names, protected_prefixes = vforge_protected_packages()
     changed = sorted({item.name for item in changes if item.name in protected_names or item.name.startswith(protected_prefixes)})
     if changed:
         raise VpkgReject(
-            "REJECT: container transaction would change protected Veyra base packages: "
+            "REJECT: Vforge package transaction would change protected Veyra base packages: "
             + ", ".join(changed)
         )
 
@@ -3090,45 +3101,45 @@ def with_lock(action) -> None:
         action()
 
 
-def with_container_lock(action) -> None:
-    CONTAINER_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with CONTAINER_LOCK_FILE.open("w", encoding="utf-8") as lock:
+def with_vforge_lock(action) -> None:
+    VFORGE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with VFORGE_LOCK_FILE.open("w", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         action()
 
 
-def container_transaction(action: str, packages: list[str] | None = None) -> None:
-    """Mutate only the private Veyra rootfs and its private Vpkg state."""
+def vforge_package_transaction(action: str, packages: list[str] | None = None) -> None:
+    """Mutate only the selected Vforge environment and its private Vpkg state."""
     require_root()
-    validate_container_root()
+    validate_vforge_environment()
     if action in {"install", "remove"}:
         if not packages:
-            raise VpkgError(f"vpkg container {action} requires at least one package specification.")
+            raise VpkgError(f"Vforge package {action} requires at least one package specification.")
         if any(not isinstance(spec, str) or not spec or spec.startswith("-") or "/" in spec or "\x00" in spec for spec in packages):
-            raise VpkgError("Container package specifications must be package names or NEVRAs.")
+            raise VpkgError("Vforge package specifications must be package names or NEVRAs.")
     elif action != "upgrade":
-        raise VpkgError(f"Unsupported container package action: {action}")
+        raise VpkgError(f"Unsupported Vforge package action: {action}")
 
     def transaction() -> None:
         # Recheck under the private lock immediately before opening libdnf.
-        validate_container_root()
-        for directory in (CONTAINER_STATE_DIR, CONTAINER_CACHE_DIR):
+        validate_vforge_environment()
+        for directory in (VFORGE_STATE_DIR, VFORGE_CACHE_DIR):
             directory.mkdir(mode=0o755, parents=True, exist_ok=True)
-        session = container_package_session(refresh=True)
+        session = vforge_package_session(refresh=True)
         try:
             result = session.resolve(
                 action,
                 packages or (),
-                validate_changes=validate_container_changes,
+                validate_changes=validate_vforge_changes,
             )
         except LibdnfError as error:
             raise VpkgError(str(error)) from error
         if not result.changes:
-            print("Container packages are already up to date." if action == "upgrade" else "No container package changes.")
+            print("Vforge packages are already up to date." if action == "upgrade" else "No Vforge package changes.")
             return
-        print(f"Applied {len(result.changes)} package change(s) to the private Veyra container root.")
+        print(f"Applied {len(result.changes)} package change(s) to the Vforge environment.")
 
-    with_container_lock(transaction)
+    with_vforge_lock(transaction)
 
 
 def set_channel(channel: str) -> None:
@@ -3341,6 +3352,17 @@ def list_installed_app_packages() -> None:
 
 
 def package_query(channel: str | None = None, *, available: bool = True):
+    if vforge_marker_present():
+        require_root()
+        validate_vforge_environment()
+        try:
+            session = vforge_package_session()
+        except LibdnfError as error:
+            raise VpkgError(str(error)) from error
+        query = session.libdnf5.rpm.PackageQuery(session.base)
+        if available:
+            query.filter_available()
+        return session, query
     try:
         session = package_session(
             Path("/"),
@@ -3450,14 +3472,6 @@ def build_parser() -> argparse.ArgumentParser:
     system_upgrade = system_commands.add_parser("upgrade", help="stage a Fedora system package upgrade")
     system_commands.add_parser("rollback", help="select the previous native system generation")
 
-    container = commands.add_parser("container", help="manage packages in a private Veyra OverlayFS root")
-    container_commands = container.add_subparsers(dest="container_command", required=True)
-    container_install = container_commands.add_parser("install", help="install packages into the Veyra container root")
-    container_install.add_argument("packages", nargs="+")
-    container_remove = container_commands.add_parser("remove", help="remove packages from the Veyra container root")
-    container_remove.add_argument("packages", nargs="+")
-    container_commands.add_parser("upgrade", help="upgrade packages in the Veyra container root")
-
     commands.add_parser("upgrade", help="upgrade installed Veyra extensions and app-layer packages")
     commands.add_parser("rollback", help="restore the previous app-layer generation")
     pin = commands.add_parser("pin", help="pin a repository app to an exact RPM EVR")
@@ -3487,6 +3501,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        if arguments.command in {"install", "remove", "upgrade"} and vforge_marker_present():
+            vforge_package_transaction(arguments.command, getattr(arguments, "packages", None))
+            return 0
         if arguments.command == "channel":
             if arguments.name:
                 set_channel(arguments.name)
@@ -3516,8 +3533,6 @@ def main(argv: list[str] | None = None) -> int:
                 rollback_system_generation()
             else:
                 stage_system_generation(arguments.system_command, getattr(arguments, "packages", []))
-        elif arguments.command == "container":
-            container_transaction(arguments.container_command, getattr(arguments, "packages", None))
         elif arguments.command == "upgrade":
             upgrade()
         elif arguments.command == "rollback":
