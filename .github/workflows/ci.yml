@@ -244,10 +244,8 @@ jobs:
             mkosi.extra/usr/libexec/veyra-vpkg-stage-recovery
           sudo install -D -m 0644 tests/fixtures/firmware/veyra-bios-ci.service \
             mkosi.extra/usr/lib/systemd/system/veyra-bios-ci.service
-          sudo install -d -m 0755 \
-            mkosi.extra/etc/systemd/system/graphical.target.wants
-          sudo ln -s /usr/lib/systemd/system/veyra-bios-ci.service \
-            mkosi.extra/etc/systemd/system/graphical.target.wants/veyra-bios-ci.service
+          printf '%s\n' 'enable veyra-bios-ci.service' | sudo tee \
+            mkosi.extra/usr/lib/systemd/system-preset/99-veyra-ci.preset >/dev/null
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
       - name: Gate root, UKI and core RPMs on Fedora 44
