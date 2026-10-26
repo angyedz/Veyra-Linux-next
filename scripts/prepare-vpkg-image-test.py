@@ -75,6 +75,7 @@ def unit_test_sources() -> list[pathlib.Path]:
         pathlib.Path("mkosi.extra/usr/bin/vpkg"),
         pathlib.Path("mkosi.extra/usr/lib/veyra/veyra_repo.py"),
         pathlib.Path("mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"),
+        pathlib.Path("mkosi.extra/usr/libexec/veyra-vpkg-initrd.py"),
         pathlib.Path("mkosi.extra/usr/share/veyra/vpkg/protected-core.json"),
         pathlib.Path("mkosi.extra/usr/lib/sysupdate.d/10-root-verity.transfer"),
         pathlib.Path("mkosi.extra/usr/lib/sysupdate.d/20-root.transfer"),

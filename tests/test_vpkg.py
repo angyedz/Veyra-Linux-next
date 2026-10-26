@@ -20,6 +20,78 @@ vpkg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vpkg)
 
 
+class VpkgSystemGenerationContractTests(unittest.TestCase):
+    def test_system_transaction_overlay_includes_active_parent_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            generation = root / "generation-candidate"
+            parent = root / "generation-parent"
+            for path in (
+                generation / "upper/usr", generation / "upper/etc",
+                generation / ".transaction-work/usr", generation / ".transaction-work/etc",
+                parent / "upper/usr", parent / "upper/etc",
+            ):
+                path.mkdir(parents=True)
+            with patch.object(vpkg, "run") as run:
+                vpkg.mount_system_transaction_root(
+                    generation,
+                    (parent / "upper/usr",),
+                    (parent / "upper/etc",),
+                )
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "mount", "-t", "overlay", "overlay", "-o",
+                f"lowerdir={parent / 'upper/usr'}:/usr,upperdir={generation / 'upper/usr'},"
+                f"workdir={generation / '.transaction-work/usr'},index=off,metacopy=off,redirect_dir=off",
+                str(generation / ".transaction-root/usr"),
+            ])
+            self.assertEqual(run.call_args_list[1].args[0], [
+                "mount", "-t", "overlay", "overlay", "-o",
+                f"lowerdir={parent / 'upper/etc'}:/etc,upperdir={generation / 'upper/etc'},"
+                f"workdir={generation / '.transaction-work/etc'},index=off,metacopy=off,redirect_dir=off",
+                str(generation / ".transaction-root/etc"),
+            ])
+
+    def test_system_transaction_cli_requires_explicit_action_and_packages(self) -> None:
+        parsed = vpkg.build_parser().parse_args(["system", "install", "htop"])
+        self.assertEqual((parsed.command, parsed.system_command, parsed.packages),
+                         ("system", "install", ["htop"]))
+        parsed = vpkg.build_parser().parse_args(["system", "upgrade"])
+        self.assertEqual(parsed.system_command, "upgrade")
+        with self.assertRaises(SystemExit):
+            vpkg.build_parser().parse_args(["system", "upgrade", "htop"])
+
+    def test_system_mutation_stops_at_shared_ota_lock_before_resolution(self) -> None:
+        with (
+            patch.object(vpkg, "require_root"),
+            patch.object(vpkg, "with_lock", side_effect=lambda action: action()),
+            patch.object(vpkg, "require_no_pending_update", side_effect=vpkg.VpkgError("OTA pending")),
+            patch.object(vpkg, "validate_user_package_name"),
+            patch.object(vpkg, "running_deployment_roothash") as identity,
+        ):
+            with self.assertRaisesRegex(vpkg.VpkgError, "OTA pending"):
+                vpkg.stage_system_generation("install", ["htop"])
+        identity.assert_not_called()
+
+    def test_ota_candidate_preparation_rejects_system_trial_before_solving(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base_root = root / "candidate-base"
+            base_root.mkdir()
+            layers = root / "app-layers"
+            layers.mkdir()
+            output = layers / "candidate"
+            with (
+                patch.object(vpkg, "fedora_release_from_root", return_value="44"),
+                patch.object(vpkg, "USER_APP_LAYER_DIR", layers),
+                patch.object(vpkg, "load_pending_update", return_value=None),
+                patch.object(vpkg, "load_staged_package_trial", return_value=None),
+                patch.object(vpkg, "load_system_generation_trial", return_value={"state": "pending"}),
+                patch.object(vpkg, "build_user_app_generation") as build,
+            ):
+                with self.assertRaisesRegex(vpkg.VpkgError, "system-generation trial"):
+                    vpkg.prepare_for_base(base_root, "a" * 64, output)
+            build.assert_not_called()
+
 
 class VpkgContainerModeContractTests(unittest.TestCase):
     def _validate(self, root: Path, marker: Path, mountinfo: Path):

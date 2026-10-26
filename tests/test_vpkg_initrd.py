@@ -131,20 +131,78 @@ class VpkgInitrdGenerationTests(unittest.TestCase):
             parent = initrd.ensure_base_generation(sysroot, "a" * 64, "0.1.7")
 
             trial = initrd.create_trial_generation(sysroot, "a" * 64, "0.1.7")
+            manifest = json.loads((trial / "manifest.json").read_text(encoding="utf-8"))
+            usr_layers, etc_layers = initrd.generation_parent_layers(trial, "a" * 64, "0.1.7")
+            self.assertEqual(manifest["parent_generation"], parent.name)
+            self.assertEqual(list((trial / "upper/usr").iterdir()), [trial / "upper/usr/lib"])
+            self.assertEqual(usr_layers, (parent / "upper/usr",))
+            self.assertEqual(etc_layers, (parent / "upper/etc",))
+            origin_boot = "11111111-1111-4111-8111-111111111111"
+            trial_boot = "22222222-2222-4222-8222-222222222222"
+            initrd.write_system_trial(sysroot, {
+                "schema": 1,
+                "kind": "system-generation",
+                "roothash": "a" * 64,
+                "version": "0.1.7",
+                "generation_id": trial.name,
+                "parent_generation": parent.name,
+                "origin_boot_id": origin_boot,
+                "attempts": 0,
+                "state": "pending",
+            })
+            selected_before_reboot = initrd.select_generation_for_boot(
+                sysroot, "a" * 64, "0.1.7", f"roothash={'a' * 64}", origin_boot
+            )
+            self.assertEqual(selected_before_reboot, parent)
             selected = initrd.select_generation_for_boot(
-                sysroot,
-                "a" * 64,
-                "0.1.7",
-                f"roothash={'a' * 64} veyra.vpkg-generation={trial.name}",
+                sysroot, "a" * 64, "0.1.7", f"roothash={'a' * 64}", trial_boot
             )
             self.assertEqual(selected, trial)
             self.assertEqual((parent.parent / "active").resolve(), parent)
+            self.assertEqual(initrd.read_system_trial(sysroot)["attempts"], 1)
 
-            initrd.complete_trial_generation(sysroot, "a" * 64, "0.1.7", trial.name)
+            initrd.complete_system_trial(sysroot, "a" * 64, "0.1.7", trial_boot)
             self.assertEqual((parent.parent / "active").resolve(), trial)
+            self.assertIsNone(initrd.read_system_trial(sysroot))
             rolled_back = initrd.rollback_generation(sysroot, "a" * 64, "0.1.7")
             self.assertEqual(rolled_back, parent)
             self.assertEqual((parent.parent / "active").resolve(), parent)
+
+    def test_unhealthy_trial_falls_back_to_active_generation_on_next_boot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            sysroot = Path(temporary) / "sysroot"
+            rpmdb = sysroot / "usr/lib/sysimage/rpm"
+            rpmdb.mkdir(parents=True)
+            (rpmdb / "Packages.db").write_bytes(b"base rpm db")
+            (sysroot / "etc").mkdir()
+            (sysroot / "var").mkdir()
+            parent = initrd.ensure_base_generation(sysroot, "a" * 64, "0.1.7")
+            trial = initrd.create_trial_generation(sysroot, "a" * 64, "0.1.7")
+            initrd.write_system_trial(sysroot, {
+                "schema": 1,
+                "kind": "system-generation",
+                "roothash": "a" * 64,
+                "version": "0.1.7",
+                "generation_id": trial.name,
+                "parent_generation": parent.name,
+                "origin_boot_id": "11111111-1111-4111-8111-111111111111",
+                "attempts": 0,
+                "state": "pending",
+            })
+
+            first_boot = initrd.select_generation_for_boot(
+                sysroot, "a" * 64, "0.1.7", "roothash=" + "a" * 64,
+                "22222222-2222-4222-8222-222222222222",
+            )
+            fallback = initrd.select_generation_for_boot(
+                sysroot, "a" * 64, "0.1.7", "roothash=" + "a" * 64,
+                "33333333-3333-4333-8333-333333333333",
+            )
+
+            self.assertEqual(first_boot, trial)
+            self.assertEqual(fallback, parent)
+            self.assertEqual((parent.parent / "active").resolve(), parent)
+            self.assertEqual(initrd.read_system_trial(sysroot)["state"], "failed")
 
     def test_foreign_or_corrupt_trial_is_rejected_without_changing_active(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -161,6 +219,69 @@ class VpkgInitrdGenerationTests(unittest.TestCase):
                 initrd.read_generation(trial.parent, trial.name, "b" * 64, "0.1.7")
             self.assertEqual((parent.parent / "active").resolve(), parent)
 
+            initrd.write_system_trial(sysroot, {
+                "schema": 1,
+                "kind": "system-generation",
+                "roothash": "a" * 64,
+                "version": "0.1.7",
+                "generation_id": trial.name,
+                "parent_generation": parent.name,
+                "origin_boot_id": "11111111-1111-4111-8111-111111111111",
+                "attempts": 0,
+                "state": "pending",
+            })
+            (trial / "upper/usr/lib/sysimage/rpm/Packages.db").write_bytes(b"corrupted")
+            selected = initrd.select_generation_for_boot(
+                sysroot,
+                "a" * 64,
+                "0.1.7",
+                "roothash=" + "a" * 64,
+                "22222222-2222-4222-8222-222222222222",
+            )
+            self.assertEqual(selected, parent)
+            self.assertEqual((parent.parent / "active").resolve(), parent)
+            self.assertEqual(initrd.read_system_trial(sysroot)["state"], "failed")
+
+    def test_active_usr_upper_digest_detects_payload_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            sysroot = Path(temporary) / "sysroot"
+            rpmdb = sysroot / "usr/lib/sysimage/rpm"
+            rpmdb.mkdir(parents=True)
+            (rpmdb / "Packages.db").write_bytes(b"base rpm db")
+            (sysroot / "etc").mkdir()
+            (sysroot / "var").mkdir()
+            generation = initrd.ensure_base_generation(sysroot, "a" * 64, "0.1.7")
+            payload = generation / "upper/usr/bin/example"
+            payload.parent.mkdir(parents=True)
+            payload.write_text("tampered", encoding="utf-8")
+
+            with self.assertRaisesRegex(initrd.InitrdError, "/usr upper failed its integrity check"):
+                initrd.read_active_generation(generation.parent, "a" * 64, "0.1.7")
+
+    def test_unbooted_trial_can_be_cancelled_without_changing_active_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            sysroot = Path(temporary) / "sysroot"
+            rpmdb = sysroot / "usr/lib/sysimage/rpm"
+            rpmdb.mkdir(parents=True)
+            (rpmdb / "Packages.db").write_bytes(b"base rpm db")
+            (sysroot / "etc").mkdir()
+            (sysroot / "var").mkdir()
+            parent = initrd.ensure_base_generation(sysroot, "a" * 64, "0.1.7")
+            trial = initrd.create_trial_generation(sysroot, "a" * 64, "0.1.7")
+            boot_id = "11111111-1111-4111-8111-111111111111"
+            initrd.write_system_trial(sysroot, {
+                "schema": 1, "kind": "system-generation", "roothash": "a" * 64,
+                "version": "0.1.7", "generation_id": trial.name,
+                "parent_generation": parent.name, "origin_boot_id": boot_id,
+                "attempts": 0, "state": "pending",
+            })
+
+            initrd.cancel_unbooted_trial(sysroot, "a" * 64, "0.1.7", boot_id)
+
+            self.assertEqual((parent.parent / "active").resolve(), parent)
+            self.assertFalse(trial.exists())
+            self.assertIsNone(initrd.read_system_trial(sysroot))
+
     def test_mounts_generation_owned_usr_and_etc_uppers_before_switch_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             sysroot = Path(temporary) / "sysroot"
@@ -172,19 +293,31 @@ class VpkgInitrdGenerationTests(unittest.TestCase):
                 (generation / relative if relative.startswith(("upper", "work")) else sysroot / relative).mkdir(
                     parents=True, exist_ok=True
                 )
+            parent = sysroot / "var/lib/veyra/vpkg/system-generations/id/generation-parent"
+            parent_usr = parent / "upper/usr"
+            parent_etc = parent / "upper/etc"
+            parent_usr.mkdir(parents=True)
+            parent_etc.mkdir(parents=True)
             with patch.object(initrd.subprocess, "run") as run:
-                initrd.mount_generation(sysroot, generation)
+                initrd.mount_generation(
+                    sysroot,
+                    generation,
+                    parent_usr_layers=(parent_usr,),
+                    parent_etc_layers=(parent_etc,),
+                )
 
             self.assertEqual(run.call_args_list, [
                 call(
                     ["mount", "-t", "overlay", "overlay", "-o",
-                     f"lowerdir={sysroot}/usr,upperdir={generation}/upper/usr,workdir={generation}/work/usr",
+                     f"lowerdir={parent_usr}:{sysroot}/usr,upperdir={generation}/upper/usr,workdir={generation}/work/usr,"
+                     "index=off,metacopy=off,redirect_dir=off,ro",
                      str(sysroot / "usr")],
                     check=True,
                 ),
                 call(
                     ["mount", "-t", "overlay", "overlay", "-o",
-                     f"lowerdir={sysroot}/etc,upperdir={generation}/upper/etc,workdir={generation}/work/etc",
+                     f"lowerdir={parent_etc}:{sysroot}/etc,upperdir={generation}/upper/etc,workdir={generation}/work/etc,"
+                     "index=off,metacopy=off,redirect_dir=off",
                      str(sysroot / "etc")],
                     check=True,
                 ),
@@ -218,7 +351,7 @@ class VpkgInitrdGenerationTests(unittest.TestCase):
             ), self.assertRaisesRegex(initrd.InitrdError, "mounted EFI System Partition"):
                 initrd.selected_uki_path(root / "sysroot", efi_roots=(root / "efi",))
 
-    def test_trial_copy_preserves_system_symlink_payloads_without_following_them(self) -> None:
+    def test_trial_generation_keeps_parent_layer_without_copying_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             sysroot = Path(temporary) / "sysroot"
             rpmdb = sysroot / "usr/lib/sysimage/rpm"
@@ -227,12 +360,10 @@ class VpkgInitrdGenerationTests(unittest.TestCase):
             (sysroot / "etc").mkdir()
             (sysroot / "var").mkdir()
             parent = initrd.ensure_base_generation(sysroot, "a" * 64, "0.1.7")
-            (parent / "upper/usr/lib64").symlink_to("lib")
 
             trial = initrd.create_trial_generation(sysroot, "a" * 64, "0.1.7")
 
-            self.assertTrue((trial / "upper/usr/lib64").is_symlink())
-            self.assertEqual((trial / "upper/usr/lib64").readlink(), Path("lib"))
+            self.assertEqual(list((trial / "upper/usr").iterdir()), [trial / "upper/usr/lib"])
 
 
 if __name__ == "__main__":

@@ -341,9 +341,18 @@ def main() -> int:
     initrd_config = ROOT / "mkosi.images/initrd/mkosi.conf"
     initrd_unit = ROOT / "mkosi.images/initrd/mkosi.extra/usr/lib/systemd/system/veyra-vpkg-generations.service"
     initrd_helper = ROOT / "mkosi.images/initrd/mkosi.extra/usr/libexec/veyra-vpkg-initrd.py"
+    rootfs_helper = ROOT / "mkosi.extra/usr/libexec/veyra-vpkg-initrd.py"
+    health_unit = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-check.service"
     initrd_wants = ROOT / "mkosi.images/initrd/mkosi.extra/usr/lib/systemd/system/initrd-root-fs.target.requires/veyra-vpkg-generations.service"
-    if not all(path.is_file() for path in (initrd_config, initrd_unit, initrd_helper)):
-        return fail("the initrd must contain the vpkg system-generation boot backend")
+    if not all(path.is_file() for path in (initrd_config, initrd_unit, initrd_helper, rootfs_helper, health_unit)):
+        return fail("the root image and initrd must contain the vpkg system-generation boot backend")
+    if initrd_helper.read_bytes() != rootfs_helper.read_bytes():
+        return fail("the root image and initrd generation helpers must be byte-for-byte identical")
+    if not all(path.stat().st_mode & 0o111 for path in (initrd_helper, rootfs_helper)):
+        return fail("both generation helper copies must be executable")
+    health_content = health_unit.read_text(encoding="utf-8")
+    if "After=graphical.target" not in health_content or "ExecStart=/usr/bin/vpkg complete-system-trial" not in health_content:
+        return fail("system-generation health commit must follow graphical and extension checks")
     if not initrd_wants.is_symlink() or initrd_wants.readlink().as_posix() != "../veyra-vpkg-generations.service":
         return fail("the initrd root-fs target must require vpkg generation selection")
     initrd_config_content = initrd_config.read_text(encoding="utf-8")
