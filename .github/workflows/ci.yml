@@ -328,7 +328,7 @@ jobs:
             if [[ -s "$candidate" ]]; then ovmf_vars="$candidate"; break; fi
           done
           test -n "$ovmf_code" && test -n "$ovmf_vars"
-          python3 scripts/test-sysupdate-image.py \
+          sudo --preserve-env=PATH,GNUPGHOME python3 scripts/test-sysupdate-image.py \
             --image mkosi.output/veyra-next.raw \
             --current-version "$version" \
             --transfer-dir mkosi.extra/usr/lib/sysupdate.d \
