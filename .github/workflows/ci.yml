@@ -13,6 +13,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # Reject broken image source before downloading build dependencies.
+      - name: Check image configuration
+        run: python3 scripts/smoke.py
+      - name: Check image CI preflight ordering
+        run: python3 -m unittest discover -s tests -p 'test_image_workflow_order.py' -v
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -23,8 +28,6 @@ jobs:
             btrfs-progs ca-certificates cpio curl dosfstools e2fsprogs \
             debian-archive-keyring gpg kmod mtools openssl python3 qemu-system-x86 squashfs-tools \
             systemd-container systemd-ukify xz-utils zstd
-      - name: Check image configuration
-        run: python3 scripts/smoke.py
       - name: Build the Fedora KDE disk image
         run: sudo --preserve-env=PATH scripts/mkosi.sh --force build
       - name: Verify the packages inside the built image
