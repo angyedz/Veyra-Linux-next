@@ -6,6 +6,7 @@ on:
       - 'scripts/benchmark_ota.py'
       - 'tests/test_ota_chunks.py'
       - 'tests/test_ota_benchmark.py'
+      - 'tests/test_ota_manifest_validation.py'
       - 'docs/OTA-DELTA-TRANSPORT.md'
       - '.github/workflows/ota-chunks.yml'
   push:
@@ -15,6 +16,7 @@ on:
       - 'scripts/benchmark_ota.py'
       - 'tests/test_ota_chunks.py'
       - 'tests/test_ota_benchmark.py'
+      - 'tests/test_ota_manifest_validation.py'
       - 'docs/OTA-DELTA-TRANSPORT.md'
       - '.github/workflows/ota-chunks.yml'
 permissions:
@@ -26,4 +28,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 -m unittest discover -s tests -p 'test_ota_chunks.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_ota_benchmark.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_ota_manifest_validation.py' -v
 
