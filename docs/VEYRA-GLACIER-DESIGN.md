@@ -62,7 +62,7 @@ global theme components; selection is up to the user.
 
 ## Verification
 
-Source contract checks: `python3 -m unittest discover -s tests -p
+Source contract checks (including the KDE theme element/state reference): `python3 -m unittest discover -s tests -p
 'test_glacier*.py' -v`. CI also builds the full Fedora 44 image and
 checks on-image files and KDE Global Theme registration in mkosi shell.
 

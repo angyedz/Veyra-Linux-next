@@ -47,6 +47,9 @@ jobs:
             for mode in dark light; do
               test -s "/usr/share/plasma/desktoptheme/veyra-glacier-$mode/metadata.json"
               test -s "/usr/share/plasma/desktoptheme/veyra-glacier-$mode/widgets/panel-background.svg"
+              for asset in button lineedit listitem plasmoidheading arrows; do
+                test -s "/usr/share/plasma/desktoptheme/veyra-glacier-$mode/widgets/$asset.svg"
+              done
               test -s "/usr/share/plasma/look-and-feel/org.veyra.glacier.$mode/metadata.json"
               test -s "/usr/share/plasma/look-and-feel/org.veyra.glacier.$mode/contents/defaults"
             done
