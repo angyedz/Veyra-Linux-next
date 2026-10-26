@@ -30,7 +30,10 @@ class SysupdateImageTests(unittest.TestCase):
     @staticmethod
     def make_test_uki(path: Path) -> None:
         sections = {
-            b".cmdline": (b"roothash=" + b"a" * 64 + b" systemd.unit=graphical.target\0", 0x300),
+            b".cmdline": (
+                b"roothash=" + b"a" * 64 + b" veyra.image_version=0.1.0 systemd.unit=graphical.target\0",
+                0x300,
+            ),
             b".osrel": (b'ID=fedora\nVERSION_ID=44\nIMAGE_VERSION="0.1.0"\n', 0x500),
         }
         image = bytearray(0x700)
@@ -68,7 +71,7 @@ class SysupdateImageTests(unittest.TestCase):
                 stream.seek(cmdline_offset)
                 cmdline = stream.read(0x100).split(b"\0", 1)[0].decode("ascii")
             self.assertIn("roothash=" + "a" * 64, cmdline)
-            self.assertIn("veyra.image_version=0.1.1", cmdline)
+            self.assertIn("veyra.image_version=0.1.0", cmdline)
             self.assertIn("systemd.unit=graphical.target", cmdline)
             self.assertIn("console=ttyS0,115200n8", cmdline)
             self.assertIn("systemd.show_status=1", cmdline)
