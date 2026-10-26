@@ -1,0 +1,69 @@
+#version=F44
+lang en_US.UTF-8
+keyboard --vckeymap=us --xlayouts='us'
+timezone UTC --utc
+rootpw --lock
+network --bootproto=dhcp --device=link --activate
+firewall --enabled --service=mdns
+selinux --enforcing
+services --enabled=NetworkManager,livesys,livesys-late
+shutdown
+bootloader --location=none
+clearpart --all --initlabel
+reqpart
+part / --fstype=ext4 --size=16384
+
+%packages
+@^kde-desktop-environment
+anaconda-live
+btrfs-progs
+cryptsetup
+dnf5
+dosfstools
+dracut
+e2fsprogs
+erofs-utils
+flatpak
+grub2-pc
+grub2-pc-modules
+grub2-tools
+grub2-tools-extra
+kdialog
+konsole
+livesys-scripts
+NetworkManager
+polkit
+python3
+systemd-ukify
+systemd-boot-unsigned
+systemd-udev
+util-linux
+-@dial-up
+-@input-methods
+-@standard
+-gfs2-utils
+%end
+
+%post --nochroot --interpreter=/usr/bin/bash --erroronfail --log=/tmp/veyra-live-post.log
+set -euo pipefail
+source_root='__VEYRA_SOURCE_ROOT__'
+live_root="${LIVE_ROOT:?livemedia-creator did not set LIVE_ROOT}"
+install -d -m 0755 "$live_root/usr/share/veyra/installer/source" \
+  "$live_root/usr/share/veyra/installer/assets" \
+  "$live_root/usr/share/applications" "$live_root/usr/libexec"
+cp -a "$source_root/mkosi.conf" "$live_root/usr/share/veyra/installer/source/"
+cp -a "$source_root/mkosi.repart" "$live_root/usr/share/veyra/installer/source/"
+cp -a "$source_root/mkosi.extra" "$live_root/usr/share/veyra/installer/source/"
+cp -a "$source_root/installer/dracut" "$live_root/usr/share/veyra/installer/source/installer/"
+install -m 0755 "$source_root/scripts/veyra-install.py" "$live_root/usr/libexec/veyra-installer"
+install -m 0644 "$source_root/installer/veyra-installer.desktop" \
+  "$live_root/usr/share/applications/veyra-installer.desktop"
+install -m 0644 "$source_root/build/recovery-uki/veyra-recovery.efi" \
+  "$live_root/usr/share/veyra/installer/assets/veyra-recovery.efi"
+install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
+  "$live_root/usr/share/veyra/branding/veyra-logo.svg"
+if [ -f "$live_root/etc/os-release" ]; then
+  sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
+  sed -i 's/^NAME=.*/NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
+fi
+%end

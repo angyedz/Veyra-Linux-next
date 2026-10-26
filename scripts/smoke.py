@@ -70,6 +70,22 @@ def main() -> int:
         return fail("ci.yml image composition must use the guarded Ubuntu runner path")
     if re.search(r"(?m)^    container:", build_job.group(1)):
         return fail("ci.yml image composition must not nest mkosi inside a Fedora job container")
+    if "prototype-artifact:" in ci_workflow or "veyra-next-prototype-disk" in ci_workflow:
+        return fail("ci.yml must not build or upload a second prototype VM disk")
+    live_iso_job = re.search(r"(?ms)^  live-installer-iso:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci_workflow)
+    if not live_iso_job:
+        return fail("ci.yml must build the single downloadable Live Installer ISO")
+    for expected in (
+        "veyra-next-prototype-live-iso",
+        "build-live-iso.sh",
+        "VEYRA_FEDORA_BOOT_ISO",
+        "sha256sum",
+    ):
+        if expected not in live_iso_job.group(1):
+            return fail(f"the Live Installer job must include {expected!r}")
+    installer_script = ROOT / "scripts/veyra-install.py"
+    if not installer_script.is_file():
+        return fail("the Live ISO needs an installer that composes the target from Fedora packages")
 
     for expected in (
         "Distribution=fedora",

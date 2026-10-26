@@ -227,6 +227,10 @@ jobs:
           sudo python3 -c 'import pathlib, sys; caps = int(next(line.split()[1] for line in pathlib.Path("/proc/self/status").read_text().splitlines() if line.startswith("CapEff:")), 16); available = bool(caps & (1 << 21)); print(f"CAP_SYS_ADMIN available to the ephemeral runner root: {available}"); sys.exit(0 if available else 1)'
       - name: Check image configuration
         run: python3 scripts/smoke.py
+      - name: Test installer package manifest, disk sizing, and media exclusion
+        run: |
+          python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
+          python3 -c 'from pathlib import Path; p=Path("scripts/veyra-install.py"); compile(p.read_text(), str(p), "exec")'
       - name: Test Recovery source and image installation contract
         run: python3 -m unittest discover -s tests -p 'test_recovery*.py' -v
       - name: Test v-dri sysfs inventory against isolated fixtures
@@ -432,6 +436,21 @@ jobs:
             --fingerprint "$fingerprint" \
             --log-directory build/bios-ota-logs \
             --boot-timeout 1200
+      - name: Prepare Recovery UKI for the Live Installer ISO
+        run: |
+          set -euo pipefail
+          mapfile -t recovery_ukis < <(find mkosi.output -maxdepth 1 -type f -name 'veyra-recovery*.efi' -print)
+          if ((${#recovery_ukis[@]} != 1)); then
+            echo "Expected exactly one Recovery UKI, found ${#recovery_ukis[@]}" >&2
+            exit 1
+          fi
+          install -D -m 0644 "${recovery_ukis[0]}" build/recovery-uki/veyra-recovery.efi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veyra-recovery-uki
+          path: build/recovery-uki/veyra-recovery.efi
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload Legacy BIOS OTA diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -441,52 +460,52 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  prototype-artifact:
-    if: startsWith(github.head_ref, 'prototype/') || github.event_name == 'workflow_dispatch'
+  live-installer-iso:
+    needs: build
     runs-on: ubuntu-24.04
-    env:
-      VEYRA_MKOSI_RUNNER: github-ubuntu-24.04
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
+      options: >-
+        --cap-add=SYS_ADMIN
+        --device=/dev/loop-control
+        --device-cgroup-rule="b 7:* rmw"
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
         with:
-          enable-cache: true
-      - name: Install image builder dependencies on the Ubuntu runner
+          name: veyra-recovery-uki
+          path: build/recovery-uki
+      - name: Install Fedora 44 Live ISO build tools
+        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui xorriso isomd5sum squashfs-tools
+      - name: Download and verify the Fedora 44 Anaconda boot ISO
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            btrfs-progs ca-certificates cpio curl cryptsetup-bin dnf dosfstools e2fsprogs grub-common \
-            erofs-utils fdisk git gnupg kmod mtools openssl ovmf python3 qemu-system-x86 qemu-utils \
-            squashfs-tools sudo systemd-container systemd-ukify xz-utils zstd
-      - name: Gate the Ubuntu runner and Fedora 44 mkosi tools tree
-        run: bash scripts/check-build-environment.sh
-      - name: Verify Ubuntu DNF isolation and pinned Fedora 44 tools tree
-        run: sudo --preserve-env=VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS python3 scripts/check-build-environment.py
-      - name: Build clean Fedora 44 Veyra prototype disk
-        run: sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh --force build
-      - name: Validate the disk image
-        run: python3 scripts/check-image.py mkosi.output/veyra-next.raw
-      - name: Convert to a dynamically allocated QEMU disk
-        run: |
-          mkdir -p build/prototype-artifact
-          qemu-img convert -p -c -O qcow2 \
-            mkosi.output/veyra-next.raw \
-            build/prototype-artifact/veyra-next-prototype.qcow2
-          qemu-img info build/prototype-artifact/veyra-next-prototype.qcow2
-          du -h build/prototype-artifact/veyra-next-prototype.qcow2
-          cat > build/prototype-artifact/README.txt <<'EOF'
-          Veyra Next Prototype VM disk
-
-          Attach veyra-next-prototype.qcow2 as an existing disk in QEMU/KVM or GNOME Boxes.
-          The disk is dynamically allocated and does not consume its full virtual capacity up front.
-          This is a VM disk image, not an installer ISO. Secure Boot is not enabled for this prototype.
-          EOF
-      - name: Upload the prototype VM disk
-        uses: actions/upload-artifact@v4
+          set -euo pipefail
+          mkdir -p build/fedora-netinst
+          base_url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/iso
+          iso_name=Fedora-Everything-netinst-x86_64-44-1.7.iso
+          curl --fail --location --retry 5 "$base_url/$iso_name" -o "build/fedora-netinst/$iso_name"
+          curl --fail --location --retry 5 "$base_url/Fedora-Everything-44-1.7-x86_64-CHECKSUM" \
+            -o build/fedora-netinst/CHECKSUM
+          curl --fail --location --retry 5 https://fedoraproject.org/fedora.gpg \
+            -o build/fedora-netinst/fedora.gpg
+          gpgv --keyring build/fedora-netinst/fedora.gpg \
+            --output build/fedora-netinst/SHA256SUMS build/fedora-netinst/CHECKSUM
+          checksum_line="$(awk -v file="$iso_name" '$1 == "SHA256" && $2 == "(" file ")" { print $4 " *" file }' \
+            build/fedora-netinst/SHA256SUMS)"
+          test -n "$checksum_line"
+          (cd build/fedora-netinst && printf '%s\n' "$checksum_line" | sha256sum --check --status)
+      - name: Build one Live Installer ISO and enforce the 8 GiB limit
+        env:
+          VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
+        run: bash scripts/build-live-iso.sh
+      - uses: actions/upload-artifact@v4
         with:
-          name: veyra-next-prototype-disk
-          path: build/prototype-artifact/
+          name: veyra-next-prototype-live-iso
+          path: |
+            build/live-iso/veyra-next-prototype-live.iso
+            build/live-iso/veyra-next-prototype-live.iso.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

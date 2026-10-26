@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""Install Veyra Next directly onto a selected disk from the Live session."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+DEFAULT_SOURCE = pathlib.Path("/usr/share/veyra/installer/source")
+SCRATCH_MOUNT = pathlib.Path("/run/veyra-installer/scratch")
+FEDORA_RELEASE = "44"
+
+
+class InstallError(RuntimeError):
+    pass
+
+
+def command(args: list[str], *, capture: bool = False) -> str:
+    print("+ " + " ".join(args), flush=True)
+    result = subprocess.run(
+        args,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+    )
+    return result.stdout.strip() if capture else ""
+
+
+def parse_mkosi_config(path: pathlib.Path) -> tuple[str, list[str]]:
+    section = ""
+    version = ""
+    packages: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        if section == "Output" and line.startswith("ImageVersion="):
+            version = line.partition("=")[2].strip()
+        elif section == "Content" and line.startswith("Packages="):
+            name = line.partition("=")[2].strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.:-]*", name):
+                raise InstallError(f"unsafe package name in mkosi.conf: {name!r}")
+            packages.append(name)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
+        raise InstallError("mkosi.conf has no valid ImageVersion in [Output]")
+    if not packages or len(packages) != len(set(packages)):
+        raise InstallError("mkosi.conf must contain a non-empty, duplicate-free package list")
+    return version, packages
+
+
+def parse_size(value: str) -> int:
+    match = re.fullmatch(r"([0-9]+)([KMGTP]?)", value.strip(), re.IGNORECASE)
+    if not match:
+        raise InstallError(f"unsupported partition size: {value!r}")
+    multiplier = {
+        "": 1,
+        "K": 1024,
+        "M": 1024**2,
+        "G": 1024**3,
+        "T": 1024**4,
+        "P": 1024**5,
+    }[match.group(2).upper()]
+    return int(match.group(1)) * multiplier
+
+
+def minimum_disk_size(definitions: pathlib.Path) -> int:
+    total = 0
+    for path in sorted(definitions.glob("*.conf")):
+        section = ""
+        sizes: list[int] = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1]
+            elif section == "Partition" and line.startswith("SizeMinBytes="):
+                sizes.append(parse_size(line.partition("=")[2]))
+        if len(sizes) != 1:
+            raise InstallError(f"{path.name} must define exactly one SizeMinBytes")
+        total += sizes[0]
+    if not total:
+        raise InstallError(f"no partition definitions found in {definitions}")
+    return total + 64 * 1024**2
+
+
+def descendants(device: dict) -> list[dict]:
+    result = [device]
+    for child in device.get("children") or []:
+        result.extend(descendants(child))
+    return result
+
+
+def live_media_parent(source: pathlib.Path | None, devices: list[dict]) -> str | None:
+    if source is None:
+        return None
+    source_name = str(source)
+    for device in devices:
+        for child in descendants(device):
+            if child.get("path") == source_name or child.get("name") == source.name:
+                return device.get("path")
+    return source_name if source_name.startswith("/dev/") else None
+
+
+def list_installable_disks() -> tuple[list[dict], list[tuple[str, str]]]:
+    raw = command(
+        ["lsblk", "--json", "--bytes", "--paths", "--output", "PATH,NAME,TYPE,SIZE,MODEL,RM,RO,PKNAME,MOUNTPOINTS"],
+        capture=True,
+    )
+    devices = json.loads(raw).get("blockdevices", [])
+    media_source = None
+    source_result = subprocess.run(
+        ["findmnt", "--noheadings", "--output", "SOURCE", "--target", "/run/initramfs/live"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    if source_result.returncode == 0 and source_result.stdout.strip():
+        media_source = pathlib.Path(source_result.stdout.strip().split("[", 1)[0])
+    live_disk = live_media_parent(media_source, devices)
+    swaps = set()
+    swap_result = subprocess.run(
+        ["swapon", "--noheadings", "--raw", "--show", "--output", "NAME"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    if swap_result.returncode == 0:
+        swaps = {line.strip() for line in swap_result.stdout.splitlines() if line.strip()}
+
+    choices: list[dict] = []
+    excluded: list[tuple[str, str]] = []
+    for device in devices:
+        path = str(device.get("path", ""))
+        if device.get("type") != "disk":
+            continue
+        if not path.startswith("/dev/"):
+            excluded.append((path or device.get("name", "unknown"), "not a device path"))
+        elif path == live_disk:
+            excluded.append((path, "contains the running Live media"))
+        elif device.get("ro"):
+            excluded.append((path, "read-only"))
+        else:
+            children = descendants(device)
+            mounted = next(
+                (
+                    str(item.get("path") or item.get("name"))
+                    for item in children
+                    if any(point for point in (item.get("mountpoints") or []))
+                ),
+                None,
+            )
+            swapped = next(
+                (
+                    str(item.get("path") or item.get("name"))
+                    for item in children
+                    if str(item.get("path") or item.get("name")) in swaps
+                ),
+                None,
+            )
+            if mounted:
+                excluded.append((path, f"has mounted filesystem {mounted}"))
+            elif swapped:
+                excluded.append((path, f"contains active swap {swapped}"))
+            else:
+                choices.append(device)
+    return choices, excluded
+
+
+def target_partitions(disk: pathlib.Path) -> list[dict]:
+    raw = command(
+        ["lsblk", "--json", "--paths", "--output", "PATH,TYPE,PARTLABEL,PARTTYPE"],
+        capture=True,
+    )
+    devices = json.loads(raw).get("blockdevices", [])
+    target = disk.resolve()
+    parent = next(
+        (item for item in devices if pathlib.Path(str(item.get("path", ""))).resolve() == target),
+        None,
+    )
+    if parent is None:
+        raise InstallError(f"target disk disappeared: {disk}")
+    return [item for item in descendants(parent) if item.get("type") == "part"]
+
+
+def find_partition(label: str, disk: pathlib.Path) -> pathlib.Path:
+    matches = [
+        pathlib.Path(str(item["path"]))
+        for item in target_partitions(disk)
+        if item.get("partlabel") == label
+    ]
+    if len(matches) != 1 or not matches[0].exists():
+        raise InstallError(f"expected one {label!r} partition on {disk}, found {len(matches)}")
+    return matches[0]
+
+
+def find_partition_by_type(partition_type: str, disk: pathlib.Path) -> pathlib.Path:
+    matches = [
+        pathlib.Path(item["path"])
+        for item in target_partitions(disk)
+        if str(item.get("parttype", "")).lower() == partition_type.lower()
+    ]
+    if len(matches) != 1 or not matches[0].exists():
+        raise InstallError(f"expected exactly one partition of type {partition_type}, found {len(matches)}")
+    return matches[0]
+
+
+def partition_uuid(device: pathlib.Path) -> str:
+    value = command(["blkid", "--match-tag", "PARTUUID", "--output", "value", str(device)], capture=True)
+    value = value.replace("-", "").lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", value):
+        raise InstallError(f"invalid GPT partition UUID for {device}: {value!r}")
+    return value
+
+
+def overlay_veyra_files(root: pathlib.Path, source: pathlib.Path) -> None:
+    extra = source / "mkosi.extra"
+    command(["cp", "--archive", str(extra) + "/.", str(root)])
+
+
+def seed_fedora_repositories(root: pathlib.Path) -> None:
+    """Make the Live Fedora 44 repository definitions and signing keys available in the installroot."""
+    for source, destination in (
+        (pathlib.Path("/etc/yum.repos.d"), root / "etc/yum.repos.d"),
+        (pathlib.Path("/etc/pki/rpm-gpg"), root / "etc/pki/rpm-gpg"),
+    ):
+        if not source.is_dir():
+            raise InstallError(f"Fedora 44 repository data is missing from the Live session: {source}")
+        destination.mkdir(parents=True, exist_ok=True)
+        command(["cp", "--archive", str(source) + "/.", str(destination)])
+
+
+def install_initrd_module(root: pathlib.Path, source: pathlib.Path) -> None:
+    module_source = source / "installer/dracut/99veyra-sysroot"
+    module_target = root / "usr/lib/dracut/modules.d/99veyra-sysroot"
+    module_target.mkdir(parents=True, exist_ok=True)
+    command(["cp", "--archive", str(module_source) + "/.", str(module_target)])
+
+
+def write_recovery_uki(esp: pathlib.Path, source: pathlib.Path) -> None:
+    recovery = source / "assets/veyra-recovery.efi"
+    if not recovery.is_file() or recovery.stat().st_size == 0:
+        raise InstallError("the Live ISO does not contain Veyra Recovery UKI")
+    destination = esp / "EFI/Linux/veyra-recovery.efi"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(recovery, destination)
+
+
+def with_chroot_mounts(root: pathlib.Path) -> list[pathlib.Path]:
+    mounted: list[pathlib.Path] = []
+    try:
+        for name in ("dev", "proc", "sys", "run"):
+            destination = root / name
+            destination.mkdir(parents=True, exist_ok=True)
+            command(["mount", "--rbind", f"/{name}", str(destination)])
+            mounted.append(destination)
+            command(["mount", "--make-rslave", str(destination)])
+    except BaseException:
+        cleanup_mounts(mounted)
+        raise
+    return mounted
+
+
+def cleanup_mounts(mounts: list[pathlib.Path]) -> None:
+    for path in reversed(mounts):
+        subprocess.run(["umount", "--recursive", str(path)], check=False)
+
+
+def package_manifest(source: pathlib.Path) -> tuple[str, list[str]]:
+    version, packages = parse_mkosi_config(source / "mkosi.conf")
+    if any(name in {"dnf", "dnf5", "dnf5-plugins"} for name in packages):
+        raise InstallError("the target package manifest must not install the DNF command-line frontend")
+    if not {"libdnf5", "python3-libdnf5"}.issubset(packages):
+        raise InstallError("the target package manifest must retain libdnf5 for vpkg")
+    return version, packages
+
+
+def choose_device(choices: list[dict], excluded: list[tuple[str, str]]) -> pathlib.Path:
+    if not choices:
+        raise InstallError("no unused writable disks are available")
+    print("\nDisks available for installation:")
+    for disk in choices:
+        model = (disk.get("model") or "Unknown model").strip()
+        size_gib = int(disk.get("size") or 0) / 1024**3
+        print(f"  {disk['path']}  {model}  {size_gib:.1f} GiB")
+    if excluded:
+        print("\nDisks excluded for safety:")
+        for path, reason in excluded:
+            print(f"  {path}: {reason}")
+    valid = {str(disk["path"]) for disk in choices}
+    while True:
+        candidate = input("\nDisk to erase and install Veyra onto: ").strip()
+        if candidate in valid:
+            return pathlib.Path(candidate)
+        print("Enter one of the exact disk paths shown above.", file=sys.stderr)
+
+
+def validate_target(target: pathlib.Path, source: pathlib.Path) -> tuple[dict, int]:
+    target = target.resolve(strict=True)
+    if not stat.S_ISBLK(target.stat().st_mode):
+        raise InstallError(f"installation target is not a block device: {target}")
+    choices, excluded = list_installable_disks()
+    candidate = next((item for item in choices if pathlib.Path(item["path"]).resolve() == target), None)
+    if candidate is None:
+        reason = next((message for path, message in excluded if pathlib.Path(path).resolve() == target), None)
+        raise InstallError(f"refusing installation target {target}: {reason or 'not an unused whole disk'}")
+    size = int(candidate.get("size") or 0)
+    required = minimum_disk_size(source / "mkosi.repart")
+    if size < required:
+        raise InstallError(
+            f"{target} has {size / 1024**3:.1f} GiB; this prototype layout needs at least "
+            f"{required / 1024**3:.1f} GiB"
+        )
+    return candidate, required
+
+
+def write_image_identity(root: pathlib.Path, version: str) -> None:
+    for relative in ("etc/os-release", "usr/lib/os-release", "usr/lib/veyra/os-release"):
+        path = root / relative
+        if not path.is_file():
+            raise InstallError(f"expected OS release file is missing: {path}")
+        fields = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator:
+                fields[key] = value
+        if relative == "usr/lib/os-release" and fields.get("ID") != "fedora":
+            raise InstallError("the immutable base must retain Fedora's vendor os-release identity")
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if not line.startswith(("IMAGE_ID=", "IMAGE_VERSION="))]
+        lines.extend((f'IMAGE_ID="veyra-next"', f'IMAGE_VERSION="{version}"'))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str | None = None) -> None:
+    if os.geteuid() != 0:
+        raise InstallError("run the installer with administrator privileges")
+    source = source.resolve(strict=True)
+    version, packages = package_manifest(source)
+    candidate, required = validate_target(target, source)
+    disk = pathlib.Path(candidate["path"]).resolve(strict=True)
+    model = (candidate.get("model") or "Unknown model").strip()
+    size_gib = int(candidate.get("size") or 0) / 1024**3
+    print(
+        f"\nThis erases every partition on {disk} ({model}, {size_gib:.1f} GiB) and installs "
+        f"Veyra Next Prototype {version}.\n"
+        f"The current partition layout requires {required / 1024**3:.1f} GiB.\n"
+        "The installer will download Fedora 44 packages, build the Veyra system on this disk, "
+        "and install UEFI and Legacy BIOS boot files."
+    )
+    if confirmation is None:
+        confirmation = input(f"Type ERASE {disk} to continue: ").strip()
+    if confirmation != f"ERASE {disk}":
+        raise InstallError("confirmation did not match; no disk changes were made")
+
+    scratch_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-scratch-repart-"))
+    final_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-final-repart-"))
+    scratch_conf = source / "mkosi.repart/50-home.conf"
+    scratch_text = scratch_conf.read_text(encoding="utf-8")
+    scratch_text = re.sub(r"(?m)^Format=.*$", "Format=btrfs", scratch_text)
+    scratch_text = re.sub(r"(?m)^CopyFiles=.*\n?", "", scratch_text)
+    (scratch_conf_dir / "50-home.conf").write_text(scratch_text, encoding="utf-8")
+    for definition in (source / "mkosi.repart").glob("*.conf"):
+        shutil.copy2(definition, final_conf_dir / definition.name)
+    final_home = final_conf_dir / "50-home.conf"
+    final_home.write_text(
+        "\n".join(
+            line for line in final_home.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(("Format=", "CopyFiles="))
+        ) + "\n",
+        encoding="utf-8",
+    )
+    root = pathlib.Path()
+    scratch_mounted = False
+    bind_mounts: list[pathlib.Path] = []
+    esp_mounted = False
+    try:
+        command([
+            "systemd-repart", "--dry-run=no", "--empty=force", "--seed=random",
+            f"--definitions={scratch_conf_dir}", str(disk),
+        ])
+        command(["udevadm", "settle", "--timeout=30"])
+        scratch_device = find_partition("VEYRA_HOME", disk)
+        command(["mkfs.btrfs", "--force", "--label", "VEYRA_HOME", str(scratch_device)])
+        SCRATCH_MOUNT.mkdir(parents=True, exist_ok=True)
+        command(["mount", "-o", "compress=zstd", str(scratch_device), str(SCRATCH_MOUNT)])
+        scratch_mounted = True
+        root = SCRATCH_MOUNT / ".veyra-install/root"
+        root.mkdir(parents=True)
+        bind_mounts = with_chroot_mounts(root)
+
+        print("\nInstalling Fedora 44 packages from the official repositories…", flush=True)
+        seed_fedora_repositories(root)
+        command([
+            "dnf5", "--assumeyes", f"--installroot={root}",
+            f"--releasever={FEDORA_RELEASE}", "install", *packages,
+        ])
+        overlay_veyra_files(root, source)
+        install_initrd_module(root, source)
+        write_image_identity(root, version)
+
+        command(["systemd-machine-id-setup", f"--root={root}"])
+        command(["systemctl", f"--root={root}", "preset-all", "--preset-mode=enable-only"])
+        flatpak_repo = "/usr/share/veyra/flathub.flatpakrepo"
+        command(["chroot", str(root), "/usr/bin/flatpak", "remote-add", "--system", "--if-not-exists", "flathub", flatpak_repo])
+
+        kernel_candidates = sorted((root / "usr/lib/modules").glob("*/vmlinuz"))
+        if len(kernel_candidates) != 1 or not kernel_candidates[0].is_file():
+            raise InstallError(f"expected one installed Fedora kernel payload, found {kernel_candidates!r}")
+        linux = kernel_candidates[0]
+        kernel_version = linux.parent.name
+        initrd = root / f"boot/initramfs-{kernel_version}.img"
+        command([
+            "chroot", str(root), "/usr/bin/dracut", "--force", "--no-hostonly",
+            "--kver", kernel_version, f"/boot/initramfs-{kernel_version}.img",
+        ])
+        if not initrd.is_file() or initrd.stat().st_size == 0:
+            raise InstallError("dracut did not produce the Veyra initramfs")
+
+        cleanup_mounts(bind_mounts)
+        bind_mounts = []
+
+        for cache in (root / "var/cache/dnf", root / "var/cache/libdnf5"):
+            if cache.exists():
+                shutil.rmtree(cache)
+        command([
+            "systemd-repart", "--dry-run=no", "--empty=allow", "--seed=random",
+            f"--definitions={final_conf_dir}", f"--root={root}", str(disk),
+        ])
+        command(["udevadm", "settle", "--timeout=30"])
+
+        home_device = find_partition("VEYRA_HOME", disk)
+        command(["umount", str(SCRATCH_MOUNT)])
+        scratch_mounted = False
+        command(["mkfs.ext4", "--force", "-F", "-L", "VEYRA_HOME", str(home_device)])
+
+        root_label = f"veyra-next_{version}"
+        verity_label = f"{root_label}_verity"
+        root_device = find_partition(root_label, disk)
+        verity_device = find_partition(verity_label, disk)
+        roothash = partition_uuid(root_device) + partition_uuid(verity_device)
+        if not re.fullmatch(r"[0-9a-f]{64}", roothash):
+            raise InstallError("systemd-repart produced an invalid root/verity identity")
+        command(["veritysetup", "verify", str(root_device), str(verity_device), roothash])
+
+        esp_device = find_partition_by_type("c12a7328-f81f-11d2-ba4b-00a0c93ec93b", disk)
+        esp = pathlib.Path("/run/veyra-installer/esp")
+        esp.mkdir(parents=True, exist_ok=True)
+        command(["mount", str(esp_device), str(esp)])
+        esp_mounted = True
+        command(["bootctl", "--no-variables", f"--esp-path={esp}", "install"])
+
+        uki = esp / f"EFI/Linux/veyra-next_{version}+3-0.efi"
+        uki.parent.mkdir(parents=True, exist_ok=True)
+        command([
+            "ukify", "build", f"--linux={linux}", f"--initrd={initrd}",
+            f"--cmdline=roothash={roothash} systemd.firstboot=no systemd.unit=graphical.target module.sig_enforce=1",
+            f"--os-release=@{root / 'usr/lib/os-release'}", f"--uname={kernel_version}",
+            f"--output={uki}",
+        ])
+        loader_conf = esp / "loader/loader.conf"
+        loader_conf.parent.mkdir(parents=True, exist_ok=True)
+        loader_conf.write_text(f"default veyra-next_{version}+3-0.efi\ntimeout 5\n", encoding="ascii")
+        write_recovery_uki(esp, source)
+
+        bios_dir = esp / "VEYRA"
+        bios_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(linux, bios_dir / f"veyra-next_{version}.vmlinuz")
+        shutil.copy2(initrd, bios_dir / f"veyra-next_{version}.initrd")
+        grub_dir = esp / "grub2"
+        grub_dir.mkdir(parents=True, exist_ok=True)
+        helper_path = source / "mkosi.extra/usr/lib/veyra/grub_ota.py"
+        sys.path.insert(0, str(helper_path.parent))
+        import grub_ota  # noqa: PLC0415
+
+        (grub_dir / "grub.cfg").write_text(grub_ota.render_grub_config(version, roothash), encoding="ascii")
+        grub_ota.initialize_grubenv(grub_dir / "grubenv", version, roothash)
+        command(["grub2-install", "--target=i386-pc", f"--boot-directory={esp}", "--recheck", str(disk)])
+
+        command(["sync"])
+        print(
+            f"\nVeyra Next Prototype {version} is installed on {disk}. "
+            "Remove the Live USB and reboot to start the installed system."
+        )
+    finally:
+        cleanup_mounts(bind_mounts)
+        if esp_mounted:
+            subprocess.run(["umount", str(pathlib.Path("/run/veyra-installer/esp"))], check=False)
+        if scratch_mounted:
+            subprocess.run(["umount", str(SCRATCH_MOUNT)], check=False)
+        shutil.rmtree(scratch_conf_dir, ignore_errors=True)
+        shutil.rmtree(final_conf_dir, ignore_errors=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-root", type=pathlib.Path, default=DEFAULT_SOURCE)
+    parser.add_argument("--target", type=pathlib.Path)
+    parser.add_argument("--confirm-device", help=argparse.SUPPRESS)
+    parser.add_argument("--list-disks", action="store_true", help="show eligible target disks")
+    args = parser.parse_args()
+
+    try:
+        source = args.source_root.resolve(strict=True)
+        if args.list_disks:
+            choices, excluded = list_installable_disks()
+            for disk in choices:
+                size_gib = int(disk.get("size") or 0) / 1024**3
+                print(f"{disk['path']}\t{(disk.get('model') or 'Unknown model').strip()}\t{size_gib:.1f} GiB")
+            for path, reason in excluded:
+                print(f"EXCLUDED\t{path}\t{reason}")
+            return 0
+        target = args.target or choose_device(*list_installable_disks())
+        if args.confirm_device is not None:
+            # Non-interactive automation can proceed only when it names the exact target twice.
+            if args.target is None or args.confirm_device != str(args.target):
+                raise InstallError("automated confirmation must exactly match --target")
+            if os.geteuid() != 0:
+                raise InstallError("run the installer with administrator privileges")
+            install_system(target, source, f"ERASE {args.target.resolve(strict=True)}")
+        else:
+            install_system(target, source)
+    except (InstallError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        print(f"Veyra installation failed: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
