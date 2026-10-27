@@ -158,3 +158,29 @@ installation is unavailable.** The published experimental pipeline does
 not yet include a verified Recovery UKI or a successful real installed-OS
 A/B boot test, so it must not be advertised as install-ready. The installer
 must fail closed before changing a disk when its Recovery UKI is absent.
+
+## Live vpkg verification and Plasma launcher branding
+
+The Live image now contains a **QEMU-only** offline vpkg self-test service.
+Inside disposable BIOS/UEFI guests it loads the Python libdnf5 bindings,
+checks RPM Fusion trust-key files, executes the previously VM-skipped vpkg
+unit tests, verifies the restricted Live sudo policy, and confirms that
+`vpkg install kernel-core` is rejected as a forbidden system package.
+The QEMU CI gate requires `VEYRA_LIVE_VPKG_CI_PASS` from **both** firmware
+modes; it refuses to call a run successful from screenshots alone. These
+checks do **not** claim that a Fedora application RPM was successfully
+downloaded and installed. The latter requires its own signed repository
+transaction test.
+
+`vpkg doctor` is a read-only command available without sudo in both
+installed Veyra and Live. It checks Fedora base identity, the installed
+Python libdnf5 API, systemd-sysext, and RPM Fusion trust keys, reports
+whether the current boot is Live, and explicitly distinguishes those
+runtime checks from an actual RPM installation. It does not access the
+network or alter packages.
+
+The Kickoff/Kicker menu in the Live session is retained, but its icon
+is set to the canonical Veyra SVG by Plasma's supported scripting API.
+The small KDE autostart helper touches only existing launcher widgets and
+runs only when the Live marker is present; it does not rewrite the whole
+panel layout, nor affect installed Veyra systems.
