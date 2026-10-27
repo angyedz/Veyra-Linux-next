@@ -15,6 +15,7 @@ case "$(systemd-detect-virt --vm || :)" in
 esac
 echo 'VEYRA_LIVE_VPKG_CI_BEGIN'
 /usr/bin/vpkg --help >/dev/null
+/usr/bin/runuser -u liveuser -- /usr/local/bin/vpkg doctor
 /usr/bin/python3 -c 'import libdnf5; import sys; assert sys.version_info.major == 3'
 test -s /usr/share/veyra/sysext-level
 test -s /usr/share/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-free-fedora-2020
