@@ -175,6 +175,10 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertNotIn('install -m 0755 "$repo/mkosi.extra/usr/bin/veyra-update"', SCRIPT)
         self.assertNotIn('systemd-bless-boot.service.d/veyra-vpkg-ota.conf', SCRIPT)
 
+    def test_solid_disks_are_available_via_system_dbus(self):
+        self.assertIn("kate udisks2", SCRIPT)
+        self.assertIn("org.freedesktop.UDisks2.service", SCRIPT)
+
     def test_slow_splash_is_skipped_only_inside_disposable_qemu(self):
         self.assertIn("plasma-ksplash.service.d/90-veyra-live-qemu.conf", SCRIPT)
         self.assertIn("ExecCondition=/usr/libexec/veyra-live-ksplash-condition", SCRIPT)
