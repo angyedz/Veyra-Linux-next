@@ -121,11 +121,11 @@ cat > "$stage/boot/grub/grub.cfg" <<'EOF'
 set timeout=7
 set default=0
 menuentry 'Veyra Next Prototype Live (KDE Plasma)' {
-  linux /boot/vmlinuz root=live:CDLABEL=VEYRA_NEXT_LIVE rd.live.image rd.live.overlay.overlayfs=1 quiet systemd.unit=graphical.target
+  linux /boot/vmlinuz root=live:CDLABEL=VEYRA_NEXT_LIVE rd.live.image rd.live.overlay.overlayfs=1 rd.debug systemd.unit=graphical.target console=tty0 console=ttyS0,115200n8 loglevel=7
   initrd /boot/initrd.img
 }
 menuentry 'Veyra Next Prototype Live (diagnostic console)' {
-  linux /boot/vmlinuz root=live:CDLABEL=VEYRA_NEXT_LIVE rd.live.image rd.live.overlay.overlayfs=1 systemd.unit=multi-user.target console=ttyS0,115200n8
+  linux /boot/vmlinuz root=live:CDLABEL=VEYRA_NEXT_LIVE rd.live.image rd.live.overlay.overlayfs=1 rd.debug systemd.unit=multi-user.target console=tty0 console=ttyS0,115200n8 loglevel=7
   initrd /boot/initrd.img
 }
 EOF
