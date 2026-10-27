@@ -72,9 +72,9 @@ class LiveModeIdentityTests(unittest.TestCase):
             marker = Path(temporary) / "live-mode"
             cmdline = Path(temporary) / "cmdline"
             boot_id = Path(temporary) / "boot-id"
-            marker.write_text("veyra-next-native-live-iso\\n", encoding="ascii")
-            cmdline.write_text("root=live:CDLABEL=VEYRA_NEXT_LIVE console=tty0\\n", encoding="ascii")
-            boot_id.write_text("00000000-0000-4000-8000-000000000001\\n", encoding="ascii")
+            marker.write_text("veyra-next-native-live-iso\n", encoding="ascii")
+            cmdline.write_text("root=live:CDLABEL=VEYRA_NEXT_LIVE console=tty0\n", encoding="ascii")
+            boot_id.write_text("00000000-0000-4000-8000-000000000001\n", encoding="ascii")
             with (
                 patch.object(vpkg, "LIVE_MODE_MARKER", marker),
                 patch.object(vpkg, "PROC_CMDLINE", cmdline),
@@ -86,7 +86,7 @@ class LiveModeIdentityTests(unittest.TestCase):
                     vpkg.running_deployment_roothash(),
                     hashlib.sha256(b"veyra-live:00000000-0000-4000-8000-000000000001").hexdigest(),
                 )
-                cmdline.write_text("roothash=not-allowed\\n", encoding="ascii")
+                cmdline.write_text("roothash=not-allowed\n", encoding="ascii")
                 self.assertFalse(vpkg.running_live_mode())
                 with self.assertRaisesRegex(vpkg.VpkgError, "64-character roothash"):
                     vpkg.running_deployment_roothash()
@@ -95,8 +95,8 @@ class LiveModeIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "live-mode"
             cmdline = Path(temporary) / "cmdline"
-            marker.write_text("veyra-next-native-live-iso\\n", encoding="ascii")
-            cmdline.write_text("root=/dev/sda1\\n", encoding="ascii")
+            marker.write_text("veyra-next-native-live-iso\n", encoding="ascii")
+            cmdline.write_text("root=/dev/sda1\n", encoding="ascii")
             with (
                 patch.object(vpkg, "LIVE_MODE_MARKER", marker),
                 patch.object(vpkg, "PROC_CMDLINE", cmdline),
