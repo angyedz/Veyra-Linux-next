@@ -30,7 +30,7 @@ dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   --setopt=install_weak_deps=False install \
   fedora-release-kde-desktop kernel-core kernel-modules kernel-modules-extra \
   dracut dracut-live dracut-config-generic \
-  systemd systemd-udev dbus NetworkManager NetworkManager-wifi \
+  systemd systemd-udev systemd-pam dbus dbus-daemon NetworkManager NetworkManager-wifi \
   plasma-desktop plasma-workspace plasma-workspace-wayland plasma-systemsettings \
   sddm sddm-x11 kwin-wayland breeze-icon-theme \
   plasma-nm plasma-pa dolphin konsole kate \
@@ -119,6 +119,21 @@ if [[ -n "${VEYRA_RECOVERY_UKI:-}" ]]; then
     "$root/usr/share/veyra/installer/source/assets/veyra-recovery.efi"
 fi
 
+# Exit 127 in SDDM Wayland autologin is commonly caused by a missing
+# dbus-run-session: plasma-dbus-run-session-if-needed executes that binary.
+# systemd-pam supplies pam_systemd.so to create proper logind user sessions.
+for binary in \
+  /usr/bin/dbus-run-session \
+  /usr/bin/dbus-daemon \
+  /usr/bin/startplasma-wayland \
+  /usr/libexec/plasma-dbus-run-session-if-needed; do
+  [[ -x "$root$binary" ]] || die "required Plasma session executable missing: $binary"
+done
+[[ -s "$root/usr/lib64/security/pam_systemd.so" ]] ||
+  die "Fedora systemd-pam is missing: pam_systemd.so"
+# Check that every session binary starts with a resolved interpreter/loader.
+chroot "$root" /usr/bin/dbus-run-session --version >/dev/null ||
+  die "dbus-run-session is not executable inside Live rootfs"
 # The Live desktop is disposable; sudo permits only Calamares, not any shell.
 chroot "$root" /usr/sbin/useradd --create-home --groups wheel --shell /bin/bash liveuser
 chroot "$root" /usr/bin/passwd --lock liveuser
