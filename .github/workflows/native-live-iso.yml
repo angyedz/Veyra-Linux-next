@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'scripts/build-native-live-iso.sh'
+      - 'scripts/veyra-live-vpkg-vm-check.sh'
       - 'scripts/test-live-iso-qemu.py'
       - 'tests/test_live_iso_qemu.py'
       - 'scripts/verify-live-iso-qemu.py'
