@@ -32,7 +32,7 @@ dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   dracut dracut-live dracut-config-generic \
   systemd systemd-udev dbus NetworkManager NetworkManager-wifi \
   plasma-desktop plasma-workspace plasma-workspace-wayland plasma-systemsettings \
-  sddm kwin-wayland breeze-icon-theme \
+  sddm sddm-x11 kwin-wayland breeze-icon-theme \
   plasma-nm plasma-pa dolphin konsole \
   pipewire pipewire-pulseaudio wireplumber \
   xorg-x11-server-Xwayland mesa-dri-drivers \
@@ -78,6 +78,12 @@ liveuser ALL=(root) NOPASSWD: /usr/bin/calamares
 EOF
 chmod 0440 "$root/etc/sudoers.d/veyra-live-calamares"
 cat > "$root/etc/sddm.conf.d/veyra-live.conf" <<'EOF'
+# Use X11 only for the SDDM greeter: some software-rendered QEMU
+# adapters crash the greeter's KWin Wayland compositor.
+# The selected user session remains KDE Plasma Wayland.
+[General]
+DisplayServer=x11
+
 [Autologin]
 User=liveuser
 Session=plasma.desktop
