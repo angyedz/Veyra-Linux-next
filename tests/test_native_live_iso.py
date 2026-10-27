@@ -64,6 +64,13 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertNotIn('install -m 0755 "$repo/mkosi.extra/usr/bin/veyra-update"', SCRIPT)
         self.assertNotIn('systemd-bless-boot.service.d/veyra-vpkg-ota.conf', SCRIPT)
 
+    def test_virtio_workaround_is_qemu_live_only(self):
+        self.assertIn("90-veyra-live-virtio-render", SCRIPT)
+        self.assertIn("systemd-detect-virt --vm", SCRIPT)
+        self.assertIn('"virtio_gpu"', SCRIPT)
+        self.assertIn("KWIN_RENDER_NODES=", SCRIPT)
+        self.assertIn("/etc/veyra/live-mode", SCRIPT)
+
     def test_qemu_only_graphics_diagnostics(self):
         for required in (
             "veyra-live-graphics-diagnostics.service",
