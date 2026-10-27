@@ -79,8 +79,14 @@ class IsoQemuSmokeTests(unittest.TestCase):
             path = Path(directory) / "black.ppm"
             path.write_bytes(b"P6\n64 64\n255\n" + b"\x00" * (64 * 64 * 3))
             self.assertFalse(iso_qemu.ppm_has_visible_pixels(path))
-            path.write_bytes(b"P6\n64 64\n255\n" + b"\x00" * (64 * 64 * 3 - 1) + b"\x01")
+            # One lit cursor pixel must never count as a visible desktop.
+            path.write_bytes(b"P6\n64 64\n255\n" + b"\x00" * (64 * 64 * 3 - 1) + b"\xff")
+            self.assertFalse(iso_qemu.ppm_has_visible_pixels(path))
+            path.write_bytes(b"P6\n64 64\n255\n" + b"\x60" * (64 * 64 * 3))
             self.assertTrue(iso_qemu.ppm_has_visible_pixels(path))
+            with self.assertRaises(iso_qemu.SmokeError):
+                path.write_bytes(b"P6\n64 64\n255\n" + b"\x00")
+                iso_qemu.ppm_has_visible_pixels(path)
 
     def test_serial_markers_not_fake_success(self):
         with tempfile.TemporaryDirectory() as directory:
