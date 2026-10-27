@@ -24,6 +24,8 @@ def good_report():
                     "kernel_seen": True,
                     "init_seen": True,
                     "live_desktop_confirmed": False,
+                    "plasma_runtime_confirmed": True,
+                    "plasma_runtime_failed": False,
                     "vpkg_guest_test_passed": True,
                     "vpkg_guest_test_failed": False,
                 },
@@ -43,6 +45,14 @@ class FirmwareBootGateTests(unittest.TestCase):
             report["modes"][0]["serial_signals"][missing] = False
             with self.subTest(missing=missing):
                 self.assertTrue(module.verify(report))
+
+    def test_desktop_process_probe_is_required(self):
+        report = good_report()
+        report["modes"][0]["serial_signals"]["plasma_runtime_confirmed"] = False
+        report["modes"][1]["serial_signals"]["plasma_runtime_failed"] = True
+        failures = module.verify(report)
+        self.assertTrue(any("plasmashell" in failure for failure in failures))
+        self.assertTrue(any("process probe" in failure for failure in failures))
 
     def test_fully_black_final_screenshot_must_fail(self):
         report = good_report()
