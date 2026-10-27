@@ -13,6 +13,11 @@ permissions:
   contents: read
   actions: read
 
+# Only the latest diagnostic for this PR needs a 3+ GiB Fedora download.
+concurrency:
+  group: prototype-iso-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   iso-only:
     runs-on: ubuntu-24.04
@@ -28,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Fedora 44 live ISO toolchain
-        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils python3 xorriso isomd5sum squashfs-tools
+        run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils python3 xorriso isomd5sum squashfs-tools qemu-system-x86-core edk2-ovmf
       - name: Source and installer unit tests
         run: |
           python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
@@ -50,9 +55,9 @@ jobs:
           mkdir -p build/fedora-netinst
           base_url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/iso
           iso_name=Fedora-Everything-netinst-x86_64-44-1.7.iso
-          curl --fail --location --retry 5 "$base_url/$iso_name" -o "build/fedora-netinst/$iso_name"
-          curl --fail --location --retry 5 "$base_url/Fedora-Everything-44-1.7-x86_64-CHECKSUM" -o build/fedora-netinst/CHECKSUM
-          curl --fail --location --retry 5 https://fedoraproject.org/fedora.gpg -o build/fedora-netinst/fedora.gpg
+          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 10240 --speed-time 120 "$base_url/$iso_name" -o "build/fedora-netinst/$iso_name"
+          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 10240 --speed-time 120 "$base_url/Fedora-Everything-44-1.7-x86_64-CHECKSUM" -o build/fedora-netinst/CHECKSUM
+          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 10240 --speed-time 120 https://fedoraproject.org/fedora.gpg -o build/fedora-netinst/fedora.gpg
           gpgv --keyring build/fedora-netinst/fedora.gpg --output build/fedora-netinst/SHA256SUMS build/fedora-netinst/CHECKSUM
           checksum_line="$(awk -v file="$iso_name" '$1 == "SHA256" && $2 == "(" file ")" { print $4 " *" file }' build/fedora-netinst/SHA256SUMS)"
           test -n "$checksum_line"
@@ -75,6 +80,22 @@ jobs:
         env:
           VEYRA_FEDORA_BOOT_ISO: ${{ github.workspace }}/build/fedora-netinst/Fedora-Everything-netinst-x86_64-44-1.7.iso
         run: bash scripts/build-live-iso.sh
+      - name: Capture BIOS and UEFI QEMU guest screens (diagnostic only)
+        id: firmware_capture
+        continue-on-error: true
+        run: |
+          python3 scripts/test-live-iso-qemu.py \
+            --iso build/live-iso/veyra-next-prototype-live.iso \
+            --output build/iso-qemu \
+            --modes both --at 20,60
+      - name: Upload BIOS/UEFI boot captures even on a failed diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prototype-live-iso-qemu-diagnostics
+          path: build/iso-qemu/
+          if-no-files-found: ignore
+          retention-days: 5
       - name: Preserve failure logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -82,6 +103,7 @@ jobs:
           name: iso-uefi-unblock-logs
           path: |
             build/livemedia.log
+            build/iso-attempt-logs/**
             build/live-media/anaconda/**
           if-no-files-found: ignore
           retention-days: 3
