@@ -134,6 +134,29 @@ done
 # Check that every session binary starts with a resolved interpreter/loader.
 chroot "$root" /usr/bin/dbus-run-session --version >/dev/null ||
   die "dbus-run-session is not executable inside Live rootfs"
+# KDE 6.7 can select the unaccelerated virtio 2D render node as a
+# separate compositor GPU. Restrict the workaround to QEMU/KVM Live guests
+# with a virtio_gpu DRM card; hardware installs retain normal GPU discovery.
+# systemd --user environment generators run before Plasma user services,
+# unlike /etc/environment which does not reliably reach kwin's user unit.
+install -d "$root/usr/lib/systemd/user-environment-generators"
+cat > "$root/usr/lib/systemd/user-environment-generators/90-veyra-live-virtio-render" <<'EOF'
+#!/bin/sh
+[ -f /etc/veyra/live-mode ] || exit 0
+[ "$(cat /etc/veyra/live-mode)" = "veyra-next-native-live-iso" ] || exit 0
+case "$(systemd-detect-virt --vm 2>/dev/null)" in
+  qemu|kvm) ;;
+  *) exit 0 ;;
+esac
+for driver in /sys/class/drm/card*/device/driver; do
+  [ -L "$driver" ] || continue
+  [ "$(basename "$(readlink -f "$driver")")" = "virtio_gpu" ] || continue
+  printf 'KWIN_RENDER_NODES=\\n'
+  exit 0
+done
+exit 0
+EOF
+chmod 0755 "$root/usr/lib/systemd/user-environment-generators/90-veyra-live-virtio-render"
 # The Live desktop is disposable; sudo permits only Calamares, not any shell.
 chroot "$root" /usr/sbin/useradd --create-home --groups wheel --shell /bin/bash liveuser
 chroot "$root" /usr/bin/passwd --lock liveuser
