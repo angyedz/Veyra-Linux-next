@@ -151,7 +151,7 @@ esac
 for driver in /sys/class/drm/card*/device/driver; do
   [ -L "$driver" ] || continue
   [ "$(basename "$(readlink -f "$driver")")" = "virtio_gpu" ] || continue
-  printf 'KWIN_RENDER_NODES=\\n'
+  printf 'KWIN_RENDER_NODES=\n'
   exit 0
 done
 exit 0
