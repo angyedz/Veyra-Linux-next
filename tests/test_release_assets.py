@@ -27,7 +27,7 @@ class ReleaseAssetTests(unittest.TestCase):
             content = ("fixture:" + name).encode()
             (directory / name).write_bytes(content)
             sums.append(hashlib.sha256(content).hexdigest() + "  " + name)
-        (directory / "SHA256SUMS").write_text("\\n".join(sums) + "\\n", encoding="ascii")
+        (directory / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="ascii")
         (directory / "SHA256SUMS.gpg").write_bytes(b"fake signature: actual GPG verification is separate")
         return v, names
 
