@@ -73,6 +73,12 @@ fi
 # The Live desktop is disposable; sudo permits only Calamares, not any shell.
 chroot "$root" /usr/sbin/useradd --create-home --groups wheel --shell /bin/bash liveuser
 chroot "$root" /usr/bin/passwd --lock liveuser
+# Preserve the Live user's UID/GID in the SquashFS image. Rewriting all
+# ownership to root makes $HOME unwritable and breaks Plasma autologin.
+live_uid="$(chroot "$root" /usr/bin/id -u liveuser)"
+live_gid="$(chroot "$root" /usr/bin/id -g liveuser)"
+[[ "$(stat -c '%u:%g' "$root/home/liveuser")" == "$live_uid:$live_gid" ]] ||
+  die "Live home owner mismatch; KDE cannot start with an unwritable home"
 cat > "$root/etc/sudoers.d/veyra-live-calamares" <<'EOF'
 liveuser ALL=(root) NOPASSWD: /usr/bin/calamares
 EOF
@@ -138,7 +144,7 @@ EOF
 # dmsquash-live recognises direct SquashFS roots when /proc exists inside.
 [[ -d "$root/proc" ]] || mkdir -p "$root/proc"
 mksquashfs "$root" "$stage/LiveOS/squashfs.img" \
-  -noappend -comp zstd -all-root -no-progress
+  -noappend -comp zstd -no-progress
 grub2-mkrescue -o "$output" "$stage" -V "$label"
 [[ -s "$output" ]] || die "GRUB did not generate a Live ISO"
 size="$(stat -c %s "$output")"
