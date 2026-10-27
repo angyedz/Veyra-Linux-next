@@ -175,6 +175,16 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertNotIn('install -m 0755 "$repo/mkosi.extra/usr/bin/veyra-update"', SCRIPT)
         self.assertNotIn('systemd-bless-boot.service.d/veyra-vpkg-ota.conf', SCRIPT)
 
+    def test_slow_splash_is_skipped_only_inside_disposable_qemu(self):
+        self.assertIn("plasma-ksplash.service.d/90-veyra-live-qemu.conf", SCRIPT)
+        self.assertIn("ExecCondition=/usr/libexec/veyra-live-ksplash-condition", SCRIPT)
+        self.assertIn("VEYRA_LIVE_KSPLASH_SKIPPED", SCRIPT)
+        self.assertIn("[ -f /etc/veyra/live-mode ]", SCRIPT)
+        self.assertIn("qemu|kvm)", SCRIPT)
+        self.assertIn("exit 1", SCRIPT)
+        # The active Plasma session still needs KWin + plasmashell proof.
+        self.assertIn("veyra-live-plasma-vm-check.service", SCRIPT)
+
     def test_virtio_workaround_is_qemu_live_only(self):
         self.assertIn("90-veyra-live-virtio-render", SCRIPT)
         self.assertIn("systemd-detect-virt --vm", SCRIPT)
