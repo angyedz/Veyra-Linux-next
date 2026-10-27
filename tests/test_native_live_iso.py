@@ -18,6 +18,15 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertNotIn("lorax-lmc-novirt", SCRIPT)
         self.assertNotIn("lorax-lmc-novirt", WORKFLOW)
         self.assertNotIn("anaconda-tui", WORKFLOW)
+    def test_installable_manual_iso_requires_recovery_and_pinned_keys(self):
+        self.assertIn("run-id: ", WORKFLOW)
+        self.assertIn("veyra-recovery-uki", WORKFLOW)
+        self.assertIn("scripts/export-bootstrap-public-keys.sh", WORKFLOW)
+        self.assertIn("VEYRA_RECOVERY_UKI=", WORKFLOW)
+        self.assertIn("VEYRA_UPDATE_SIGNING_KEY", WORKFLOW)
+        self.assertIn("VEYRA_RPM_SIGNING_KEY", WORKFLOW)
+        self.assertIn("refs/heads/main", WORKFLOW)
+
     def test_live_system_and_installer(self):
         self.assertIn("plasma-workspace-wayland", SCRIPT)
         self.assertIn("calamares-interactiveterminal", SCRIPT)
