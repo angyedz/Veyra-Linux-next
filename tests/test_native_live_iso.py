@@ -24,6 +24,18 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn("source/assets/veyra-recovery.efi", SCRIPT)
         self.assertIn("sudo -n /usr/bin/calamares", SCRIPT)
         self.assertIn("passwd --lock liveuser", SCRIPT)
+    def test_wayland_session_runtime_dependencies(self):
+        self.assertIn("systemd-pam dbus dbus-daemon", SCRIPT)
+        for required in (
+            "/usr/bin/dbus-run-session",
+            "/usr/bin/dbus-daemon",
+            "/usr/bin/startplasma-wayland",
+            "/usr/libexec/plasma-dbus-run-session-if-needed",
+            "/usr/lib64/security/pam_systemd.so",
+        ):
+            self.assertIn(required, SCRIPT)
+        self.assertIn('chroot "$root" /usr/bin/dbus-run-session --version', SCRIPT)
+
     def test_live_home_ownership_survives_squashfs(self):
         self.assertIn("live_uid=", SCRIPT)
         self.assertIn("live_gid=", SCRIPT)
