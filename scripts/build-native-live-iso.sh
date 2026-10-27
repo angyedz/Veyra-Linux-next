@@ -166,6 +166,29 @@ done
 exit 0
 EOF
 chmod 0755 "$root/usr/lib/systemd/user-environment-generators/90-veyra-live-virtio-render"
+# The non-accelerated QEMU/KVM renderer may finish Plasma only after the
+# 40-second ksplash startup deadline. A late splash must not create a failed
+# user service once KWin/Plasma are already usable. Skip the animation only
+# in the disposable QEMU Live guest; keep ordinary hardware behavior.
+install -d "$root/etc/systemd/user/plasma-ksplash.service.d"
+cat > "$root/usr/libexec/veyra-live-ksplash-condition" <<'EOF'
+#!/bin/sh
+if [ -f /etc/veyra/live-mode ] &&
+   [ "$(cat /etc/veyra/live-mode)" = "veyra-next-native-live-iso" ]; then
+  case "$(systemd-detect-virt --vm 2>/dev/null)" in
+    qemu|kvm)
+      echo "VEYRA_LIVE_KSPLASH_SKIPPED: nonaccelerated QEMU session" >&2
+      exit 1
+      ;;
+  esac
+fi
+exit 0
+EOF
+chmod 0755 "$root/usr/libexec/veyra-live-ksplash-condition"
+cat > "$root/etc/systemd/user/plasma-ksplash.service.d/90-veyra-live-qemu.conf" <<'EOF'
+[Service]
+ExecCondition=/usr/libexec/veyra-live-ksplash-condition
+EOF
 # This root password is ONLY for a throwaway Live ISO, never for installed
 # Veyra. It is public, deliberately weak for prototype recovery, and must
 # never be shipped as a production or internet-exposed credential.
