@@ -152,6 +152,9 @@ def serial_signals(path: pathlib.Path) -> dict[str, bool]:
         "plasma_session_crashed": bool(re.search(rb"Session crashed \(exit code [0-9]+\)", data, re.I)),
         "pam_systemd_missing": b"PAM unable to dlopen(" in data and b"pam_systemd.so" in data,
         "plasma_session_invoked": b"startplasma-wayland" in data,
+        "vpkg_guest_test_started": b"VEYRA_LIVE_VPKG_CI_BEGIN" in data,
+        "vpkg_guest_test_passed": b"VEYRA_LIVE_VPKG_CI_PASS" in data,
+        "vpkg_guest_test_failed": b"VEYRA_LIVE_VPKG_CI_FAILURE" in data,
     }
 
 
