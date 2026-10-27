@@ -24,6 +24,15 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn("source/assets/veyra-recovery.efi", SCRIPT)
         self.assertIn("sudo -n /usr/bin/calamares", SCRIPT)
         self.assertIn("passwd --lock liveuser", SCRIPT)
+    def test_live_home_ownership_survives_squashfs(self):
+        self.assertIn("live_uid=", SCRIPT)
+        self.assertIn("live_gid=", SCRIPT)
+        self.assertIn("Live home owner mismatch", SCRIPT)
+        self.assertIn("-noappend -comp zstd -no-progress", SCRIPT)
+        # Forcing every file to root prevents an autologged-in Plasma user
+        # from writing its own home and makes the desktop exit immediately.
+        self.assertNotIn("-all-root", SCRIPT)
+
     def test_media_verification(self):
         self.assertIn("8 * 1024 * 1024 * 1024", SCRIPT)
         self.assertIn("BIOS El Torito missing", SCRIPT)
