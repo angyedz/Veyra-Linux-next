@@ -16,6 +16,24 @@ vdri = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vdri)
 
 
+class VdriQemuSerialTests(unittest.TestCase):
+    def test_firmware_invalid_utf8_cannot_hide_a_pass_marker(self) -> None:
+        # GRUB/firmware mixes terminal byte sequences into serial output.
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        script = Path(__file__).resolve().parents[1] / "scripts/test-vdri-qemu.py"
+        spec = importlib.util.spec_from_loader("veyra_vdri_qemu", SourceFileLoader("veyra_vdri_qemu", str(script)))
+        assert spec is not None and spec.loader is not None
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        decoded = helper.decode_qemu_output(
+            b"EFI\\xff\\xfe\\nVDRI_QEMU_PASS\\n".replace(b"\\xff", b"\xff").replace(b"\\xfe", b"\xfe"),
+            b"BOOT: ok",
+        )
+        self.assertIn("VDRI_QEMU_PASS", decoded)
+        self.assertIn("\ufffd", decoded)
+
+
 class VdriStatusTests(unittest.TestCase):
     def make_device(
         self,
