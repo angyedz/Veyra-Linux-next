@@ -42,6 +42,12 @@ class FirmwareBootGateTests(unittest.TestCase):
             with self.subTest(missing=missing):
                 self.assertTrue(module.verify(report))
 
+    def test_fully_black_final_screenshot_must_fail(self):
+        report = good_report()
+        report["modes"][0]["screenshots"][-1]["non_black_pixels_detected"] = False
+        failures = module.verify(report)
+        self.assertTrue(any("completely black" in failure for failure in failures))
+
     def test_qemu_failure_or_unchecked_firmware_fails(self):
         report = good_report()
         report["modes"][1]["errors"].append("QEMU exited 1")
