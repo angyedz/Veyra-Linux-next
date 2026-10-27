@@ -54,6 +54,8 @@ USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / "vpkg-apps"
 USER_APP_EXTENSION_NAME = "vpkg-apps"
 PROC_CMDLINE = Path("/proc/cmdline")
 PROC_BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+LIVE_MODE_MARKER = Path("/etc/veyra/live-mode")
+LIVE_KERNEL_TOKEN = "root=live:CDLABEL=VEYRA_NEXT_LIVE"
 SYS_FIRMWARE_EFI = Path("/sys/firmware/efi")
 OS_RELEASE_FILE = Path("/usr/lib/os-release")
 FEDORA_RELEASE = "44"
@@ -767,7 +769,34 @@ def load_user_app_intents() -> list[dict[str, str]]:
     return requests
 
 
+def running_live_mode() -> bool:
+    """Only opt in when this image marker AND the actual Live boot agree.
+
+    Merely placing a marker on an installed system must not bypass its
+    authenticated deployment identity or enable Live-only behavior.
+    """
+    if not LIVE_MODE_MARKER.is_file() or LIVE_MODE_MARKER.is_symlink():
+        return False
+    try:
+        return (
+            LIVE_MODE_MARKER.read_text(encoding="ascii").strip() == "veyra-next-native-live-iso"
+            and LIVE_KERNEL_TOKEN in PROC_CMDLINE.read_text(encoding="ascii").split()
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
 def running_deployment_roothash() -> str:
+    if running_live_mode():
+        # Ephemeral per-boot app-layer identity; NOT a verity root hash.
+        # The Live overlay disappears at reboot and cannot stage system OTA.
+        try:
+            boot_id = PROC_BOOT_ID.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError) as error:
+            raise VpkgError("Cannot identify the running Live session.") from error
+        if not re.fullmatch(r"[0-9a-f-]{36}", boot_id):
+            raise VpkgError("The Live boot ID is malformed.")
+        return hashlib.sha256(("veyra-live:" + boot_id).encode("ascii")).hexdigest()
     try:
         tokens = PROC_CMDLINE.read_text(encoding="ascii").split()
     except OSError as error:
@@ -780,6 +809,9 @@ def running_deployment_roothash() -> str:
 
 def running_uki_version() -> str:
     """Read this boot's image version from its UKI or immutable BIOS root."""
+    if running_live_mode():
+        return "live"
+
     if not SYS_FIRMWARE_EFI.is_dir():
         try:
             lines = OS_RELEASE_FILE.read_text(encoding="utf-8").splitlines()
@@ -2788,6 +2820,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        # Never let a disposable Live desktop manipulate A/B deployment
+        # bindings or schedule package activation on a future boot.
+        if running_live_mode() and arguments.command in {
+            "stage", "prepare-for-base", "bind-generation",
+            "complete-pending", "cancel-pending",
+        }:
+            raise VpkgError("This command requires installed Veyra Next; Live ISO has no A/B slots.")
         if arguments.command == "channel":
             if arguments.name:
                 set_channel(arguments.name)
