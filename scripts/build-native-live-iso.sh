@@ -33,7 +33,7 @@ dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   systemd systemd-udev systemd-pam dbus dbus-daemon NetworkManager NetworkManager-wifi \
   plasma-desktop plasma-workspace plasma-workspace-wayland plasma-systemsettings \
   sddm sddm-x11 kwin-wayland plasma-milou breeze-icon-theme \
-  plasma-nm plasma-pa dolphin konsole konsole-part kate \
+  plasma-nm plasma-pa dolphin konsole konsole-part kate udisks2 \
   plasma-discover plasma-discover-flatpak \
   xdg-desktop-portal xdg-desktop-portal-kde \
   pipewire pipewire-pulseaudio wireplumber \
@@ -67,6 +67,10 @@ install -m 0644 "$repo/installer/calamares/modules/"*.conf "$root/etc/calamares/
   die "Calamares terminal plugin missing: install Fedora konsole-part"
 [[ -x "$root/usr/bin/calamares" ]] ||
   die "Calamares GUI executable missing from Live rootfs"
+# KDE Solid/Dolphin queries org.freedesktop.UDisks2 over the system bus.
+# Without this service, Plasma repeatedly reports "Failed to fetch all devices".
+[[ -s "$root/usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service" ]] ||
+  die "UDisks2 system D-Bus activation descriptor is missing"
 # Missing org.kde.milou makes the KWin 6.7 overview QML fail to load.
 [[ -f "$root/usr/lib64/qt6/qml/org/kde/milou/qmldir" ]] ||
   die "Required KWin overview QML missing: Fedora plasma-milou"
