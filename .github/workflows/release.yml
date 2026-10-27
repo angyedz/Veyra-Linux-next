@@ -184,7 +184,7 @@ jobs:
           cat > build-release-notes.md <<EOF
           Veyra Next pre-alpha system update ${IMAGE_VERSION}.
 
-          Update bundles are authenticated by the detached signature on `SHA256SUMS.gpg`.
+          Update bundles are authenticated by the detached signature in SHA256SUMS.gpg.
           The matching public key is embedded in the image's systemd-sysupdate keyring.
           The full disk image is not attached: this release contains the A/B update assets only.
           EOF
