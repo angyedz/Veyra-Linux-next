@@ -126,3 +126,35 @@ and blocked-system-package rules are unchanged. Other `vpkg` subcommands,
 arbitrary root commands and shell execution do not gain passwordless sudo.
 There is no persistent A/B rollback or system OTA inside Live, and packages
 installed in the writable overlay vanish on restart.
+
+## Calamares launcher and installation safety (October 27)
+
+The earlier ISO only wrote a `veyra-installer.desktop` entry to the
+application menu, with `Exec=sudo -n /usr/bin/calamares`. Running a Qt
+installer as root loses the authenticated KDE Wayland display/session
+variables and can result in no visible window. The Live rootfs also installed
+`konsole` but omitted the separate Fedora `konsole-part` package required
+by Calamares's `interactiveterminal` view module.
+
+The current experimental builder installs `konsole-part` and checks its
+KParts plugin. It puts an executable `Install Veyra Next.desktop` shortcut
+in `/home/liveuser/Desktop` and an entry in the application menu. The
+shortcut launches `/usr/bin/calamares` **as liveuser**, preserving the
+Wayland session; errors are written to
+`~/.cache/veyra-live/calamares.log` and displayed through KDialog.
+
+The Calamares interactive terminal runs a separate restricted installer
+backend: `sudo -n /usr/libexec/veyra-installer --preflight` first verifies
+that Recovery UKI and the other required inputs are present. Only on
+successful preflight does it run `sudo -n /usr/libexec/veyra-installer` to
+prompt for disk selection and explicit destructive confirmation. The Live
+sudoers file allows these **two fixed argument forms only**, not an
+arbitrary command, root GUI, or `--target` flags. Calamares's generic
+`finished` view is deliberately removed because it cannot know whether
+the separately executed terminal installer succeeded or failed.
+
+**The Live ISO may be used to inspect the Calamares interface even when
+installation is unavailable.** The published experimental pipeline does
+not yet include a verified Recovery UKI or a successful real installed-OS
+A/B boot test, so it must not be advertised as install-ready. The installer
+must fail closed before changing a disk when its Recovery UKI is absent.
