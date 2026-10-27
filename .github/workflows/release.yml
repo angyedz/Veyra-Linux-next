@@ -103,8 +103,8 @@ jobs:
           fi
           fingerprint="${fingerprints[0]}"
           install -d mkosi.extra/usr/lib/systemd
-          gpg --batch --export "$fingerprint" > mkosi.extra/usr/lib/systemd/import-pubring.gpg
-          test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
+          gpg --batch --export "$fingerprint" > mkosi.extra/usr/lib/systemd/import-pubring.pgp
+          test -s mkosi.extra/usr/lib/systemd/import-pubring.pgp
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
 
@@ -122,7 +122,7 @@ jobs:
           test -s "mkosi.output/veyra-next_${version}.initrd"
           test -s mkosi.output/veyra-next_*.root.raw.zst
           test -s mkosi.output/veyra-next_*.root-verity.raw.zst
-          test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
+          test -s mkosi.extra/usr/lib/systemd/import-pubring.pgp
           test -s mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- \
             sh -eu -c '
