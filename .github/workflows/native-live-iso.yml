@@ -37,7 +37,7 @@ jobs:
         run: |
           dnf5 install -y grub2-tools-extra grub2-pc-modules grub2-efi-x64-modules \
             grub2-tools-efi dracut squashfs-tools xorriso mtools \
-            dosfstools python3 dejavu-sans-fonts qemu-system-x86-core edk2-ovmf
+            dosfstools python3 dejavu-sans-fonts qemu-system-x86-core qemu-device-display-virtio-vga edk2-ovmf
       - name: Provide required GRUB Unicode font
         run: |
           mkdir -p /usr/share/grub
@@ -45,6 +45,9 @@ jobs:
           test -s /usr/share/grub/unicode.pf2
       - name: Compose Live ISO from Fedora RPM rootfs
         run: bash scripts/build-native-live-iso.sh
+      - name: Verify QEMU VirtIO VGA backend is available
+        run: |
+          qemu-system-x86_64 -device help | grep -q 'virtio-vga'
       - name: Capture firmware and early Live boot diagnostics in disposable QEMU
         id: qemu
         continue-on-error: true
