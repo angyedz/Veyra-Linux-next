@@ -9,7 +9,7 @@ import re
 
 # Below both GitHub's advertised 2 GiB bound and a decimal 2 GB budget.
 MAX_ASSET_BYTES = 2_000_000_000
-VERSION = re.compile(r"[0-9]+\\.[0-9]+\\.[0-9]+(?:[.-][a-z0-9]+)*")
+VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[.-][a-z0-9]+)*")
 
 
 def validate(directory: Path, version: str) -> list[str]:
@@ -25,7 +25,7 @@ def validate(directory: Path, version: str) -> list[str]:
     if len(roots) != 1 or len(verities) != 1:
         raise ValueError("expected exactly one root and one matching verity image")
     expected.extend((roots[0].name, verities[0].name))
-    digest = re.compile(rf"veyra-next_{re.escape(version)}_([0-9a-f]{{64}})\\.root(?:-verity)?\\.raw\\.zst")
+    digest = re.compile(rf"veyra-next_{re.escape(version)}_([0-9a-f]{{64}})\.root(?:-verity)?\.raw\.zst")
     matches = [digest.fullmatch(p.name) for p in (roots[0], verities[0])]
     if any(m is None for m in matches) or matches[0].group(1) != matches[1].group(1):
         raise ValueError("root and verity files must use one identical dm-verity root hash")
@@ -65,5 +65,5 @@ if __name__ == "__main__":
     try:
         paths = validate(args.directory, args.version)
     except (OSError, UnicodeError, ValueError) as exc:
-        parser.exit(1, f"Veyra update release rejected: {exc}\\n")
+        parser.exit(1, f"Veyra update release rejected: {exc}\n")
     print(f"Checked {len(paths)} GitHub Release assets; each is at most {MAX_ASSET_BYTES} bytes.")
