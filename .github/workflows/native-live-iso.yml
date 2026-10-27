@@ -6,6 +6,8 @@ on:
       - 'scripts/build-native-live-iso.sh'
       - 'scripts/test-live-iso-qemu.py'
       - 'tests/test_live_iso_qemu.py'
+      - 'scripts/verify-live-iso-qemu.py'
+      - 'tests/test_live_iso_qemu_gate.py'
       - '.github/workflows/native-live-iso.yml'
       - 'tests/test_native_live_iso.py'
   workflow_dispatch:
@@ -25,6 +27,7 @@ jobs:
       - run: bash -n scripts/build-native-live-iso.sh
       - run: python3 -m unittest discover -s tests -p 'test_native_live_iso.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu_gate.py' -v
   compose:
     needs: source-tests
     runs-on: ubuntu-24.04
@@ -50,13 +53,15 @@ jobs:
           qemu-system-x86_64 -device help | grep -q 'virtio-vga'
       - name: Capture firmware and early Live boot diagnostics in disposable QEMU
         id: qemu
-        continue-on-error: true
+        continue-on-error: false
         run: |
           python3 scripts/test-live-iso-qemu.py \
             --iso build/native-live/veyra-next-prototype-live.iso \
             --output build/native-live-qemu \
             --modes both \
             --at 30,120
+      - name: Require kernel and init evidence for both firmwares
+        run: python3 scripts/verify-live-iso-qemu.py build/native-live-qemu/report.json
       - name: Upload QEMU BIOS and UEFI guest screenshots
         if: always()
         uses: actions/upload-artifact@v4
