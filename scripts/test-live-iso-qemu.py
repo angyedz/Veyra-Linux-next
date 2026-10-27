@@ -109,6 +109,15 @@ def ppm_to_png(source: pathlib.Path, destination: pathlib.Path) -> tuple[int, in
     return width, height
 
 
+def ppm_has_visible_pixels(source: pathlib.Path) -> bool:
+    """Distinguish a totally black captured scanout from a nonblack frame."""
+    data = source.read_bytes()
+    match = re.match(rb"\AP6\r?\n([0-9]+) ([0-9]+)\r?\n255\r?\n", data)
+    if match is None:
+        raise SmokeError("invalid QEMU screenshot when checking black frame")
+    return any(data[match.end():])
+
+
 def screendump(monitor: pathlib.Path, ppm: pathlib.Path, deadline: float) -> None:
     while not monitor.exists() and time.monotonic() < deadline:
         time.sleep(0.2)
@@ -189,6 +198,7 @@ def capture_one(
                         "seconds_after_launch": second,
                         "file": png.name,
                         "dimensions": list(size),
+                        "non_black_pixels_detected": ppm_has_visible_pixels(ppm),
                     })
             except (OSError, SmokeError) as exc:
                 record["errors"].append(str(exc))
