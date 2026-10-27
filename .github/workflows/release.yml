@@ -199,3 +199,20 @@ jobs:
             --title "Veyra Linux pre-alpha ${IMAGE_VERSION}" \
             --notes-file build-release-notes.md \
             --latest
+
+      - name: Re-download the five published A/B assets and revalidate signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_VERSION: ${{ steps.artifacts.outputs.version }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/veyra-release-download"
+          mkdir -p "$output"
+          gh release download "veyra-next-$IMAGE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" --dir "$output" \
+            --pattern 'veyra-next_*' \
+            --pattern 'SHA256SUMS*'
+          python3 scripts/verify-release-assets.py "$output" "$IMAGE_VERSION"
+          gpg --batch --verify "$output/SHA256SUMS.gpg" "$output/SHA256SUMS"
+          (cd "$output" && sha256sum --check SHA256SUMS)
+          echo 'Signed A/B update fetched and verified from GitHub Releases.' >> "$GITHUB_STEP_SUMMARY"
