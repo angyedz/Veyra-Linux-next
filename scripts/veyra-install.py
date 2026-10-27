@@ -35,7 +35,7 @@ def requested_account() -> tuple[str, str, str]:
         raise InstallError("account passwords do not match; no disk was modified")
     if len(user_password) < 8 or len(root_password) < 8:
         raise InstallError("both passwords must contain at least eight characters")
-    if any("\\n" in value or "\\x00" in value for value in (user_password, root_password)):
+    if any("\n" in value or "\x00" in value for value in (user_password, root_password)):
         raise InstallError("password contains invalid control characters")
     return username, user_password, root_password
 
@@ -47,7 +47,7 @@ def configure_installed_accounts(root: pathlib.Path, username: str, user_passwor
     command(["chroot", str(root), "/usr/sbin/useradd",
              "--create-home", "--groups", "wheel", "--shell", "/bin/bash", username])
     # Password input uses stdin, not command arguments or installer logs.
-    accounts = f"{username}:{user_password}\\nroot:{root_password}\\n"
+    accounts = f"{username}:{user_password}\nroot:{root_password}\n"
     subprocess.run(
         ["chroot", str(root), "/usr/sbin/chpasswd"],
         input=accounts, encoding="utf-8", check=True,
