@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import io
+from contextlib import redirect_stdout, redirect_stderr
 import subprocess
 import stat
 import struct
@@ -102,6 +104,45 @@ class LiveModeIdentityTests(unittest.TestCase):
                 patch.object(vpkg, "PROC_CMDLINE", cmdline),
             ):
                 self.assertFalse(vpkg.running_live_mode())
+
+
+class VpkgDoctorTests(unittest.TestCase):
+    def test_doctor_success_in_live_mode_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            keys = [Path(directory) / name for name in ("free-key", "nonfree-key")]
+            for key in keys:
+                key.write_text("public test key", encoding="ascii")
+            output, errors = io.StringIO(), io.StringIO()
+            with (
+                patch.object(vpkg, "fedora_release_from_root", return_value="44"),
+                patch.object(vpkg, "running_live_mode", return_value=True),
+                patch.object(vpkg, "RPMFUSION_KEYS", tuple(keys)),
+                patch.object(vpkg, "VPKG_PUBLIC_KEY", Path(directory) / "not-signed"),
+                patch.object(vpkg.shutil, "which", return_value="/usr/bin/systemd-sysext"),
+                patch("vpkg_libdnf._bindings", return_value=object()),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                self.assertEqual(vpkg.main(["doctor"]), 0)
+            self.assertIn("disposable Live ISO", output.getvalue())
+            self.assertIn("actual RPM install has NOT been tested", output.getvalue())
+            self.assertEqual(errors.getvalue(), "")
+
+    def test_doctor_fails_closed_for_missing_trust_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output, errors = io.StringIO(), io.StringIO()
+            missing = Path(directory) / "missing-key"
+            with (
+                patch.object(vpkg, "fedora_release_from_root", return_value="44"),
+                patch.object(vpkg, "running_live_mode", return_value=False),
+                patch.object(vpkg, "RPMFUSION_KEYS", (missing,)),
+                patch.object(vpkg.shutil, "which", return_value="/usr/bin/systemd-sysext"),
+                patch("vpkg_libdnf._bindings", return_value=object()),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                self.assertEqual(vpkg.main(["doctor"]), 1)
+            self.assertIn("trust key missing", errors.getvalue())
 
 
 @unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
