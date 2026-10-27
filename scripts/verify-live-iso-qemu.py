@@ -41,6 +41,10 @@ def verify(report: dict) -> list[str]:
             issues.append(f"{mode}: did not confirm liveuser KWin and plasmashell processes")
         if isinstance(signals, dict) and signals.get("plasma_runtime_failed"):
             issues.append(f"{mode}: Plasma process probe reported failure")
+        if isinstance(signals, dict) and signals.get("ksplash_timed_out"):
+            issues.append(f"{mode}: KDE splash screen timed out")
+        if isinstance(signals, dict) and signals.get("milou_qml_missing"):
+            issues.append(f"{mode}: missing KDE plasma-milou QML module")
         if isinstance(signals, dict) and signals.get("plasma_session_crashed"):
             issues.append(f"{mode}: SDDM reports a crashed Plasma session")
         if isinstance(signals, dict) and signals.get("pam_systemd_missing"):
