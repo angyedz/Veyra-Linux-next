@@ -402,7 +402,16 @@ jobs:
             --fingerprint "$fingerprint" \
             --ovmf-code "$ovmf_code" \
             --ovmf-vars "$ovmf_vars" \
+            --log-directory build/uefi-ota-logs \
             --boot-timeout 1200
+      - name: Always preserve signed UEFI OTA QEMU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-ota-boot-diagnostics
+          path: build/uefi-ota-logs/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build target-version artifacts for Legacy BIOS OTA
         run: |
