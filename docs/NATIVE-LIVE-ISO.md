@@ -101,3 +101,28 @@ are not sufficient to declare graphical readiness. Until a nonblack
 KDE screenshot and the installer flow have been validated,
 treat the published ISO as an experimental live/diagnostic image and
 do not install to a physical disk.
+
+## Disposable Live guest: credentials, sleep and application installation
+
+This **experimental** Live image uses SDDM autologin to a password-locked
+`liveuser` account. Its KDE screen locker is disabled (`Autolock=false`,
+`LockOnResume=false`, `RequirePassword=false`); Live suspend/hibernate
+targets are masked and logind is configured to ignore idle suspend. This
+prevents a no-password Live user from being stranded at an unlock prompt.
+These policies are **not installed** into the real A/B Veyra system.
+
+For console-only troubleshooting **inside the Live ISO**, the root account's
+password is `veyra`. This is an intentionally public and weak development
+credential, **not safe for production, shared machines or remote exposure**.
+The image explicitly disallows SSH root login and SSH password authentication.
+Do not copy this root-password setup into `mkosi.extra` or the installed
+system, and remove it before a production release.
+
+Live users can run `vpkg install PACKAGE_NAME` directly: a Live-only
+`/usr/local/bin/vpkg` shim asks `sudo -n` to run **only**
+`/usr/bin/vpkg install` with names matching a strict anchored
+sudoers expression. The existing vpkg package allowlist, signature checks
+and blocked-system-package rules are unchanged. Other `vpkg` subcommands,
+arbitrary root commands and shell execution do not gain passwordless sudo.
+There is no persistent A/B rollback or system OTA inside Live, and packages
+installed in the writable overlay vanish on restart.
