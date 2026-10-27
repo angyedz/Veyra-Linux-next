@@ -42,7 +42,7 @@ class InstallerManifestTests(unittest.TestCase):
             self.assertIn("wheel", command.call_args.args[0])
             args, kwargs = run.call_args
             self.assertEqual(args[0][-1], "/usr/sbin/chpasswd")
-            self.assertEqual(kwargs["input"], "tester:user secret\\nroot:root secret\\n")
+            self.assertEqual(kwargs["input"], "tester:user secret\nroot:root secret\n")
             self.assertEqual(kwargs["check"], True)
 
     def test_installed_account_input_rejects_invalid_users_before_erasure(self) -> None:
