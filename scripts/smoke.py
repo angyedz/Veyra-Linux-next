@@ -114,8 +114,18 @@ def main() -> int:
         return fail("Anaconda must not be installed in the Veyra Live ISO")
     if "-anaconda*" not in live_kickstart:
         return fail("the Live ISO package selection must explicitly exclude Anaconda packages")
-    if "url --url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/" not in live_kickstart:
-        return fail("the Fedora 44 Live ISO Kickstart must declare the network RPM source required by Lorax")
+    pinned_url = "url --url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/"
+    templated_url = "url --url=__VEYRA_FEDORA_REPO_URL__"
+    if templated_url in live_kickstart:
+        for marker in ("repo_primary=", "repo_fallback=", 'render_kickstart "$repo_url"'):
+            if marker not in live_iso_script:
+                return fail(f"the Live ISO builder must resolve the Fedora template URL: {marker}")
+        for official_host in ("download.fedoraproject.org", "dl.fedoraproject.org"):
+            if official_host not in live_iso_script:
+                return fail(f"the Live ISO builder lacks official repository host: {official_host}")
+    elif pinned_url not in live_kickstart:
+        return fail("the Fedora 44 Live ISO Kickstart must declare an official network RPM source")
+
     if 'live_root="/mnt/sysimage"' not in live_kickstart or "${LIVE_ROOT" in live_kickstart:
         return fail("the Lorax no-virt Kickstart must copy Live assets into its /mnt/sysimage staging root")
     if "policycoreutils" not in live_iso_job.group(1):
