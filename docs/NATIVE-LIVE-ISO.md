@@ -63,3 +63,13 @@ and select `veyra-next-native-live-iso`. Its ZIP contains the ISO and the
 SHA-256 file. It is not a production release. Without an included Recovery UKI,
 Calamares preflight must stop destructive installation. Test Live desktop only,
 using a throwaway VM or expendable boot media, with Secure Boot disabled.
+
+## Current KDE diagnostic status
+
+The ISO may reach `graphical.target` and successfully authenticate `liveuser`
+without displaying Plasma; a successful QEMU kernel/init gate does **not**
+prove graphical desktop readiness. BIOS and UEFI 120-second screenshots from
+run 40507253123 were black. The following test iteration emits SDDM journal,
+Live user journal and Wayland session logs into QEMU serial under the marker
+`VEYRA LIVE GRAPHICS DIAGNOSTICS`. This service is restricted to QEMU and
+is never part of the installed A/B system.
