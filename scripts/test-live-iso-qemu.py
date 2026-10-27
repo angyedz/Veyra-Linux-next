@@ -140,7 +140,7 @@ def serial_signals(path: pathlib.Path) -> dict[str, bool]:
         "kernel_seen": bool(re.search(rb"Linux version|Command line:|Kernel command line:", data, re.I)),
         "init_seen": bool(re.search(rb"systemd\[1\]|dracut|Reached target", data, re.I)),
         "live_desktop_confirmed": False,  # Only visual/human inspection can confirm this.
-        "plasma_session_crashed": bool(re.search(rb"Session crashed \\(exit code [0-9]+\\)", data, re.I)),
+        "plasma_session_crashed": bool(re.search(rb"Session crashed \(exit code [0-9]+\)", data, re.I)),
         "pam_systemd_missing": b"PAM unable to dlopen(" in data and b"pam_systemd.so" in data,
         "plasma_session_invoked": b"startplasma-wayland" in data,
     }
