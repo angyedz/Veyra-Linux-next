@@ -58,8 +58,8 @@ class NativeLiveIsoTests(unittest.TestCase):
             "ConditionVirtualization=qemu",
             "/home/liveuser/.local/share/sddm/wayland-session.log",
             "journalctl -b -u sddm.service",
-            "VE YRA",
-        )[:-1]:
+            "VEYRA LIVE GRAPHICS DIAGNOSTICS",
+        ):
             self.assertIn(required, SCRIPT)
 
     def test_media_verification(self):
