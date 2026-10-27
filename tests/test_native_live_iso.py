@@ -52,6 +52,16 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertNotIn('install -m 0755 "$repo/mkosi.extra/usr/bin/veyra-update"', SCRIPT)
         self.assertNotIn('systemd-bless-boot.service.d/veyra-vpkg-ota.conf', SCRIPT)
 
+    def test_qemu_only_graphics_diagnostics(self):
+        for required in (
+            "veyra-live-graphics-diagnostics.service",
+            "ConditionVirtualization=qemu",
+            "/home/liveuser/.local/share/sddm/wayland-session.log",
+            "journalctl -b -u sddm.service",
+            "VE YRA",
+        )[:-1]:
+            self.assertIn(required, SCRIPT)
+
     def test_media_verification(self):
         self.assertIn("8 * 1024 * 1024 * 1024", SCRIPT)
         self.assertIn("BIOS El Torito missing", SCRIPT)
