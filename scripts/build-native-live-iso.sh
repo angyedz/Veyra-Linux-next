@@ -33,11 +33,13 @@ dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   systemd systemd-udev dbus NetworkManager NetworkManager-wifi \
   plasma-desktop plasma-workspace plasma-workspace-wayland plasma-systemsettings \
   sddm sddm-x11 kwin-wayland breeze-icon-theme \
-  plasma-nm plasma-pa dolphin konsole \
+  plasma-nm plasma-pa dolphin konsole kate \
+  plasma-discover plasma-discover-flatpak \
+  xdg-desktop-portal xdg-desktop-portal-kde \
   pipewire pipewire-pulseaudio wireplumber \
   xorg-x11-server-Xwayland mesa-dri-drivers \
   calamares calamares-interactiveterminal kdialog \
-  python3 dnf5 libdnf5 python3-libdnf5 \
+  python3 dnf5 libdnf5 python3-libdnf5 rpm squashfs-tools \
   grub2-tools grub2-tools-extra grub2-pc grub2-pc-modules \
   grub2-efi-x64 grub2-efi-x64-modules grub2-tools-efi \
   systemd-boot-unsigned systemd-ukify \
@@ -50,6 +52,8 @@ install -d "$root/etc/sddm.conf.d" "$root/etc/sudoers.d" \
   "$root/usr/share/veyra/installer/source/installer" \
   "$root/usr/share/veyra/branding" "$root/usr/share/applications" \
   "$root/usr/libexec" "$root/etc/calamares/modules" \
+  "$root/usr/lib/veyra" "$root/etc/veyra" "$root/etc/yum.repos.d" \
+  "$root/usr/share/pki/rpm-gpg" \
   "$root/etc/calamares/branding/veyra" "$root/etc/systemd/system"
 cp -a "$repo/mkosi.conf" "$repo/mkosi.repart" "$repo/mkosi.extra" \
   "$root/usr/share/veyra/installer/source/"
@@ -63,6 +67,51 @@ install -m 0644 "$repo/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$root/usr/share/veyra/branding/veyra-logo.svg"
 install -m 0644 "$repo/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$root/etc/calamares/branding/veyra/veyra-logo.svg"
+# Ship the same native vpkg policy/API implementation as the installed
+# system, but do not copy veyra-update, OTA transfer definitions or boot-bless
+# units. Live packages operate in a disposable overlay; no A/B partitions.
+install -m 0755 "$repo/mkosi.extra/usr/bin/vpkg" "$root/usr/bin/vpkg"
+install -m 0644 "$repo/mkosi.extra/usr/lib/veyra/vpkg_libdnf.py" \
+  "$root/usr/lib/veyra/vpkg_libdnf.py"
+install -m 0644 "$repo/mkosi.extra/usr/lib/veyra/veyra_repo.py" \
+  "$root/usr/lib/veyra/veyra_repo.py"
+install -m 0644 "$repo/mkosi.extra/usr/share/veyra/sysext-level" \
+  "$root/usr/share/veyra/sysext-level"
+install -m 0644 "$repo/mkosi.extra/usr/share/veyra/flathub.flatpakrepo" \
+  "$root/usr/share/veyra/flathub.flatpakrepo"
+install -m 0644 "$repo/mkosi.extra/etc/yum.repos.d/"*.repo \
+  "$root/etc/yum.repos.d/"
+install -m 0644 "$repo/mkosi.extra/usr/share/pki/rpm-gpg/"* \
+  "$root/usr/share/pki/rpm-gpg/"
+# If a production Veyra signing key is not provisioned, vpkg automatically
+# excludes those channels and continues to offer signed Fedora apps.
+if [[ -s "$repo/mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA" ]]; then
+  install -m 0644 "$repo/mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA" \
+    "$root/usr/share/veyra/RPM-GPG-KEY-VEYRA"
+fi
+# The system extension ABI must match the vpkg release metadata.
+os_release="$root/usr/lib/os-release"
+[[ -f "$os_release" && ! -L "$os_release" ]] || die "missing Fedora os-release for vpkg"
+sysext_level="$(< "$root/usr/share/veyra/sysext-level")"
+[[ "$sysext_level" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "invalid vpkg sysext level"
+if grep -q '^SYSEXT_LEVEL=' "$os_release"; then
+  sed -i "s/^SYSEXT_LEVEL=.*/SYSEXT_LEVEL=$sysext_level/" "$os_release"
+else
+  printf 'SYSEXT_LEVEL=%s\n' "$sysext_level" >> "$os_release"
+fi
+# Both the marker and kernel's root=live:CDLABEL are required by vpkg to use
+# ephemeral identity instead of an installed, verity-protected A/B roothash.
+printf 'veyra-next-native-live-iso\n' > "$root/etc/veyra/live-mode"
+chmod 0644 "$root/etc/veyra/live-mode"
+# Mask system OTA activation in Live only. Installed images are unaffected.
+for unit in systemd-sysupdate.service systemd-sysupdate.timer \
+  systemd-sysupdate-reboot.service systemd-sysupdate-reboot.timer; do
+  ln -sfn /dev/null "$root/etc/systemd/system/$unit"
+done
+# A package-manager and helper sanity check runs inside the composed root.
+chroot "$root" /usr/bin/vpkg --help >/dev/null
+[[ ! -e "$root/usr/bin/veyra-update" ]] || die "Live system must not ship installed OTA updater"
+[[ ! -d "$root/usr/lib/sysupdate.d" ]] || die "Live system must not contain A/B transfer rules"
 if [[ -n "${VEYRA_RECOVERY_UKI:-}" ]]; then
   [[ -s "$VEYRA_RECOVERY_UKI" && ! -L "$VEYRA_RECOVERY_UKI" ]] ||
     die "invalid Recovery UKI input"
