@@ -108,6 +108,16 @@ class IsoQemuSmokeTests(unittest.TestCase):
             self.assertTrue(signals["pam_systemd_missing"])
             self.assertFalse(signals["live_desktop_confirmed"])
 
+    def test_vpkg_guest_markers_are_not_assumed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "serial.log"
+            path.write_text("Linux version 6.0\nsystemd[1]: Started\n", encoding="utf-8")
+            self.assertFalse(iso_qemu.serial_signals(path)["vpkg_guest_test_passed"])
+            path.write_text("VEYRA_LIVE_VPKG_CI_BEGIN\nVEYRA_LIVE_VPKG_CI_PASS\n", encoding="utf-8")
+            self.assertTrue(iso_qemu.serial_signals(path)["vpkg_guest_test_passed"])
+            path.write_text("VEYRA_LIVE_VPKG_CI_FAILURE\n", encoding="utf-8")
+            self.assertTrue(iso_qemu.serial_signals(path)["vpkg_guest_test_failed"])
+
     def test_output_refuses_reuse_before_invoking_qemu(self):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "boot.iso"
