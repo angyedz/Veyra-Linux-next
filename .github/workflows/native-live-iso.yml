@@ -50,7 +50,7 @@ jobs:
         run: bash scripts/build-native-live-iso.sh
       - name: Verify QEMU VirtIO VGA backend is available
         run: |
-          qemu-system-x86_64 -device help | grep -q 'virtio-vga'
+          qemu-system-x86_64 -device help | grep -q 'virtio-vga'\n          # Listing the device is insufficient: QEMU may fail to instantiate it.\n          set +e\n          timeout 3s qemu-system-x86_64 -machine q35,accel=tcg -m 512 \\\n            -display none -vga none -device virtio-vga -S -nic none \\\n            > /tmp/veyra-qemu-probe.log 2>&1\n          status=$?\n          set -e\n          if [ "$status" -ne 124 ]; then\n            cat /tmp/veyra-qemu-probe.log\n            echo "VirtIO VGA failed to initialize (exit $status)" >&2\n            exit 1\n          fi
       - name: Capture firmware and early Live boot diagnostics in disposable QEMU
         id: qemu
         continue-on-error: false
