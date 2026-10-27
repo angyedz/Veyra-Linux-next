@@ -191,7 +191,14 @@ def add_serial_to_initial_uki(image: pathlib.Path) -> None:
         for line in listing.splitlines()
         if line.strip().lower().endswith(".efi")
     ]
-    system_names = [name for name in names if name.startswith(("veyra-next-", "veyra-next_"))]
+    # mkosi generates a kernel-based "veyra-<kernel>-<hash>.efi" UKI name,
+    # whereas the installed/update UKIs use "veyra-next_<version>...efi".
+    # Recovery is also under EFI/Linux and must never be patched as the OS.
+    system_names = [
+        name for name in names
+        if name.startswith(("veyra-next-", "veyra-next_", "veyra-"))
+        and not name.startswith(("veyra-recovery", "veyra-next-recovery"))
+    ]
     if len(system_names) != 1:
         raise RuntimeError(f"expected one initial Veyra system UKI in EFI/Linux, found {system_names!r}")
     with tempfile.TemporaryDirectory(prefix="veyra-serial-uki-") as temporary:
