@@ -74,6 +74,14 @@ class IsoQemuSmokeTests(unittest.TestCase):
             with self.assertRaises(iso_qemu.SmokeError):
                 iso_qemu.ppm_to_png(source, result)
 
+    def test_black_vs_nonblack_qemu_scanout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "black.ppm"
+            path.write_bytes(b"P6\n64 64\n255\n" + b"\x00" * (64 * 64 * 3))
+            self.assertFalse(iso_qemu.ppm_has_visible_pixels(path))
+            path.write_bytes(b"P6\n64 64\n255\n" + b"\x00" * (64 * 64 * 3 - 1) + b"\x01")
+            self.assertTrue(iso_qemu.ppm_has_visible_pixels(path))
+
     def test_serial_markers_not_fake_success(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "serial.log"
