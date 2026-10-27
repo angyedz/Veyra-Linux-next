@@ -108,6 +108,20 @@ class NativeLiveIsoTests(unittest.TestCase):
         # from writing its own home and makes the desktop exit immediately.
         self.assertNotIn("-all-root", SCRIPT)
 
+    def test_default_launcher_is_branded_without_replacing_layout(self):
+        for expected in (
+            "configure-launcher.js",
+            "veyra-live-brand-launcher",
+            "veyra-live-branding.desktop",
+            'widget.writeConfig("icon", "/usr/share/veyra/branding/veyra-logo.svg")',
+            'widget.currentConfigGroup = ["General"]',
+            "org.kde.plasma.kickoff",
+            "org.kde.plasma.kicker",
+            'busctl --user call org.kde.plasmashell /PlasmaShell',
+        ):
+            self.assertIn(expected, SCRIPT)
+        self.assertNotIn("plasma-org.kde.plasma.desktop-appletsrc", SCRIPT)
+
     def test_guest_vpkg_selftest_is_packaged_only_for_disposable_live(self):
         for required in (
             "veyra-live-vpkg-vm-check.service",
