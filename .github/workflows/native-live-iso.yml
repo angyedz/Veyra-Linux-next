@@ -34,6 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash -n scripts/build-native-live-iso.sh
+      - run: bash -n scripts/export-bootstrap-public-keys.sh
       - run: python3 -m unittest discover -s tests -p 'test_native_live_iso.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_vpkg.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
