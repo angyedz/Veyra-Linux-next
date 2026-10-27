@@ -27,8 +27,11 @@ def verify(report: dict) -> list[str]:
         seen.add(mode)
         if item.get("errors"):
             issues.append(f"{mode}: QEMU capture failed: {item['errors']!r}")
-        if not item.get("screenshots"):
+        screenshots = item.get("screenshots")
+        if not screenshots:
             issues.append(f"{mode}: no guest screenshot recorded")
+        elif isinstance(screenshots[-1], dict) and screenshots[-1].get("non_black_pixels_detected") is False:
+            issues.append(f"{mode}: final screenshot remains completely black")
         signals = item.get("serial_signals", {})
         if not isinstance(signals, dict) or not signals.get("kernel_seen"):
             issues.append(f"{mode}: no kernel startup evidence in serial output")
