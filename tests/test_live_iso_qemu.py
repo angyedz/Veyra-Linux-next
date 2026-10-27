@@ -33,7 +33,9 @@ class IsoQemuSmokeTests(unittest.TestCase):
         self.assertIn("-nic none", rendered)
         self.assertNotIn("pflash", rendered)
         self.assertNotIn("accel=kvm", rendered)
-        self.assertIn("-boot order=d,menu=off", rendered)\n        self.assertIn("-vga none -device virtio-vga", rendered)\n        self.assertNotIn("-vga virtio", rendered)
+        self.assertIn("-boot order=d,menu=off", rendered)
+        self.assertIn("-vga none -device virtio-vga", rendered)
+        self.assertNotIn("-vga virtio", rendered)
 
     def test_uefi_uses_disposable_varstore(self):
         args = iso_qemu.qemu_args(
