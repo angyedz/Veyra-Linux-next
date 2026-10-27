@@ -36,6 +36,13 @@ def running_in_qemu_vm() -> bool:
 
 
 class RunningIdentityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These cases validate an INSTALLED image's UKI/BIOS identity. They
+        # must not inherit /etc/veyra/live-mode from the QEMU Live test host.
+        installed = patch.object(vpkg, "running_live_mode", return_value=False)
+        installed.start()
+        self.addCleanup(installed.stop)
+
     def test_legacy_bios_reads_version_from_the_verity_protected_os_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             os_release = Path(temporary) / "os-release"
@@ -285,7 +292,9 @@ class VpkgPolicyTests(unittest.TestCase):
                 vpkg,
                 "run",
                 return_value=subprocess.CompletedProcess([], 0, str(uki) + "\n", ""),
-            ), patch.object(vpkg, "SYS_FIRMWARE_EFI", efi_dir):
+            ), patch.object(vpkg, "SYS_FIRMWARE_EFI", efi_dir), patch.object(
+                vpkg, "running_live_mode", return_value=False
+            ):
                 self.assertEqual(vpkg.running_uki_version(), "1.2.3-test")
 
     def test_pending_completion_requires_exact_roothash_and_uki_version(self) -> None:
@@ -870,15 +879,19 @@ class VpkgPolicyTests(unittest.TestCase):
         )
 
     def test_veyra_extension_transactions_use_only_the_selected_channel(self) -> None:
-        selected = vpkg.selected_repo_ids(
-            "testing",
-            include_rpmfusion=False,
-            include_upstream=False,
-        )
-        self.assertEqual(
-            selected,
-            ("veyra-testing",),
-        )
+        # Source-built Live media intentionally has no production Veyra key.
+        # Validate this installed-system routing only with an explicit test key,
+        # rather than accidentally relying on the CI host's /usr contents.
+        with tempfile.TemporaryDirectory() as temporary:
+            key = Path(temporary) / "RPM-GPG-KEY-VEYRA"
+            key.write_text("fixture key", encoding="utf-8")
+            with patch.object(vpkg, "VPKG_PUBLIC_KEY", key):
+                selected = vpkg.selected_repo_ids(
+                    "testing",
+                    include_rpmfusion=False,
+                    include_upstream=False,
+                )
+        self.assertEqual(selected, ("veyra-testing",))
 
     def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
