@@ -157,8 +157,18 @@ done
 exit 0
 EOF
 chmod 0755 "$root/usr/lib/systemd/user-environment-generators/90-veyra-live-virtio-render"
-# The Live desktop is disposable; sudo permits only Calamares, not any shell.
-chroot "$root" /usr/sbin/useradd --create-home --groups wheel --shell /bin/bash liveuser
+# This root password is ONLY for a throwaway Live ISO, never for installed
+# Veyra. It is public, deliberately weak for prototype recovery, and must
+# never be shipped as a production or internet-exposed credential.
+printf 'root:veyra\n' | chroot "$root" /usr/sbin/chpasswd
+# Do not make the Live root account remotely accessible if sshd is ever added.
+install -d "$root/etc/ssh/sshd_config.d"
+cat > "$root/etc/ssh/sshd_config.d/90-veyra-live-no-root-login.conf" <<'EOF'
+PermitRootLogin no
+PasswordAuthentication no
+EOF
+# Live desktop account has no password and uses SDDM autologin.
+chroot "$root" /usr/sbin/useradd --create-home --shell /bin/bash liveuser
 chroot "$root" /usr/bin/passwd --lock liveuser
 # Preserve the Live user's UID/GID in the SquashFS image. Rewriting all
 # ownership to root makes $HOME unwritable and breaks Plasma autologin.
@@ -170,6 +180,52 @@ cat > "$root/etc/sudoers.d/veyra-live-calamares" <<'EOF'
 liveuser ALL=(root) NOPASSWD: /usr/bin/calamares
 EOF
 chmod 0440 "$root/etc/sudoers.d/veyra-live-calamares"
+# Allow only signed Fedora/RPM Fusion application names via vpkg install,
+# WITHOUT making the Live desktop a sudo-capable administrator. In particular,
+# no shell, arbitrary paths, options or OTA/installer commands are whitelisted.
+# sudoers matches the *complete* argument string with this anchored regex.
+cat > "$root/etc/sudoers.d/veyra-live-vpkg-install" <<'EOF'
+liveuser ALL=(root) NOPASSWD: /usr/bin/vpkg ^install[[:space:]]+[A-Za-z0-9][A-Za-z0-9+_.-]*([[:space:]]+[A-Za-z0-9][A-Za-z0-9+_.-]*)*$
+EOF
+chmod 0440 "$root/etc/sudoers.d/veyra-live-vpkg-install"
+chroot "$root" /usr/sbin/visudo -cf /etc/sudoers.d/veyra-live-vpkg-install ||
+  die "invalid Live-only vpkg sudoers policy"
+# /usr/local/bin precedes /usr/bin in a normal interactive Fedora shell.
+# Only 'vpkg install NAME...' crosses the privilege boundary; all other
+# commands go directly to vpkg, retaining their normal policy.
+install -d "$root/usr/local/bin"
+cat > "$root/usr/local/bin/vpkg" <<'EOF'
+#!/usr/bin/bash
+if [[ "${1:-}" == install && "${EUID}" -ne 0 ]]; then
+  shift
+  exec /usr/bin/sudo -n /usr/bin/vpkg install "$@"
+fi
+exec /usr/bin/vpkg "$@"
+EOF
+chmod 0755 "$root/usr/local/bin/vpkg"
+# Prevent a lock-screen password prompt for a deliberately passwordless user.
+install -d "$root/home/liveuser/.config"
+cat > "$root/home/liveuser/.config/kscreenlockerrc" <<'EOF'
+[Daemon]
+Autolock=false
+LockOnResume=false
+RequirePassword=false
+EOF
+chroot "$root" /usr/bin/chown -R liveuser:liveuser /home/liveuser/.config
+# Live media is a test environment: do not auto-suspend or hibernate.
+# Installed A/B system and its power settings stay untouched.
+for unit in sleep.target suspend.target hibernate.target \
+  hybrid-sleep.target suspend-then-hibernate.target; do
+  ln -sfn /dev/null "$root/etc/systemd/system/$unit"
+done
+install -d "$root/etc/systemd/logind.conf.d"
+cat > "$root/etc/systemd/logind.conf.d/90-veyra-live.conf" <<'EOF'
+[Login]
+IdleAction=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+HandleLidSwitch=ignore
+EOF
 cat > "$root/etc/sddm.conf.d/veyra-live.conf" <<'EOF'
 # Use X11 only for the SDDM greeter: some software-rendered QEMU
 # adapters crash the greeter's KWin Wayland compositor.
