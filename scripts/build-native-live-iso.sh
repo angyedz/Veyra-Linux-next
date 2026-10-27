@@ -155,6 +155,45 @@ Terminal=false
 Categories=Qt;System;
 EOF
 echo 'Veyra Next Prototype Live' > "$root/etc/hostname"
+# QEMU-only diagnostics: recover session errors even if KWin leaves a black
+# screen. Never enable this on real hardware or in the installed system.
+cat > "$root/usr/libexec/veyra-live-graphics-diagnostics" <<'EOF'
+#!/usr/bin/bash
+set -u
+sleep 18
+{
+  echo '=== VEYRA LIVE GRAPHICS DIAGNOSTICS BEGIN ==='
+  journalctl -b -u sddm.service --no-pager -n 80 --output=short-monotonic || true
+  journalctl -b _UID="$(id -u liveuser)" --no-pager -n 100 --output=short-monotonic || true
+  for file in /home/liveuser/.local/share/sddm/wayland-session.log \
+              /home/liveuser/.local/share/sddm/x11-session.log \
+              /home/liveuser/.xsession-errors; do
+    if [[ -f "$file" && ! -L "$file" ]]; then
+      printf '=== %s ===\n' "$file"
+      tail -n 120 "$file" || true
+    fi
+  done
+  if command -v coredumpctl >/dev/null; then
+    coredumpctl --no-pager list 2>&1 | tail -n 40 || true
+  fi
+  echo '=== VEYRA LIVE GRAPHICS DIAGNOSTICS END ==='
+} > /dev/ttyS0 2>&1
+EOF
+chmod 0755 "$root/usr/libexec/veyra-live-graphics-diagnostics"
+cat > "$root/etc/systemd/system/veyra-live-graphics-diagnostics.service" <<'EOF'
+[Unit]
+Description=Capture failed Plasma login diagnostics in disposable QEMU
+ConditionVirtualization=qemu
+After=sddm.service
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/veyra-live-graphics-diagnostics
+[Install]
+WantedBy=graphical.target
+EOF
+install -d "$root/etc/systemd/system/graphical.target.wants"
+ln -sfn ../veyra-live-graphics-diagnostics.service \
+  "$root/etc/systemd/system/graphical.target.wants/veyra-live-graphics-diagnostics.service"
 install -d "$root/etc/systemd/system/multi-user.target.wants" "$root/etc/systemd/system/display-manager.service.wants"
 ln -sfn /usr/lib/systemd/system/NetworkManager.service \
   "$root/etc/systemd/system/multi-user.target.wants/NetworkManager.service"
