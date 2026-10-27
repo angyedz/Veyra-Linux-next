@@ -24,6 +24,8 @@ def good_report():
                     "kernel_seen": True,
                     "init_seen": True,
                     "live_desktop_confirmed": False,
+                    "vpkg_guest_test_passed": True,
+                    "vpkg_guest_test_failed": False,
                 },
             }
             for mode in ("bios", "uefi")
