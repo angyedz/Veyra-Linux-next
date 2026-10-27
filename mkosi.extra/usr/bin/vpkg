@@ -2768,6 +2768,7 @@ def build_parser() -> argparse.ArgumentParser:
     channel.add_argument("name", nargs="?", choices=(*CHANNELS,))
 
     commands.add_parser("repos", help="show configured repositories and selected channel")
+    commands.add_parser("doctor", help="check vpkg runtime requirements without changing packages")
 
     search = commands.add_parser("search", help="search the selected Veyra repository")
     search.add_argument("terms", nargs="+")
@@ -2817,6 +2818,50 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def doctor() -> int:
+    """Non-destructive runtime readiness check; does not contact repositories."""
+    problems: list[str] = []
+    try:
+        release = fedora_release_from_root()
+        print(f"Base OS: Fedora {release}")
+    except VpkgError as error:
+        problems.append(f"Base OS identity: {error}")
+
+    try:
+        from vpkg_libdnf import _bindings
+        _bindings()
+        print("libdnf5 Python API: available")
+    except (LibdnfError, ImportError) as error:
+        problems.append(f"libdnf5 Python API: {error}")
+
+    if shutil.which("systemd-sysext"):
+        print("systemd-sysext: available")
+    else:
+        problems.append("systemd-sysext: executable missing")
+
+    for key in RPMFUSION_KEYS:
+        if key.is_file() and not key.is_symlink() and key.stat().st_size > 0:
+            print(f"RPM Fusion trust key: {key.name}")
+        else:
+            problems.append(f"RPM Fusion trust key missing: {key}")
+
+    live = running_live_mode()
+    print("Environment: disposable Live ISO" if live else "Environment: installed system")
+    if live:
+        print("System A/B updates: disabled in Live mode")
+    if not VPKG_PUBLIC_KEY.is_file():
+        print("Veyra package channel: unavailable until a production key is provisioned")
+    else:
+        print("Veyra package channel: signed repository key present")
+
+    if problems:
+        for problem in problems:
+            print(f"vpkg doctor: FAIL: {problem}", file=sys.stderr)
+        return 1
+    print("vpkg doctor: runtime ready (an actual RPM install has NOT been tested)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
@@ -2827,6 +2872,8 @@ def main(argv: list[str] | None = None) -> int:
             "complete-pending", "cancel-pending",
         }:
             raise VpkgError("This command requires installed Veyra Next; Live ISO has no A/B slots.")
+        if arguments.command == "doctor":
+            return doctor()
         if arguments.command == "channel":
             if arguments.name:
                 set_channel(arguments.name)
