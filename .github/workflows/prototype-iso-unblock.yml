@@ -1,4 +1,5 @@
-# Short-lived standalone diagnostic. Uses prior trusted Recovery UKI (not a release pipeline).
+# Legacy Lorax ISO diagnostic. The native Anaconda-free Live ISO is the PR boot gate.
+# Signed/installable boot media requires a fresh, explicitly selected Recovery UKI.
 name: Prototype ISO-only unblock diagnostic
 
 on:
@@ -8,6 +9,12 @@ on:
       - 'scripts/build-live-iso.sh'
       - 'tests/test_veyra_installer.py'
       - '.github/workflows/prototype-iso-unblock.yml'
+  workflow_dispatch:
+    inputs:
+      recovery_run_id:
+        description: 'Successful Fedora image run containing a fresh Recovery UKI artifact'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,7 +26,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-contract:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
+      - run: python3 scripts/smoke.py
   iso-only:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     container:
@@ -32,18 +47,27 @@ jobs:
         --device-cgroup-rule="b 7:* rmw"
     steps:
       - uses: actions/checkout@v4
+      - name: Validate explicitly selected Recovery build
+        env:
+          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RECOVERY_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo "Provide the run ID of a successful Fedora image workflow with Recovery UKI." >&2
+            exit 1
+          }
       - name: Fedora 44 live ISO toolchain
         run: dnf5 install --assumeyes curl gnupg2 lorax-lmc-novirt anaconda-tui policycoreutils python3 xorriso isomd5sum squashfs-tools qemu-system-x86-core edk2-ovmf
       - name: Source and installer unit tests
         run: |
           python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
           python3 scripts/smoke.py
-      - name: Import trusted prior Recovery UKI (expires October 27)
+      - name: Import fresh, explicitly selected Recovery UKI
         uses: actions/download-artifact@v4
         with:
           name: veyra-recovery-uki
           path: build/recovery-uki
-          run-id: 40362375406
+          run-id: ${{ inputs.recovery_run_id }}
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
       - name: Require a nonempty Recovery UKI
