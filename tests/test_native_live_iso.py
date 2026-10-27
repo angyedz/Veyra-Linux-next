@@ -108,6 +108,27 @@ class NativeLiveIsoTests(unittest.TestCase):
         # from writing its own home and makes the desktop exit immediately.
         self.assertNotIn("-all-root", SCRIPT)
 
+    def test_guest_vpkg_selftest_is_packaged_only_for_disposable_live(self):
+        for required in (
+            "veyra-live-vpkg-vm-check.service",
+            "ConditionVirtualization=qemu",
+            "scripts/veyra-live-vpkg-vm-check.sh",
+            "tests/test_vpkg.py",
+            "/usr/share/veyra/vpkg-selftest",
+        ):
+            self.assertIn(required, SCRIPT)
+        vm_script = (ROOT / "scripts/veyra-live-vpkg-vm-check.sh").read_text()
+        for required in (
+            "VEYRA_LIVE_VPKG_CI_BEGIN",
+            "VEYRA_LIVE_VPKG_CI_PASS",
+            "VEYRA_LIVE_VPKG_CI_FAILURE",
+            "--start-directory /usr/share/veyra/vpkg-selftest/tests",
+            "sudo -n /usr/bin/id -u",
+            "vpkg install kernel-core",
+        ):
+            self.assertIn(required, vm_script)
+        self.assertNotIn("vpkg install firefox", vm_script)
+
     def test_vpkg_is_present_and_ota_is_not(self):
         for required in (
             "mkosi.extra/usr/bin/vpkg",
