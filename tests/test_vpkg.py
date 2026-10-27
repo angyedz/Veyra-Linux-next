@@ -64,6 +64,46 @@ class RunningIdentityTests(unittest.TestCase):
                     vpkg.running_uki_version()
 
 
+class LiveModeIdentityTests(unittest.TestCase):
+    def test_ephemeral_identity_requires_marker_and_kernel(self) -> None:
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "live-mode"
+            cmdline = Path(temporary) / "cmdline"
+            boot_id = Path(temporary) / "boot-id"
+            marker.write_text("veyra-next-native-live-iso\\n", encoding="ascii")
+            cmdline.write_text("root=live:CDLABEL=VEYRA_NEXT_LIVE console=tty0\\n", encoding="ascii")
+            boot_id.write_text("00000000-0000-4000-8000-000000000001\\n", encoding="ascii")
+            with (
+                patch.object(vpkg, "LIVE_MODE_MARKER", marker),
+                patch.object(vpkg, "PROC_CMDLINE", cmdline),
+                patch.object(vpkg, "PROC_BOOT_ID", boot_id),
+            ):
+                self.assertTrue(vpkg.running_live_mode())
+                self.assertEqual(vpkg.running_uki_version(), "live")
+                self.assertEqual(
+                    vpkg.running_deployment_roothash(),
+                    hashlib.sha256(b"veyra-live:00000000-0000-4000-8000-000000000001").hexdigest(),
+                )
+                cmdline.write_text("roothash=not-allowed\\n", encoding="ascii")
+                self.assertFalse(vpkg.running_live_mode())
+                with self.assertRaisesRegex(vpkg.VpkgError, "64-character roothash"):
+                    vpkg.running_deployment_roothash()
+
+    def test_marker_without_live_boot_cannot_bypass_installed_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "live-mode"
+            cmdline = Path(temporary) / "cmdline"
+            marker.write_text("veyra-next-native-live-iso\\n", encoding="ascii")
+            cmdline.write_text("root=/dev/sda1\\n", encoding="ascii")
+            with (
+                patch.object(vpkg, "LIVE_MODE_MARKER", marker),
+                patch.object(vpkg, "PROC_CMDLINE", cmdline),
+            ):
+                self.assertFalse(vpkg.running_live_mode())
+
+
 @unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
 class VpkgPolicyTests(unittest.TestCase):
     def test_generation_integrity_detects_payload_changes(self) -> None:
