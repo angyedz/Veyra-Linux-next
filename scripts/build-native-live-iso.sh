@@ -33,7 +33,7 @@ dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   systemd systemd-udev systemd-pam dbus dbus-daemon NetworkManager NetworkManager-wifi \
   plasma-desktop plasma-workspace plasma-workspace-wayland plasma-systemsettings \
   sddm sddm-x11 kwin-wayland breeze-icon-theme \
-  plasma-nm plasma-pa dolphin konsole kate \
+  plasma-nm plasma-pa dolphin konsole konsole-part kate \
   plasma-discover plasma-discover-flatpak \
   xdg-desktop-portal xdg-desktop-portal-kde \
   pipewire pipewire-pulseaudio wireplumber \
@@ -61,6 +61,12 @@ cp -a "$repo/installer/dracut" "$root/usr/share/veyra/installer/source/installer
 install -m 0755 "$repo/scripts/veyra-install.py" "$root/usr/libexec/veyra-installer"
 install -m 0644 "$repo/installer/calamares/settings.conf" "$root/etc/calamares/settings.conf"
 install -m 0644 "$repo/installer/calamares/modules/"*.conf "$root/etc/calamares/modules/"
+# The Calamares interactive terminal is a separate Fedora KPart package.
+# A plain 'konsole' installation does not guarantee this plugin is present.
+[[ -s "$root/usr/lib64/qt6/plugins/kf6/parts/konsolepart.so" ]] ||
+  die "Calamares terminal plugin missing: install Fedora konsole-part"
+[[ -x "$root/usr/bin/calamares" ]] ||
+  die "Calamares GUI executable missing from Live rootfs"
 install -m 0644 "$repo/installer/calamares/branding/veyra/branding.desc" \
   "$root/etc/calamares/branding/veyra/branding.desc"
 install -m 0644 "$repo/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
@@ -176,10 +182,16 @@ live_uid="$(chroot "$root" /usr/bin/id -u liveuser)"
 live_gid="$(chroot "$root" /usr/bin/id -g liveuser)"
 [[ "$(stat -c '%u:%g' "$root/home/liveuser")" == "$live_uid:$live_gid" ]] ||
   die "Live home owner mismatch; KDE cannot start with an unwritable home"
+# Run Calamares GUI as the ordinary Wayland user, NOT via sudo.
+# Only its terminal-based installer backend can acquire root. The blank
+# argument rule is intentional: other --target/--confirm-device paths stay
+# disallowed, and the backend still requires Recovery UKI preflight.
 cat > "$root/etc/sudoers.d/veyra-live-calamares" <<'EOF'
-liveuser ALL=(root) NOPASSWD: /usr/bin/calamares
+liveuser ALL=(root) NOPASSWD: /usr/libexec/veyra-installer "", /usr/libexec/veyra-installer --preflight
 EOF
 chmod 0440 "$root/etc/sudoers.d/veyra-live-calamares"
+chroot "$root" /usr/sbin/visudo -cf /etc/sudoers.d/veyra-live-calamares ||
+  die "invalid restricted Calamares backend sudoers policy"
 # Allow only signed Fedora/RPM Fusion application names via vpkg install,
 # WITHOUT making the Live desktop a sudo-capable administrator. In particular,
 # no shell, arbitrary paths, options or OTA/installer commands are whitelisted.
@@ -238,16 +250,68 @@ User=liveuser
 Session=plasma.desktop
 Relogin=false
 EOF
+# Keep Qt/KDE's authenticated Wayland display and XDG_RUNTIME_DIR by
+# starting the frontend as the unprivileged, already logged-in Live user.
+# Calamares is a UI wrapper: the terminal module launches a separate backend.
+cat > "$root/usr/libexec/veyra-live-launch-calamares" <<'EOF'
+#!/usr/bin/bash
+set -u
+if [[ "${EUID}" -eq 0 ]]; then
+  echo "Run the Veyra Live Calamares frontend as liveuser, not root." >&2
+  exit 1
+fi
+if [[ ! -f /etc/veyra/live-mode ]]; then
+  echo "The Veyra Live installer is available only in the Live session." >&2
+  exit 1
+fi
+log_dir="${XDG_CACHE_HOME:-$HOME/.cache}/veyra-live"
+mkdir -p "$log_dir" || exit 1
+log_file="$log_dir/calamares.log"
+if /usr/bin/calamares -c /etc/calamares > "$log_file" 2>&1; then
+  exit 0
+else
+  status=$?
+  printf 'Calamares failed (exit %d); see %s\n' "$status" "$log_file" >&2
+  if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+    /usr/bin/kdialog --title "Veyra Next Installer" --error \
+      "Calamares could not start. Log: $log_file" || true
+  fi
+  exit "$status"
+fi
+EOF
+chmod 0755 "$root/usr/libexec/veyra-live-launch-calamares"
+cat > "$root/usr/libexec/veyra-live-calamares-session" <<'EOF'
+#!/usr/bin/bash
+# Runs inside Calamares's interactive KonsolePart as liveuser. Checking the
+# immutable Recovery UKI comes BEFORE disk selection or any destructive work.
+printf '\nVeyra Next experimental installer\n'
+if ! /usr/bin/sudo -n /usr/libexec/veyra-installer --preflight; then
+  printf '\nInstallation is disabled: required Recovery UKI or installer assets are missing.\n'
+  printf 'No disk has been modified. This prototype is for Live testing.\n'
+  exit 1
+fi
+printf '\nPreflight passed. Disk selection still requires explicit ERASE confirmation.\n'
+/usr/bin/sudo -n /usr/libexec/veyra-installer
+EOF
+chmod 0755 "$root/usr/libexec/veyra-live-calamares-session"
+# Calamares' GUI lives in the application menu and on the Plasma desktop.
 cat > "$root/usr/share/applications/veyra-installer.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Install Veyra Next Prototype
-Comment=Install to an explicitly selected unused disk
-Exec=sudo -n /usr/bin/calamares
+Name=Install Veyra Next
+GenericName=Veyra Next Installer (Experimental)
+Comment=Install Veyra Next to an unused disk (requires Recovery UKI)
+Exec=/usr/libexec/veyra-live-launch-calamares
+TryExec=/usr/bin/calamares
 Icon=/usr/share/veyra/branding/veyra-logo.svg
 Terminal=false
-Categories=Qt;System;
+StartupNotify=true
+Categories=System;Settings;
 EOF
+install -d "$root/home/liveuser/Desktop"
+install -m 0755 "$root/usr/share/applications/veyra-installer.desktop" \
+  "$root/home/liveuser/Desktop/Install Veyra Next.desktop"
+chroot "$root" /usr/bin/chown -R liveuser:liveuser /home/liveuser/Desktop
 echo 'Veyra Next Prototype Live' > "$root/etc/hostname"
 # QEMU-only diagnostics: recover session errors even if KWin leaves a black
 # screen. Never enable this on real hardware or in the installed system.
