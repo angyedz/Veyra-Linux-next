@@ -55,13 +55,10 @@ def configure_installed_accounts(root: pathlib.Path, username: str, user_passwor
     )
 
 
-def populate_installed_home(root: pathlib.Path, device: pathlib.Path, username: str) -> None:
-    """Populate the independent ext4 /home with the newly created user's home."""
-    if not ACCOUNT_NAME.fullmatch(username):
-        raise InstallError("invalid home-directory account")
-    source = root / "home" / username
-    if not source.is_dir() or source.is_symlink():
-        raise InstallError("installed home missing from the staged root")
+def populate_installed_home(device: pathlib.Path, username: str, uid: int, gid: int) -> None:
+    """Create an owned home directory on the persistent ext4 home partition."""
+    if not ACCOUNT_NAME.fullmatch(username) or uid < 1000 or gid < 1000:
+        raise InstallError("invalid persistent home owner")
     mountpoint = pathlib.Path("/run/veyra-installer/home")
     mountpoint.mkdir(parents=True, exist_ok=True)
     command(["mount", "-o", "nodev,nosuid", str(device), str(mountpoint)])
@@ -69,11 +66,11 @@ def populate_installed_home(root: pathlib.Path, device: pathlib.Path, username: 
         destination = mountpoint / username
         if destination.exists() or destination.is_symlink():
             raise InstallError("refusing to overwrite a preexisting installed home")
-        shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2)
+        destination.mkdir(mode=0o700)
+        os.chown(destination, uid, gid)
         command(["sync"])
     finally:
         command(["umount", str(mountpoint)])
-
 
 
 class InstallError(RuntimeError):
@@ -503,6 +500,11 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         install_initrd_module(root, source)
         write_image_identity(root, version)
 
+        # Save numeric ownership before the temporary root is unmounted.
+        account_home = root / "home" / username
+        if account_home.is_symlink() or not account_home.is_dir():
+            raise InstallError("new user home missing from the staged root")
+        home_uid, home_gid = account_home.stat().st_uid, account_home.stat().st_gid
         command(["systemd-machine-id-setup", f"--root={root}"])
         command(["systemctl", f"--root={root}", "preset-all", "--preset-mode=enable-only"])
         flatpak_repo = "/usr/share/veyra/flathub.flatpakrepo"
@@ -537,7 +539,7 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         command(["umount", str(SCRATCH_MOUNT)])
         scratch_mounted = False
         command(["mkfs.ext4", "--force", "-F", "-L", "VEYRA_HOME", str(home_device)])
-        populate_installed_home(root, home_device, username)
+        populate_installed_home(home_device, username, home_uid, home_gid)
 
         root_label = f"veyra-next_{version}"
         verity_label = f"{root_label}_verity"
