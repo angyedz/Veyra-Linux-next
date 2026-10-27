@@ -50,7 +50,7 @@ jobs:
             --iso build/native-live/veyra-next-prototype-live.iso \
             --output build/native-live-qemu \
             --modes both \
-            --at 20,60
+            --at 30,120
       - name: Upload QEMU BIOS and UEFI guest screenshots
         if: always()
         uses: actions/upload-artifact@v4
