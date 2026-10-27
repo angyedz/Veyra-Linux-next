@@ -32,3 +32,34 @@ with both El Torito records is **not** itself proof that the kernel,
 initrd, writable overlay, desktop, or installer work correctly.
 No automatic merge to main and no claim of a usable Live ISO until
 CI produces the artifact and QEMU boots both modes.
+
+## Live session package and update policy
+
+The experimental ISO ships the native Fedora 44 `vpkg` implementation,
+the Python libdnf5 adapter, RPM Fusion keys/repository definitions, Discover,
+Flatpak support, and the Calamares installer. Fedora and RPM Fusion packages
+use their normal signature verification. The production Veyra RPM channel is
+unavailable until the trusted release signing key is provisioned; no signature
+checks are bypassed for Live media.
+
+The installed system's updater (`veyra-update`), sysupdate transfer
+definitions, OTA boot-blessing services, and persistent A/B machinery are
+**not** installed in the Live runtime. systemd-sysupdate services/timers are
+masked in Live only. `vpkg` requires both the read-only Live-mode marker and
+the kernel's `root=live:CDLABEL=VEYRA_NEXT_LIVE` token to derive an ephemeral
+per-boot identity; a marker alone cannot bypass installed dm-verity/UKI
+identity checks. `vpkg stage` and OTA-binding subcommands are refused.
+Installing a normal application creates a temporary app extension in the
+writable Live overlay; it is lost on reboot. Installed Veyra Next retains
+its own separate A/B/Recovery update logic.
+
+The builder must preserve Unix ownership inside SquashFS; never enable
+`mksquashfs -all-root`, which would make the autologged-in user's home
+unwritable and can prevent Plasma from starting.
+
+To download the **experimental** ISO, open the successful/latest
+`Veyra Anaconda-free Live ISO experiment` Actions run, expand Artifacts,
+and select `veyra-next-native-live-iso`. Its ZIP contains the ISO and the
+SHA-256 file. It is not a production release. Without an included Recovery UKI,
+Calamares preflight must stop destructive installation. Test Live desktop only,
+using a throwaway VM or expendable boot media, with Secure Boot disabled.
