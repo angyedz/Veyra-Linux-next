@@ -313,6 +313,26 @@ install -m 0755 "$root/usr/share/applications/veyra-installer.desktop" \
   "$root/home/liveuser/Desktop/Install Veyra Next.desktop"
 chroot "$root" /usr/bin/chown -R liveuser:liveuser /home/liveuser/Desktop
 echo 'Veyra Next Prototype Live' > "$root/etc/hostname"
+# Require two real Plasma processes in a QEMU Live guest. The main visual
+# smoke still independently checks the final framebuffer for scene content.
+install -m 0755 "$repo/scripts/veyra-live-plasma-vm-check.sh" \
+  "$root/usr/libexec/veyra-live-plasma-vm-check"
+cat > "$root/etc/systemd/system/veyra-live-plasma-vm-check.service" <<'EOF'
+[Unit]
+Description=Verify running Plasma shell and KWin in disposable Live QEMU
+ConditionVirtualization=qemu
+ConditionPathExists=/etc/veyra/live-mode
+After=sddm.service
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/veyra-live-plasma-vm-check
+TimeoutStartSec=110
+[Install]
+WantedBy=graphical.target
+EOF
+install -d "$root/etc/systemd/system/graphical.target.wants"
+ln -sfn ../veyra-live-plasma-vm-check.service \
+  "$root/etc/systemd/system/graphical.target.wants/veyra-live-plasma-vm-check.service"
 # Replace the Fedora Kickoff icon with the canonical Veyra logo without
 # altering the user's panel layout or removing the application launcher.
 # Plasma's supported evaluateScript API applies to existing Kickoff/Kicker
