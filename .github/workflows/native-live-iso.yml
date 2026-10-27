@@ -34,7 +34,12 @@ jobs:
         run: |
           dnf5 install -y grub2-tools-extra grub2-pc-modules grub2-efi-x64-modules \
             grub2-tools-efi dracut squashfs-tools xorriso mtools \
-            dosfstools python3
+            dosfstools python3 dejavu-sans-fonts
+      - name: Provide required GRUB Unicode font
+        run: |
+          mkdir -p /usr/share/grub
+          test -s /usr/share/grub/unicode.pf2 || grub2-mkfont --output=/usr/share/grub/unicode.pf2 /usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf
+          test -s /usr/share/grub/unicode.pf2
       - name: Compose Live ISO from Fedora RPM rootfs
         run: bash scripts/build-native-live-iso.sh
       - name: Publish ISO and hash (only after BIOS + UEFI metadata checks)
