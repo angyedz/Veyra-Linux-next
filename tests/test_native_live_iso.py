@@ -96,6 +96,10 @@ class NativeLiveIsoTests(unittest.TestCase):
                                    input=section + "\n", capture_output=True)
             self.assertEqual(check.returncode, 0, check.stderr)
 
+    def test_kwin_overview_qml_module_is_present(self):
+        self.assertIn("kwin-wayland plasma-milou breeze-icon-theme", SCRIPT)
+        self.assertIn("/usr/lib64/qt6/qml/org/kde/milou/qmldir", SCRIPT)
+
     def test_wayland_session_runtime_dependencies(self):
         self.assertIn("systemd-pam dbus dbus-daemon", SCRIPT)
         for required in (
