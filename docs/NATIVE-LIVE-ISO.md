@@ -73,3 +73,31 @@ run 40507253123 were black. The following test iteration emits SDDM journal,
 Live user journal and Wayland session logs into QEMU serial under the marker
 `VEYRA LIVE GRAPHICS DIAGNOSTICS`. This service is restricted to QEMU and
 is never part of the installed A/B system.
+
+## October 27 KDE startup investigation
+
+Run 40509124321 proved that `sddm-helper` authenticated `liveuser`, but
+the Wayland session exited with code 127. The live RPM installroot had no
+`pam_systemd.so`; the Plasma D-Bus wrapper relies on `dbus-run-session`
+when no session bus already exists. The builder now installs Fedora
+`systemd-pam` and `dbus-daemon` and checks the four core Plasma/D-Bus
+executables and PAM module before SquashFS creation.
+
+Run 40518530598 passed kernel/init boot gates on BIOS and UEFI; logs
+no longer report a Plasma exit-127 or missing PAM module, and KWin's
+Wayland user service starts. **At 120 seconds both QEMU 2D screenshots
+were still uniformly black**. This is NOT proof of a working Plasma
+desktop. There is a known KWin 6.7 render-device regression affecting
+virtio GPU without VirGL. The Live ISO therefore uses a systemd
+user-environment generator to set `KWIN_RENDER_NODES=` only when the
+guest is detected as QEMU/KVM **and** has the virtio_gpu DRM driver.
+The installed Veyra image is unchanged. This is a compatibility
+workaround, not an assertion that all VirtIO configurations work.
+
+The QEMU validation now captures a later 180-second screenshot,
+fails on entirely black final framebuffer images, and flags SDDM
+session crashes and missing PAM. Green source tests or boot metadata
+are not sufficient to declare graphical readiness. Until a nonblack
+KDE screenshot and the installer flow have been validated,
+treat the published ISO as an experimental live/diagnostic image and
+do not install to a physical disk.
