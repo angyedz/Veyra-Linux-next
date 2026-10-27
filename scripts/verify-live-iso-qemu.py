@@ -41,6 +41,10 @@ def verify(report: dict) -> list[str]:
             issues.append(f"{mode}: SDDM reports a crashed Plasma session")
         if isinstance(signals, dict) and signals.get("pam_systemd_missing"):
             issues.append(f"{mode}: systemd-pam is absent or broken")
+        if not isinstance(signals, dict) or not signals.get("vpkg_guest_test_passed"):
+            issues.append(f"{mode}: Live vpkg QEMU policy and privilege checks did not pass")
+        if isinstance(signals, dict) and signals.get("vpkg_guest_test_failed"):
+            issues.append(f"{mode}: Live vpkg QEMU policy suite reported a failure")
     if seen != {"bios", "uefi"}:
         issues.append("BIOS and UEFI must both be represented")
     return issues
