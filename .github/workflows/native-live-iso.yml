@@ -1,0 +1,59 @@
+name: Veyra Anaconda-free Live ISO experiment
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-native-live-iso.sh'
+      - '.github/workflows/native-live-iso.yml'
+      - 'tests/test_native_live_iso.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-live-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/build-native-live-iso.sh
+      - run: python3 -m unittest discover -s tests -p 'test_native_live_iso.py' -v
+  compose:
+    needs: source-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install only native builders (no Anaconda/Lorax)
+        run: |
+          dnf5 install -y grub2-tools-extra grub2-pc-modules grub2-efi-x64-modules \
+            grub2-tools-efi dracut squashfs-tools xorriso mtools \
+            dosfstools python3
+      - name: Compose Live ISO from Fedora RPM rootfs
+        run: bash scripts/build-native-live-iso.sh
+      - name: Publish ISO and hash (only after BIOS + UEFI metadata checks)
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-next-native-live-iso
+          path: |
+            build/native-live/veyra-next-prototype-live.iso
+            build/native-live/veyra-next-prototype-live.iso.sha256
+            build/native-live/eltorito.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Preserve failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-native-live-failure
+          path: |
+            build/native-live/eltorito.txt
+          if-no-files-found: ignore
+          retention-days: 3
