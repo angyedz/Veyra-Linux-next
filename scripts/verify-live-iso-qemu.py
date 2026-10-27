@@ -34,6 +34,10 @@ def verify(report: dict) -> list[str]:
             issues.append(f"{mode}: no kernel startup evidence in serial output")
         if not isinstance(signals, dict) or not signals.get("init_seen"):
             issues.append(f"{mode}: no init/dracut startup evidence in serial output")
+        if isinstance(signals, dict) and signals.get("plasma_session_crashed"):
+            issues.append(f"{mode}: SDDM reports a crashed Plasma session")
+        if isinstance(signals, dict) and signals.get("pam_systemd_missing"):
+            issues.append(f"{mode}: systemd-pam is absent or broken")
     if seen != {"bios", "uefi"}:
         issues.append("BIOS and UEFI must both be represented")
     return issues
