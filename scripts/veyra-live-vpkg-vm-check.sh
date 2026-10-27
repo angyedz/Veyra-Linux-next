@@ -43,4 +43,4 @@ grep -Fq 'REJECT: refusing kernel-core' "$log" || {
     fail "$LINENO" 'kernel rejection did not pass through vpkg policy'
 }
 rm -f "$log"
-echo 'VEYRA_LIVE_VPKG_CI_PASS (offline policy + 58 Python tests; RPM transaction not tested)'
+echo 'VEYRA_LIVE_VPKG_CI_PASS (offline policy + full Python policy suite; RPM transaction not tested)'
