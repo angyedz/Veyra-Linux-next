@@ -61,7 +61,7 @@ def qemu_args(
     args = [
         "qemu-system-x86_64", "-machine", "q35,accel=tcg",
         "-cpu", "max", "-smp", "2", "-m", str(memory),
-        "-vga", "std", "-display", "none", "-nic", "none",
+        "-vga", "virtio", "-display", "none", "-nic", "none",
         "-boot", "order=d,menu=off", "-no-reboot",
         "-monitor", f"unix:{monitor},server=on,wait=off",
         "-serial", f"file:{serial}",
