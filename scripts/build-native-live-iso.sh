@@ -26,7 +26,7 @@ echo "Composing Fedora 44 KDE Plasma Live rootfs (no Anaconda or Lorax)..."
 
 # DNF validates Fedora repository GPG signatures. This rootfs is separate from
 # the installed-system mkosi.conf package set and cannot alter it.
-dnf5 -y --installroot="$root" --releasever=44 \
+dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   --setopt=install_weak_deps=False install \
   fedora-release-kde-desktop kernel-core kernel-modules kernel-modules-extra \
   dracut dracut-live dracut-config-generic \
@@ -42,7 +42,7 @@ dnf5 -y --installroot="$root" --releasever=44 \
   grub2-efi-x64 grub2-efi-x64-modules grub2-tools-efi \
   systemd-boot-unsigned systemd-ukify \
   btrfs-progs cryptsetup dosfstools e2fsprogs erofs-utils \
-  flatpak sudo polkit util-linux
+  flatpak sudo polkit util-linux shadow-utils
 
 # Never import production /etc or the host home directory into the Live system.
 install -d "$root/etc/sddm.conf.d" "$root/etc/sudoers.d" \
