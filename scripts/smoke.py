@@ -125,7 +125,6 @@ def main() -> int:
                 return fail(f"the Live ISO builder lacks official repository host: {official_host}")
     elif pinned_url not in live_kickstart:
         return fail("the Fedora 44 Live ISO Kickstart must declare an official network RPM source")
-
     if 'live_root="/mnt/sysimage"' not in live_kickstart or "${LIVE_ROOT" in live_kickstart:
         return fail("the Lorax no-virt Kickstart must copy Live assets into its /mnt/sysimage staging root")
     if "policycoreutils" not in live_iso_job.group(1):
