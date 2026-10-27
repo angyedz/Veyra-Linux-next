@@ -175,6 +175,16 @@ def append_uki_cmdline(uki: pathlib.Path, *arguments: str) -> None:
         stream.write(struct.pack("<I", len(cmdline)))
 
 
+def initial_system_uki_names(names: list[str]) -> list[str]:
+    """Identify exactly the OS boot UKI, never a Recovery image."""
+    return [
+        name for name in names
+        if name.casefold().endswith(".efi")
+        and name.startswith(("veyra-next-", "veyra-next_", "veyra-"))
+        and not name.startswith(("veyra-recovery", "veyra-next-recovery"))
+    ]
+
+
 def add_serial_to_initial_uki(image: pathlib.Path) -> None:
     """Make the initial, test-copy boot visible on serial before the OTA UKI exists."""
     table = json.loads(run(["sfdisk", "--json", str(image)], stdout=subprocess.PIPE).stdout)["partitiontable"]
@@ -194,11 +204,7 @@ def add_serial_to_initial_uki(image: pathlib.Path) -> None:
     # mkosi generates a kernel-based "veyra-<kernel>-<hash>.efi" UKI name,
     # whereas the installed/update UKIs use "veyra-next_<version>...efi".
     # Recovery is also under EFI/Linux and must never be patched as the OS.
-    system_names = [
-        name for name in names
-        if name.startswith(("veyra-next-", "veyra-next_", "veyra-"))
-        and not name.startswith(("veyra-recovery", "veyra-next-recovery"))
-    ]
+    system_names = initial_system_uki_names(names)
     if len(system_names) != 1:
         raise RuntimeError(f"expected one initial Veyra system UKI in EFI/Linux, found {system_names!r}")
     with tempfile.TemporaryDirectory(prefix="veyra-serial-uki-") as temporary:
