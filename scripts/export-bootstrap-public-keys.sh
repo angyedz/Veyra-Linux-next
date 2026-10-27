@@ -36,7 +36,7 @@ export_one() {
   unset GNUPGHOME
 }
 export_one "$VEYRA_UPDATE_SIGNING_KEY" update \
-  "$repo/mkosi.extra/usr/lib/systemd/import-pubring.gpg"
+  "$repo/mkosi.extra/usr/lib/systemd/import-pubring.pgp"
 export_one "$VEYRA_RPM_SIGNING_KEY" rpm \
   "$repo/mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA"
 echo 'Pinned public update and RPM trust roots exported into ISO staging.'
