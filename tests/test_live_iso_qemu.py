@@ -114,6 +114,20 @@ class IsoQemuSmokeTests(unittest.TestCase):
             self.assertTrue(signals["pam_systemd_missing"])
             self.assertFalse(signals["live_desktop_confirmed"])
 
+    def test_kde_runtime_errors_are_detected_from_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "serial.log"
+            path.write_text(
+                "plasma-ksplash.service: Failed with result 'timeout'.\n"
+                'module "org.kde.milou" is not installed\n'
+                "Failed to open drm node : No such file or directory\n",
+                encoding="utf-8",
+            )
+            signals = iso_qemu.serial_signals(path)
+            self.assertTrue(signals["ksplash_timed_out"])
+            self.assertTrue(signals["milou_qml_missing"])
+            self.assertTrue(signals["kwin_drm_node_error"])
+
     def test_vpkg_guest_markers_are_not_assumed(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "serial.log"
