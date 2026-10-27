@@ -33,6 +33,25 @@ class NativeLiveIsoTests(unittest.TestCase):
         # from writing its own home and makes the desktop exit immediately.
         self.assertNotIn("-all-root", SCRIPT)
 
+    def test_vpkg_is_present_and_ota_is_not(self):
+        for required in (
+            "mkosi.extra/usr/bin/vpkg",
+            "vpkg_libdnf.py",
+            "veyra_repo.py",
+            "live-mode",
+            "systemd-sysupdate.service",
+            "systemd-sysupdate.timer",
+            "systemd-sysupdate-reboot.service",
+            "systemd-sysupdate-reboot.timer",
+            "chroot \"$root\" /usr/bin/vpkg --help",
+            "plasma-discover-flatpak",
+        ):
+            self.assertIn(required, SCRIPT)
+        self.assertIn("Live system must not ship installed OTA updater", SCRIPT)
+        self.assertIn("Live system must not contain A/B transfer rules", SCRIPT)
+        self.assertNotIn('install -m 0755 "$repo/mkosi.extra/usr/bin/veyra-update"', SCRIPT)
+        self.assertNotIn('systemd-bless-boot.service.d/veyra-vpkg-ota.conf', SCRIPT)
+
     def test_media_verification(self):
         self.assertIn("8 * 1024 * 1024 * 1024", SCRIPT)
         self.assertIn("BIOS El Torito missing", SCRIPT)
