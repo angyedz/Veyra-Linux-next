@@ -32,7 +32,7 @@ dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   dracut dracut-live dracut-config-generic \
   systemd systemd-udev systemd-pam dbus dbus-daemon NetworkManager NetworkManager-wifi \
   plasma-desktop plasma-workspace plasma-workspace-wayland plasma-systemsettings \
-  sddm sddm-x11 kwin-wayland breeze-icon-theme \
+  sddm sddm-x11 kwin-wayland plasma-milou breeze-icon-theme \
   plasma-nm plasma-pa dolphin konsole konsole-part kate \
   plasma-discover plasma-discover-flatpak \
   xdg-desktop-portal xdg-desktop-portal-kde \
@@ -67,6 +67,9 @@ install -m 0644 "$repo/installer/calamares/modules/"*.conf "$root/etc/calamares/
   die "Calamares terminal plugin missing: install Fedora konsole-part"
 [[ -x "$root/usr/bin/calamares" ]] ||
   die "Calamares GUI executable missing from Live rootfs"
+# Missing org.kde.milou makes the KWin 6.7 overview QML fail to load.
+[[ -f "$root/usr/lib64/qt6/qml/org/kde/milou/qmldir" ]] ||
+  die "Required KWin overview QML missing: Fedora plasma-milou"
 install -m 0644 "$repo/installer/calamares/branding/veyra/branding.desc" \
   "$root/etc/calamares/branding/veyra/branding.desc"
 install -m 0644 "$repo/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
