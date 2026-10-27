@@ -80,11 +80,11 @@ class NativeLiveIsoTests(unittest.TestCase):
     def test_installer_embedded_scripts_are_valid_bash(self):
         for path in ("/usr/libexec/veyra-live-launch-calamares",
                      "/usr/libexec/veyra-live-calamares-session"):
-            marker = f'cat > "$root{path}" <<\'EOF\'\\n'
+            marker = f'cat > "$root{path}" <<\'EOF\'\n'
             self.assertIn(marker, SCRIPT)
-            section = SCRIPT.split(marker, 1)[1].split("\\nEOF", 1)[0]
+            section = SCRIPT.split(marker, 1)[1].split("\nEOF", 1)[0]
             check = subprocess.run(["bash", "-n"], text=True,
-                                   input=section + "\\n", capture_output=True)
+                                   input=section + "\n", capture_output=True)
             self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_wayland_session_runtime_dependencies(self):
