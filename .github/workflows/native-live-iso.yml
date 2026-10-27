@@ -13,7 +13,13 @@ on:
       - 'tests/test_native_live_iso.py'
       - 'tests/test_vpkg.py'
       - 'mkosi.extra/usr/bin/vpkg'
+      - 'scripts/export-bootstrap-public-keys.sh'
   workflow_dispatch:
+    inputs:
+      recovery_run_id:
+        description: Successful Fedora image run containing a veyra-recovery-uki artifact
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -44,12 +50,44 @@ jobs:
         run: |
           dnf5 install -y grub2-tools-extra grub2-pc-modules grub2-efi-x64-modules \
             grub2-tools-efi dracut squashfs-tools xorriso mtools \
-            dosfstools python3 dejavu-sans-fonts qemu-system-x86-core qemu-device-display-virtio-vga edk2-ovmf
+            dosfstools python3 gnupg2 dejavu-sans-fonts qemu-system-x86-core qemu-device-display-virtio-vga edk2-ovmf
       - name: Provide required GRUB Unicode font
         run: |
           mkdir -p /usr/share/grub
           test -s /usr/share/grub/unicode.pf2 || grub2-mkfont --output=/usr/share/grub/unicode.pf2 /usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf
           test -s /usr/share/grub/unicode.pf2
+      - name: Restrict installable signed ISO bootstrap to the trusted main branch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || {
+            echo "Signed, installable media bootstrap is allowed only from reviewed main." >&2; exit 1;
+          }
+          [[ "${{ inputs.recovery_run_id }}" =~ ^[0-9]+$ ]] || {
+            echo "Supply a successful Fedora image recovery_run_id to install safely." >&2; exit 1;
+          }
+      - name: Fetch independently built Recovery UKI for installer preflight
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: veyra-recovery-uki
+          path: build/recovery-uki
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ github.token }}
+      - name: Provision the installed image with its pinned release trust roots
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VEYRA_UPDATE_SIGNING_KEY: ${{ secrets.VEYRA_UPDATE_SIGNING_KEY }}
+          VEYRA_RPM_SIGNING_KEY: ${{ secrets.VEYRA_RPM_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -s build/recovery-uki/veyra-recovery.efi
+          test -n "$VEYRA_UPDATE_SIGNING_KEY"
+          test -n "$VEYRA_RPM_SIGNING_KEY"
+          bash scripts/export-bootstrap-public-keys.sh
+          test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
+          test -s mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
+          echo "VEYRA_RECOVERY_UKI=$GITHUB_WORKSPACE/build/recovery-uki/veyra-recovery.efi" >> "$GITHUB_ENV"
       - name: Compose Live ISO from Fedora RPM rootfs
         id: build
         run: bash scripts/build-native-live-iso.sh
