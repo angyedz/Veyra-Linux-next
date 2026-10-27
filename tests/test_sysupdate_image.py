@@ -27,6 +27,21 @@ BOOT_SPEC.loader.exec_module(ab_boot)
 
 
 class SysupdateImageTests(unittest.TestCase):
+    def test_identifies_mkosi_initial_uki_without_selecting_recovery(self) -> None:
+        names = [
+            "veyra-7.2.12-200.fc44.x86_64-2ce02cd5976dc577.efi",
+            "veyra-recovery.efi",
+            "other-vendor.efi",
+        ]
+        self.assertEqual(
+            sysupdate_image.initial_system_uki_names(names),
+            ["veyra-7.2.12-200.fc44.x86_64-2ce02cd5976dc577.efi"],
+        )
+        self.assertEqual(
+            sysupdate_image.initial_system_uki_names(["veyra-next_0.1.0+3-0.efi"]),
+            ["veyra-next_0.1.0+3-0.efi"],
+        )
+
     def test_increments_the_last_numeric_version_component(self) -> None:
         self.assertEqual(sysupdate_image.next_version("0.1.9"), "0.1.10")
 
