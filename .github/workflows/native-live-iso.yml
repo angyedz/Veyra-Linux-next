@@ -34,7 +34,7 @@ jobs:
         run: |
           dnf5 install -y grub2-tools-extra grub2-pc-modules grub2-efi-x64-modules \
             grub2-tools-efi dracut squashfs-tools xorriso mtools \
-            dosfstools python3 dejavu-sans-fonts
+            dosfstools python3 dejavu-sans-fonts qemu-system-x86-core edk2-ovmf
       - name: Provide required GRUB Unicode font
         run: |
           mkdir -p /usr/share/grub
@@ -42,6 +42,23 @@ jobs:
           test -s /usr/share/grub/unicode.pf2
       - name: Compose Live ISO from Fedora RPM rootfs
         run: bash scripts/build-native-live-iso.sh
+      - name: Capture firmware and early Live boot diagnostics in disposable QEMU
+        id: qemu
+        continue-on-error: true
+        run: |
+          python3 scripts/test-live-iso-qemu.py \
+            --iso build/native-live/veyra-next-prototype-live.iso \
+            --output build/native-live-qemu \
+            --modes both \
+            --at 20,60
+      - name: Upload QEMU BIOS and UEFI guest screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-native-live-qemu-screens
+          path: build/native-live-qemu/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Publish ISO and hash (only after BIOS + UEFI metadata checks)
         uses: actions/upload-artifact@v4
         with:
