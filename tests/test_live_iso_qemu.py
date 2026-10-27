@@ -83,6 +83,23 @@ class IsoQemuSmokeTests(unittest.TestCase):
             self.assertTrue(outcome["init_seen"])
             self.assertFalse(outcome["live_desktop_confirmed"])
 
+    def test_session_crash_is_detected_from_serial_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "serial.log"
+            path.write_text(
+                "Linux version 7.2\\n"
+                "systemd[1]: booted\\n"
+                "Starting Wayland user session: /usr/bin/startplasma-wayland\\n"
+                "Session crashed (exit code 127).\\n"
+                "PAM unable to dlopen(/usr/lib64/security/pam_systemd.so)\\n",
+                encoding="utf-8",
+            )
+            signals = iso_qemu.serial_signals(path)
+            self.assertTrue(signals["plasma_session_invoked"])
+            self.assertTrue(signals["plasma_session_crashed"])
+            self.assertTrue(signals["pam_systemd_missing"])
+            self.assertFalse(signals["live_desktop_confirmed"])
+
     def test_output_refuses_reuse_before_invoking_qemu(self):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "boot.iso"
