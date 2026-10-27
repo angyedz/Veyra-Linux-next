@@ -313,6 +313,36 @@ install -m 0755 "$root/usr/share/applications/veyra-installer.desktop" \
   "$root/home/liveuser/Desktop/Install Veyra Next.desktop"
 chroot "$root" /usr/bin/chown -R liveuser:liveuser /home/liveuser/Desktop
 echo 'Veyra Next Prototype Live' > "$root/etc/hostname"
+# QEMU-only offline verification: run the previously skipped vpkg policy
+# suite INSIDE the guest, where systemd-detect-virt reports qemu/kvm.
+# All changes are confined to the disposable Live overlay.
+install -d "$root/usr/share/veyra/vpkg-selftest/tests"
+install -m 0644 "$repo/tests/test_vpkg.py" \
+  "$root/usr/share/veyra/vpkg-selftest/tests/test_vpkg.py"
+install -d "$root/usr/share/veyra/vpkg-selftest/mkosi.extra/usr/bin" \
+  "$root/usr/share/veyra/vpkg-selftest/mkosi.extra/usr/lib/veyra"
+install -m 0644 "$repo/mkosi.extra/usr/bin/vpkg" \
+  "$root/usr/share/veyra/vpkg-selftest/mkosi.extra/usr/bin/vpkg"
+install -m 0644 "$repo/mkosi.extra/usr/lib/veyra/vpkg_libdnf.py" \
+  "$root/usr/share/veyra/vpkg-selftest/mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"
+install -m 0755 "$repo/scripts/veyra-live-vpkg-vm-check.sh" \
+  "$root/usr/libexec/veyra-live-vpkg-vm-check"
+cat > "$root/etc/systemd/system/veyra-live-vpkg-vm-check.service" <<'EOF'
+[Unit]
+Description=Offline vpkg transaction-policy check in disposable Veyra QEMU Live guest
+ConditionVirtualization=qemu
+ConditionPathExists=/etc/veyra/live-mode
+After=systemd-user-sessions.service
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/veyra-live-vpkg-vm-check
+TimeoutStartSec=90
+[Install]
+WantedBy=graphical.target
+EOF
+install -d "$root/etc/systemd/system/graphical.target.wants"
+ln -sfn ../veyra-live-vpkg-vm-check.service \
+  "$root/etc/systemd/system/graphical.target.wants/veyra-live-vpkg-vm-check.service"
 # QEMU-only diagnostics: recover session errors even if KWin leaves a black
 # screen. Never enable this on real hardware or in the installed system.
 cat > "$root/usr/libexec/veyra-live-graphics-diagnostics" <<'EOF'
