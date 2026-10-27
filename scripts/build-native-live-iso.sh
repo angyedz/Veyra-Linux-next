@@ -408,11 +408,15 @@ ln -sfn ../veyra-live-vpkg-vm-check.service \
 cat > "$root/usr/libexec/veyra-live-graphics-diagnostics" <<'EOF'
 #!/usr/bin/bash
 set -u
-sleep 18
+# KWin starts notably later than SDDM under software-emulated QEMU/TCG.
+# Dumping logs after 18 seconds missed the compositor and hid the GPU error.
+sleep 70
 {
   echo '=== VEYRA LIVE GRAPHICS DIAGNOSTICS BEGIN ==='
-  journalctl -b -u sddm.service --no-pager -n 80 --output=short-monotonic || true
-  journalctl -b _UID="$(id -u liveuser)" --no-pager -n 100 --output=short-monotonic || true
+  journalctl -b -u sddm.service --no-pager -n 100 --output=short-monotonic || true
+  journalctl -b _UID="$(id -u liveuser)" --no-pager -n 180 --output=short-monotonic || true
+  journalctl -b _SYSTEMD_USER_UNIT=plasma-kwin_wayland.service --no-pager -n 100 --output=short-monotonic || true
+  journalctl -b _SYSTEMD_USER_UNIT=plasma-plasmashell.service --no-pager -n 100 --output=short-monotonic || true
   for file in /home/liveuser/.local/share/sddm/wayland-session.log \
               /home/liveuser/.local/share/sddm/x11-session.log \
               /home/liveuser/.xsession-errors; do
@@ -436,6 +440,7 @@ After=sddm.service
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/veyra-live-graphics-diagnostics
+TimeoutStartSec=110
 [Install]
 WantedBy=graphical.target
 EOF
