@@ -5,6 +5,9 @@ on:
     paths:
       - 'scripts/test-live-iso-qemu.py'
       - 'scripts/build-live-iso.sh'
+      - 'installer/veyra-live.ks.in'
+      - 'tests/test_iso_repo_fallback.py'
+      - 'scripts/build-live-iso.sh'
       - 'tests/test_live_iso_retry.py'
       - 'tests/test_live_iso_qemu.py'
       - '.github/workflows/live-iso-qemu-harness.yml'
@@ -29,4 +32,5 @@ jobs:
         run: |
           python3 -m py_compile scripts/test-live-iso-qemu.py tests/test_live_iso_qemu.py
           python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
+          python3 -m unittest discover -s tests -p 'test_iso_repo_fallback.py' -v
           python3 -m unittest discover -s tests -p 'test_live_iso_retry.py' -v
