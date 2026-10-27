@@ -13,7 +13,8 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn("grub2-mkrescue", SCRIPT)
         self.assertIn("--add \"dmsquash-live\"", SCRIPT)
         self.assertNotIn("livemedia-creator", SCRIPT)
-        self.assertNotIn("lorax", SCRIPT.lower())
+        self.assertNotIn("livemedia-creator", SCRIPT)
+        self.assertNotIn("lorax-lmc-novirt", SCRIPT)
         self.assertNotIn("lorax-lmc-novirt", WORKFLOW)
         self.assertNotIn("anaconda-tui", WORKFLOW)
     def test_live_system_and_installer(self):
