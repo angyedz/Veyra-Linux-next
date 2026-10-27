@@ -175,6 +175,9 @@ def serial_signals(path: pathlib.Path) -> dict[str, bool]:
         "vpkg_guest_test_failed": b"VEYRA_LIVE_VPKG_CI_FAILURE" in data,
         "plasma_runtime_confirmed": b"VEYRA_LIVE_PLASMA_PROCESS_PASS" in data,
         "plasma_runtime_failed": b"VEYRA_LIVE_PLASMA_PROCESS_FAILURE" in data,
+        "ksplash_timed_out": b"plasma-ksplash.service: Failed with result" in data and b"timeout" in data,
+        "milou_qml_missing": b'module "org.kde.milou" is not installed' in data,
+        "kwin_drm_node_error": b"Failed to open drm node" in data,
     }
 
 
