@@ -45,7 +45,7 @@ def configure_installed_accounts(root: pathlib.Path, username: str, user_passwor
     if not ACCOUNT_NAME.fullmatch(username):
         raise InstallError("invalid installed account name")
     command(["chroot", str(root), "/usr/sbin/useradd",
-             "--create-home", "--shell", "/bin/bash", username])
+             "--create-home", "--groups", "wheel", "--shell", "/bin/bash", username])
     # Password input uses stdin, not command arguments or installer logs.
     accounts = f"{username}:{user_password}\\nroot:{root_password}\\n"
     subprocess.run(
