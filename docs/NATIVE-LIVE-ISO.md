@@ -184,3 +184,19 @@ is set to the canonical Veyra SVG by Plasma's supported scripting API.
 The small KDE autostart helper touches only existing launcher widgets and
 runs only when the Live marker is present; it does not rewrite the whole
 panel layout, nor affect installed Veyra systems.
+
+## Creating a test-installable signed ISO (reviewed main only)
+
+The ordinary PR Live ISO is a disposable desktop experiment and may lack
+a Recovery UKI. It must not be installed. Once the independently built
+`veyra-recovery-uki` artifact is confirmed in a successful **Fedora image**
+workflow run, use the **Veyra Anaconda-free Live ISO experiment** manual
+workflow on reviewed `main`, passing that run ID as `recovery_run_id`.
+The manual mode fails closed without this artifact or both
+`VEYRA_UPDATE_SIGNING_KEY` and `VEYRA_RPM_SIGNING_KEY` secrets. Its
+public-key bootstrap script installs the exact trusted update/RPM public
+keys into the install source; the two private keys never enter the ISO.
+The separate Calamares installer will still require explicit disk erase
+confirmation and will ask for a newly chosen username, user password and
+root password. This workflow has not yet passed a full QEMU install/OTA trial,
+so it remains experimental even when all dependencies are present.
