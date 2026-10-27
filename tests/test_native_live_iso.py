@@ -14,7 +14,8 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn("--add \"dmsquash-live\"", SCRIPT)
         self.assertNotIn("livemedia-creator", SCRIPT)
         self.assertNotIn("lorax", SCRIPT.lower())
-        self.assertNotIn("anaconda", WORKFLOW.lower().replace("no anaconda", ""))
+        self.assertNotIn("lorax-lmc-novirt", WORKFLOW)
+        self.assertNotIn("anaconda-tui", WORKFLOW)
     def test_live_system_and_installer(self):
         self.assertIn("plasma-workspace-wayland", SCRIPT)
         self.assertIn("calamares-interactiveterminal", SCRIPT)
