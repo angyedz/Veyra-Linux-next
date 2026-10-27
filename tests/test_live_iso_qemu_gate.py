@@ -50,6 +50,14 @@ class FirmwareBootGateTests(unittest.TestCase):
         report["modes"].pop()
         self.assertTrue(module.verify(report))
 
+    def test_plasma_crash_or_pam_failure_must_fail(self):
+        report = good_report()
+        report["modes"][0]["serial_signals"]["plasma_session_crashed"] = True
+        report["modes"][1]["serial_signals"]["pam_systemd_missing"] = True
+        failures = module.verify(report)
+        self.assertTrue(any("crashed Plasma" in failure for failure in failures))
+        self.assertTrue(any("systemd-pam" in failure for failure in failures))
+
     def test_missing_images_and_unsafe_configuration_fail(self):
         report = good_report()
         report["modes"][0]["screenshots"] = []
