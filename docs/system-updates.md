@@ -121,7 +121,7 @@ reliably.
 `Verify=yes` makes `systemd-sysupdate` verify the detached signature on
 `SHA256SUMS.gpg`, then verify each downloaded file against that manifest. The
 public key must be available in the image as
-`/usr/lib/systemd/import-pubring.gpg`. The manual workflow builds an image with
+`/usr/lib/systemd/import-pubring.pgp`. The manual workflow builds an image with
 that public key, signs the root/verity/UKI checksums, and publishes those update
 assets as a GitHub release. It does not publish the full disk image or an
 installer.
