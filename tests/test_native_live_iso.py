@@ -24,6 +24,31 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn("source/assets/veyra-recovery.efi", SCRIPT)
         self.assertIn("sudo -n /usr/bin/calamares", SCRIPT)
         self.assertIn("passwd --lock liveuser", SCRIPT)
+    def test_passwordless_live_vpkg_is_narrow_and_disposable(self):
+        self.assertIn("root:veyra", SCRIPT)
+        self.assertIn("PermitRootLogin no", SCRIPT)
+        self.assertIn("PasswordAuthentication no", SCRIPT)
+        self.assertIn("veyra-live-vpkg-install", SCRIPT)
+        self.assertIn("visudo -cf /etc/sudoers.d/veyra-live-vpkg-install", SCRIPT)
+        self.assertIn("NOPASSWD: /usr/bin/vpkg ^install", SCRIPT)
+        self.assertIn('exec /usr/bin/sudo -n /usr/bin/vpkg install "$@"', SCRIPT)
+        self.assertIn('exec /usr/bin/vpkg "$@"', SCRIPT)
+        self.assertNotIn("NOPASSWD: ALL", SCRIPT)
+        self.assertNotIn("useradd --create-home --groups wheel", SCRIPT)
+
+    def test_live_session_never_requires_unlock_password_or_sleeps(self):
+        self.assertIn("kscreenlockerrc", SCRIPT)
+        self.assertIn("Autolock=false", SCRIPT)
+        self.assertIn("LockOnResume=false", SCRIPT)
+        self.assertIn("RequirePassword=false", SCRIPT)
+        self.assertIn("chown -R liveuser:liveuser /home/liveuser/.config", SCRIPT)
+        for required in (
+            "sleep.target", "suspend.target", "hibernate.target",
+            "hybrid-sleep.target", "suspend-then-hibernate.target",
+            "IdleAction=ignore", "HandleSuspendKey=ignore",
+        ):
+            self.assertIn(required, SCRIPT)
+
     def test_wayland_session_runtime_dependencies(self):
         self.assertIn("systemd-pam dbus dbus-daemon", SCRIPT)
         for required in (
