@@ -46,6 +46,14 @@ class FirmwareBootGateTests(unittest.TestCase):
             with self.subTest(missing=missing):
                 self.assertTrue(module.verify(report))
 
+    def test_kde_splash_timeout_or_missing_milou_fails_green_boot(self):
+        report = good_report()
+        report["modes"][0]["serial_signals"]["ksplash_timed_out"] = True
+        report["modes"][1]["serial_signals"]["milou_qml_missing"] = True
+        messages = module.verify(report)
+        self.assertTrue(any("splash screen timed out" in text for text in messages))
+        self.assertTrue(any("plasma-milou" in text for text in messages))
+
     def test_desktop_process_probe_is_required(self):
         report = good_report()
         report["modes"][0]["serial_signals"]["plasma_runtime_confirmed"] = False
