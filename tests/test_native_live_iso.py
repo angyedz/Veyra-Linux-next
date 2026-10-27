@@ -1,5 +1,6 @@
 """No-Anaconda media composition contract checks; no privileged operations."""
 import pathlib
+import subprocess
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn("calamares-interactiveterminal", SCRIPT)
         self.assertIn("root=live:CDLABEL=VEYRA_NEXT_LIVE", SCRIPT)
         self.assertIn("source/assets/veyra-recovery.efi", SCRIPT)
-        self.assertIn("sudo -n /usr/bin/calamares", SCRIPT)
+        self.assertIn("Exec=/usr/libexec/veyra-live-launch-calamares", SCRIPT)
         self.assertIn("passwd --lock liveuser", SCRIPT)
     def test_passwordless_live_vpkg_is_narrow_and_disposable(self):
         self.assertIn("root:veyra", SCRIPT)
@@ -48,6 +49,43 @@ class NativeLiveIsoTests(unittest.TestCase):
             "IdleAction=ignore", "HandleSuspendKey=ignore",
         ):
             self.assertIn(required, SCRIPT)
+
+    def test_calamares_is_desktop_visible_and_wayland_user_gui(self):
+        self.assertIn("konsole konsole-part", SCRIPT)
+        self.assertIn("konsolepart.so", SCRIPT)
+        self.assertIn("veyra-live-launch-calamares", SCRIPT)
+        self.assertIn("Install Veyra Next.desktop", SCRIPT)
+        self.assertIn('chown -R liveuser:liveuser /home/liveuser/Desktop', SCRIPT)
+        self.assertIn('Exec=/usr/libexec/veyra-live-launch-calamares', SCRIPT)
+        self.assertIn("StartupNotify=true", SCRIPT)
+        self.assertIn('/usr/bin/calamares -c /etc/calamares', SCRIPT)
+        self.assertIn("kdialog --title", SCRIPT)
+        self.assertNotIn("Exec=sudo -n /usr/bin/calamares", SCRIPT)
+        self.assertNotIn("NOPASSWD: /usr/bin/calamares", SCRIPT)
+
+    def test_calamares_backend_cannot_skip_recovery_preflight(self):
+        self.assertIn('NOPASSWD: /usr/libexec/veyra-installer ""', SCRIPT)
+        self.assertIn('/usr/libexec/veyra-installer --preflight', SCRIPT)
+        self.assertIn('visudo -cf /etc/sudoers.d/veyra-live-calamares', SCRIPT)
+        self.assertIn("Installation is disabled:", SCRIPT)
+        self.assertIn("No disk has been modified.", SCRIPT)
+        self.assertIn('if ! /usr/bin/sudo -n /usr/libexec/veyra-installer --preflight;', SCRIPT)
+        self.assertNotIn("NOPASSWD: /usr/libexec/veyra-installer ^", SCRIPT)
+        modules = (ROOT / "installer/calamares/modules/interactiveterminal.conf").read_text()
+        settings = (ROOT / "installer/calamares/settings.conf").read_text()
+        self.assertIn("command: /usr/libexec/veyra-live-calamares-session", modules)
+        self.assertIn("- interactiveterminal", settings)
+        self.assertNotIn("- finished", settings)
+
+    def test_installer_embedded_scripts_are_valid_bash(self):
+        for path in ("/usr/libexec/veyra-live-launch-calamares",
+                     "/usr/libexec/veyra-live-calamares-session"):
+            marker = f'cat > "$root{path}" <<\'EOF\'\\n'
+            self.assertIn(marker, SCRIPT)
+            section = SCRIPT.split(marker, 1)[1].split("\\nEOF", 1)[0]
+            check = subprocess.run(["bash", "-n"], text=True,
+                                   input=section + "\\n", capture_output=True)
+            self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_wayland_session_runtime_dependencies(self):
         self.assertIn("systemd-pam dbus dbus-daemon", SCRIPT)
