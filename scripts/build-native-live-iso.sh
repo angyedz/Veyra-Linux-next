@@ -313,6 +313,46 @@ install -m 0755 "$root/usr/share/applications/veyra-installer.desktop" \
   "$root/home/liveuser/Desktop/Install Veyra Next.desktop"
 chroot "$root" /usr/bin/chown -R liveuser:liveuser /home/liveuser/Desktop
 echo 'Veyra Next Prototype Live' > "$root/etc/hostname"
+# Replace the Fedora Kickoff icon with the canonical Veyra logo without
+# altering the user's panel layout or removing the application launcher.
+# Plasma's supported evaluateScript API applies to existing Kickoff/Kicker
+# widgets and keeps the resulting configuration in the disposable Live home.
+cat > "$root/usr/share/veyra/branding/configure-launcher.js" <<'EOF'
+var menus = ["org.kde.plasma.kickoff", "org.kde.plasma.kicker", "org.kde.plasma.simplemenu"];
+for (var p of panels()) {
+    for (var widget of p.widgets()) {
+        if (menus.indexOf(widget.type) !== -1) {
+            widget.currentConfigGroup = ["General"];
+            widget.writeConfig("icon", "/usr/share/veyra/branding/veyra-logo.svg");
+            widget.reloadConfig();
+        }
+    }
+}
+EOF
+cat > "$root/usr/libexec/veyra-live-brand-launcher" <<'EOF'
+#!/usr/bin/bash
+[ -f /etc/veyra/live-mode ] || exit 0
+[ "$(cat /etc/veyra/live-mode)" = "veyra-next-native-live-iso" ] || exit 0
+for attempt in {1..15}; do
+  if /usr/bin/busctl --user call org.kde.plasmashell /PlasmaShell \
+      org.kde.PlasmaShell evaluateScript s \
+      "$(cat /usr/share/veyra/branding/configure-launcher.js)" >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 1
+done
+exit 0
+EOF
+chmod 0755 "$root/usr/libexec/veyra-live-brand-launcher"
+install -d "$root/etc/xdg/autostart"
+cat > "$root/etc/xdg/autostart/veyra-live-branding.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Veyra Live launcher branding
+Exec=/usr/libexec/veyra-live-brand-launcher
+OnlyShowIn=KDE;
+NoDisplay=true
+EOF
 # QEMU-only offline verification: run the previously skipped vpkg policy
 # suite INSIDE the guest, where systemd-detect-virt reports qemu/kvm.
 # All changes are confined to the disposable Live overlay.
