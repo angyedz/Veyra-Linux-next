@@ -110,12 +110,30 @@ def ppm_to_png(source: pathlib.Path, destination: pathlib.Path) -> tuple[int, in
 
 
 def ppm_has_visible_pixels(source: pathlib.Path) -> bool:
-    """Distinguish a totally black captured scanout from a nonblack frame."""
+    """Require actual scene content, not just a 12-pixel mouse cursor.
+
+    A black QEMU scanout has previously passed this test because one cursor
+    pixel was nonzero. This is only a framebuffer heuristic; proof that KDE
+    started requires an independent compositor/process marker.
+    """
     data = source.read_bytes()
     match = re.match(rb"\AP6\r?\n([0-9]+) ([0-9]+)\r?\n255\r?\n", data)
     if match is None:
-        raise SmokeError("invalid QEMU screenshot when checking black frame")
-    return any(data[match.end():])
+        raise SmokeError("invalid QEMU P6 screenshot header")
+    width, height = map(int, match.groups())
+    if width < 1 or height < 1 or len(data) - match.end() != width * height * 3:
+        raise SmokeError("QEMU P6 screenshot has invalid dimensions or pixel data")
+    payload = memoryview(data)[match.end():]
+    visible = 0
+    # 3% visibly lit pixels at intensity >32: excludes mouse cursors and
+    # terminal blinkers, and handles full-screen dark Plasma wallpapers.
+    minimum = max(1, (width * height * 3 + 99) // 100)
+    for offset in range(0, len(payload), 3):
+        if max(payload[offset:offset + 3]) > 32:
+            visible += 1
+            if visible >= minimum:
+                return True
+    return False
 
 
 def screendump(monitor: pathlib.Path, ppm: pathlib.Path, deadline: float) -> None:
@@ -155,6 +173,8 @@ def serial_signals(path: pathlib.Path) -> dict[str, bool]:
         "vpkg_guest_test_started": b"VEYRA_LIVE_VPKG_CI_BEGIN" in data,
         "vpkg_guest_test_passed": b"VEYRA_LIVE_VPKG_CI_PASS" in data,
         "vpkg_guest_test_failed": b"VEYRA_LIVE_VPKG_CI_FAILURE" in data,
+        "plasma_runtime_confirmed": b"VEYRA_LIVE_PLASMA_PROCESS_PASS" in data,
+        "plasma_runtime_failed": b"VEYRA_LIVE_PLASMA_PROCESS_FAILURE" in data,
     }
 
 
