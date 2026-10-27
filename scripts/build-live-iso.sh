@@ -18,8 +18,15 @@ max_bytes=$((8 * 1024 * 1024 * 1024))
 
 rm -rf -- "$result_dir" "$output_dir" "$log_file"
 mkdir -p "$output_dir" "$(dirname -- "$kickstart")"
-sed "s|__VEYRA_SOURCE_ROOT__|$workspace|g" \
-  "$root/installer/veyra-live.ks.in" > "$kickstart"
+# Render the kickstart for every attempt; retry against a different Fedora endpoint.
+render_kickstart() {
+  local repo_url="$1"
+  sed -e "s|__VEYRA_SOURCE_ROOT__|$workspace|g" \
+      -e "s|__VEYRA_FEDORA_REPO_URL__|$repo_url|g" \
+      "$root/installer/veyra-live.ks.in" > "$kickstart"
+}
+repo_primary="https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/"
+repo_fallback="https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/"
 
 # Repeat only failures that explicitly report a package/mirror download issue.
 # Keep every failed attempt log to distinguish mirror failures from ISO bugs.
@@ -33,7 +40,12 @@ rm -rf -- "$attempt_logs"
 mkdir -p "$attempt_logs"
 built=0
 for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-  echo "Building Veyra Live ISO: Lorax attempt $attempt/$max_attempts" >&2
+  repo_url="$repo_primary"
+  if ((attempt > 1)); then
+    repo_url="$repo_fallback"
+  fi
+  render_kickstart "$repo_url"
+  echo "Building Veyra Live ISO: Lorax attempt $attempt/$max_attempts (repo: $repo_url)" >&2
   if livemedia-creator \
     --make-iso \
     --no-virt \

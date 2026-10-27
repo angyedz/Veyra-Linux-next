@@ -4,7 +4,7 @@ keyboard --vckeymap=us --xlayouts='us'
 timezone UTC --utc
 rootpw --lock
 network --bootproto=dhcp --device=link --activate
-url --url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/
+url --url=__VEYRA_FEDORA_REPO_URL__
 firewall --enabled --service=mdns
 selinux --enforcing
 services --enabled=NetworkManager,livesys,livesys-late
