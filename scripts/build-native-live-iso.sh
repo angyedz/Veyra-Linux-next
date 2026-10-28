@@ -61,6 +61,18 @@ cp -a "$repo/installer/dracut" "$root/usr/share/veyra/installer/source/installer
 install -m 0755 "$repo/scripts/veyra-install.py" "$root/usr/libexec/veyra-installer"
 install -m 0644 "$repo/installer/calamares/settings.conf" "$root/etc/calamares/settings.conf"
 install -m 0644 "$repo/installer/calamares/modules/"*.conf "$root/etc/calamares/modules/"
+# Calamares is deliberately launched with "-c /etc/calamares", which
+# changes its *application data root*, not just settings.conf. Consequently
+# initQmlModulesDir() requires /etc/calamares/qml, while the Fedora RPM owns
+# the actual QML resources under /usr/share/calamares/qml. Link the packaged
+# resources into our private config root instead of creating an empty QML dir.
+[[ -d "$root/usr/share/calamares/qml" ]] ||
+  die "Calamares RPM lacks its QML data directory: /usr/share/calamares/qml"
+[[ ! -e "$root/etc/calamares/qml" && ! -L "$root/etc/calamares/qml" ]] ||
+  die "unexpected existing Calamares qml configuration entry"
+ln -s ../../usr/share/calamares/qml "$root/etc/calamares/qml"
+[[ -d "$root/etc/calamares/qml" ]] ||
+  die "Calamares QML directory link does not resolve inside Live rootfs"
 # The Calamares interactive terminal is a separate Fedora KPart package.
 # A plain 'konsole' installation does not guarantee this plugin is present.
 [[ -s "$root/usr/lib64/qt6/plugins/kf6/parts/konsolepart.so" ]] ||
