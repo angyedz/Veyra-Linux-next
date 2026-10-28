@@ -172,7 +172,7 @@ class SysupdateImageTests(unittest.TestCase):
         # timed out with no prepare/rollback marker.
         source = SCRIPT.read_text(encoding="utf-8")
         fixture = source.split("def inject_guest_ota_test(", 1)[1].split(
-            "\\ndef inject_bios_guest_ota_test(", 1
+            "def inject_bios_guest_ota_test(", 1
         )[0]
         self.assertIn('ota_wants = systemd / "graphical.target.wants"', fixture)
         self.assertIn('ota_link = ota_wants / "veyra-ota-ci.target"', fixture)
