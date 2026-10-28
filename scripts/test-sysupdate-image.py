@@ -522,10 +522,10 @@ def inject_guest_ota_test(
             # A timer queues the OTA test independently after the boot begins.
             ota_timer = systemd / "veyra-ota-ci.timer"
             ota_timer.write_text(
-                "[Unit]\\nDescription=Start disposable Veyra signed OTA QEMU acceptance\\n"
-                "[Timer]\\nOnBootSec=15s\\nAccuracySec=1s\\n"
-                "Unit=veyra-ota-ci.target\\n"
-                "[Install]\\nWantedBy=timers.target\\n",
+                "[Unit]\nDescription=Start disposable Veyra signed OTA QEMU acceptance\n"
+                "[Timer]\nOnBootSec=15s\nAccuracySec=1s\n"
+                "Unit=veyra-ota-ci.target\n"
+                "[Install]\nWantedBy=timers.target\n",
                 encoding="ascii",
             )
             ota_wants = systemd / "timers.target.wants"
