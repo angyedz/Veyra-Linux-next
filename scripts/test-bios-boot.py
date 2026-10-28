@@ -204,6 +204,7 @@ def main() -> int:
             process: subprocess.Popen[bytes] | None = None
             passed = False
             timed_out = False
+            guest_failed = False
             try:
                 with qemu_stdout.open("wb") as stdout, qemu_stderr.open("wb") as stderr:
                     process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
@@ -217,11 +218,12 @@ def main() -> int:
                             # hidden by an otherwise successful BIOS boot.
                             if (GPU_FAILURE_MARKER in evidence or
                                     b"vdri-qemu-smoke.service: Failed with result" in evidence):
+                                guest_failed = True
                                 break
                         if process.poll() is not None:
                             break
                         time.sleep(0.5)
-                    timed_out = not passed and process.poll() is None
+                    timed_out = not passed and not guest_failed and process.poll() is None
             except OSError as error:
                 print(f"Could not start SeaBIOS QEMU: {error}", file=sys.stderr)
                 return 1
@@ -246,7 +248,8 @@ def main() -> int:
         print(f"Legacy BIOS reached graphical.target and v-dri PASS in {elapsed}s; logs: {args.report_dir}")
         return 0
 
-    state = "timed out" if timed_out else "QEMU exited before the marker"
+    state = ("guest v-dri test failed" if guest_failed else
+             "timed out" if timed_out else "QEMU exited before the marker")
     print(f"Legacy BIOS boot {state}; expected {BOOT_MARKER.decode()} and {GPU_MARKER.decode()}, without guest v-dri failure.", file=sys.stderr)
     print("--- serial output ---", file=sys.stderr)
     print(log_tail(serial_log), file=sys.stderr)
