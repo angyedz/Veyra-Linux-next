@@ -27,6 +27,7 @@ def good_report():
                     "plasma_runtime_confirmed": True,
                     "plasma_runtime_failed": False,
                     "vpkg_guest_test_passed": True,
+                    "installer_preflight_passed": True,
                     "vpkg_guest_test_failed": False,
                 },
             }
@@ -38,6 +39,16 @@ def good_report():
 class FirmwareBootGateTests(unittest.TestCase):
     def test_kernel_and_init_can_pass_without_claiming_desktop(self):
         self.assertEqual(module.verify(good_report()), [])
+
+    def test_installer_read_only_preflight_must_be_proven_on_both_firmwares(self):
+        report = good_report()
+        report["modes"][0]["serial_signals"]["installer_preflight_passed"] = False
+        failures = module.verify(report)
+        self.assertTrue(any("installer read-only preflight" in failure for failure in failures))
+        report = good_report()
+        report["modes"][1]["serial_signals"].pop("installer_preflight_passed")
+        failures = module.verify(report)
+        self.assertTrue(any("uefi: installer read-only preflight" in failure for failure in failures))
 
     def test_missing_kernel_or_init_must_fail(self):
         for missing in ("kernel_seen", "init_seen"):
