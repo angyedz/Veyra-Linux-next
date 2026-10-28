@@ -111,9 +111,8 @@ Packages=systemd
         requirements = welcome.split("requirements:", 1)[1].split("geoip:", 1)[0]
         # Calamares is a normal Wayland client. Root is only acquired by the
         # preflighted, restricted backend, so root must not be a UI gate.
-        import re
-        self.assertNotRegex(requirements, r"(?m)^\\s*-\\s*root\\s*$")
-        self.assertRegex(requirements, r"(?m)^\\s*-\\s*internet\\s*$")
+        self.assertNotRegex(requirements, r"(?m)^\s*-\s*root\s*$")
+        self.assertRegex(requirements, r"(?m)^\s*-\s*internet\s*$")
         builder = (ROOT / "scripts/build-native-live-iso.sh").read_text(encoding="utf-8")
         self.assertIn('if [[ "${EUID}" -eq 0 ]]; then', builder)
         self.assertIn("/usr/bin/sudo -n /usr/libexec/veyra-installer --preflight", builder)
