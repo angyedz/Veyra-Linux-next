@@ -33,7 +33,7 @@ dnf5 -y --installroot="$root" --use-host-config --releasever=44 \
   systemd systemd-udev systemd-pam dbus dbus-daemon NetworkManager NetworkManager-wifi \
   plasma-desktop plasma-workspace plasma-workspace-wayland plasma-systemsettings \
   sddm sddm-x11 kwin-wayland plasma-milou breeze-icon-theme \
-  plasma-nm plasma-pa dolphin konsole konsole-part kate udisks2 \
+  plasma-nm plasma-pa dolphin konsole konsole-part kate udisks2 fastfetch \
   plasma-discover plasma-discover-flatpak \
   xdg-desktop-portal xdg-desktop-portal-kde \
   pipewire pipewire-pulseaudio wireplumber \
@@ -80,6 +80,25 @@ install -m 0644 "$repo/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$root/usr/share/veyra/branding/veyra-logo.svg"
 install -m 0644 "$repo/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$root/etc/calamares/branding/veyra/veyra-logo.svg"
+# Same branding in native Live, installed Veyra, and Lorax fallback;
+# XDG system config is overridden by any user's personal Fastfetch config.
+install -D -m 0644 "$repo/mkosi.extra/usr/share/veyra/fastfetch/logo.txt" \
+  "$root/usr/share/veyra/fastfetch/logo.txt"
+install -D -m 0644 "$repo/mkosi.extra/etc/xdg/fastfetch/config.jsonc" \
+  "$root/etc/xdg/fastfetch/config.jsonc"
+for theme_dir in color-schemes plasma/desktoptheme plasma/look-and-feel; do
+  mkdir -p "$root/usr/share/$theme_dir"
+  cp -a "$repo/mkosi.extra/usr/share/$theme_dir/." "$root/usr/share/$theme_dir/"
+done
+for defaults in kdeglobals plasmarc kwinrc; do
+  install -D -m 0644 "$repo/mkosi.extra/etc/xdg/$defaults" \
+    "$root/etc/xdg/$defaults"
+done
+install -m 0755 "$repo/mkosi.extra/usr/bin/veyra-theme" "$root/usr/bin/veyra-theme"
+[[ -x "$root/usr/bin/fastfetch" ]] || die "Fastfetch missing in native Live rootfs"
+[[ -s "$root/etc/xdg/fastfetch/config.jsonc" ]] || die "Veyra Fastfetch config missing"
+[[ -s "$root/usr/share/plasma/look-and-feel/org.veyra.glacier.dark/metadata.json" ]] ||
+  die "Glacier dark theme is missing from Live rootfs"
 # Ship the same native vpkg policy/API implementation as the installed
 # system, but do not copy veyra-update, OTA transfer definitions or boot-bless
 # units. Live packages operate in a disposable overlay; no A/B partitions.
@@ -297,17 +316,26 @@ fi
 log_dir="${XDG_CACHE_HOME:-$HOME/.cache}/veyra-live"
 mkdir -p "$log_dir" || exit 1
 log_file="$log_dir/calamares.log"
-if /usr/bin/calamares -c /etc/calamares > "$log_file" 2>&1; then
+# The desktop launcher must never silently swallow the Qt/Calamares failure.
+# A complete current-session log remains on disk; a bounded excerpt is shown
+# directly in the error dialog for the user to report.
+if [[ ! -x /usr/bin/calamares || ! -r /etc/calamares/settings.conf ]]; then
+  printf 'Missing Calamares binary or /etc/calamares/settings.conf\n' >"$log_file"
+  status=127
+elif /usr/bin/calamares -c /etc/calamares > "$log_file" 2>&1; then
   exit 0
 else
   status=$?
-  printf 'Calamares failed (exit %d); see %s\n' "$status" "$log_file" >&2
-  if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
-    /usr/bin/kdialog --title "Veyra Next Installer" --error \
-      "Calamares could not start. Log: $log_file" || true
-  fi
-  exit "$status"
 fi
+printf 'Calamares failed (exit %d); see %s\n' "$status" "$log_file" >&2
+tail -n 50 "$log_file" >&2 || true
+# Avoid leaking a giant log into a GUI, but show the most relevant diagnostics.
+if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+  excerpt="$(tail -n 12 "$log_file" | cut -c 1-240)"
+  /usr/bin/kdialog --title "Veyra Next Installer" --error \
+    "Calamares exited with status $status.\n\n$excerpt\n\nFull log: $log_file" || true
+fi
+exit "$status"
 EOF
 chmod 0755 "$root/usr/libexec/veyra-live-launch-calamares"
 cat > "$root/usr/libexec/veyra-live-calamares-session" <<'EOF'
