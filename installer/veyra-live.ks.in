@@ -77,6 +77,23 @@ install -m 0644 "$source_root/installer/veyra-installer.desktop" \
   "$live_root/usr/share/applications/veyra-installer.desktop"
 install -m 0644 "$source_root/installer/calamares/settings.conf" \
   "$live_root/etc/calamares/settings.conf"
+# Invoking "calamares -c /etc/calamares" overrides its QML data root.
+# Fedora's QML resources remain in /usr/share/calamares/qml. Link them
+# instead of shipping an empty /etc/calamares/qml directory or copying assets.
+test -d "$live_root/usr/share/calamares/qml" || {
+  echo "Calamares QML package resources are missing." >&2
+  exit 1
+}
+test ! -e "$live_root/etc/calamares/qml" &&
+  test ! -L "$live_root/etc/calamares/qml" || {
+    echo "Unexpected Calamares QML override entry." >&2
+    exit 1
+  }
+ln -s ../../usr/share/calamares/qml "$live_root/etc/calamares/qml"
+test -d "$live_root/etc/calamares/qml" || {
+  echo "Calamares QML resource link does not resolve." >&2
+  exit 1
+}
 install -m 0644 "$source_root/installer/calamares/modules/interactiveterminal.conf" \
   "$live_root/etc/calamares/modules/interactiveterminal.conf"
 install -m 0644 "$source_root/installer/calamares/modules/welcome.conf" \
