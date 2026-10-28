@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def mkosi_packages() -> set[str]:
     text = (ROOT / "mkosi.conf").read_text()
-    return set(re.findall(r"(?m)^Packages=(\\S+)$", text))
+    return set(re.findall(r"(?m)^Packages=(\S+)$", text))
 
 
 class VeyraLiveBrandingTests(unittest.TestCase):
