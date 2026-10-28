@@ -34,6 +34,8 @@ def verify(report: dict) -> list[str]:
             issues.append(f"{mode}: final screenshot evidence is malformed")
         elif screenshots[-1].get("non_black_pixels_detected") is not True:
             issues.append(f"{mode}: final screenshot has no confirmed visible framebuffer (black or unchecked)")
+        elif not isinstance(screenshots[-1].get("seconds_after_launch"), int) or screenshots[-1]["seconds_after_launch"] < 300:
+            issues.append(f"{mode}: final screenshot was captured too early to prove Live Plasma rendered")
         signals = item.get("serial_signals", {})
         if not isinstance(signals, dict) or not signals.get("kernel_seen"):
             issues.append(f"{mode}: no kernel startup evidence in serial output")
