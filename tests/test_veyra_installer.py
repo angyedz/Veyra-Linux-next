@@ -106,6 +106,19 @@ Packages=systemd
             with self.assertRaises(installer.InstallError):
                 installer.parse_mkosi_config(config)
 
+    def test_live_vm_policy_requires_installer_preflight_before_pass(self) -> None:
+        vm_check = (ROOT / "scripts/veyra-live-vpkg-vm-check.sh").read_text(encoding="utf-8")
+        self.assertIn("step installer-preflight", vm_check)
+        self.assertIn("/usr/libexec/veyra-installer --preflight", vm_check)
+        self.assertIn("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=present", vm_check)
+        self.assertIn("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=absent-rejected", vm_check)
+        self.assertIn("Live installer accepted installation without a Recovery UKI", vm_check)
+        self.assertLess(vm_check.index("step installer-preflight"),
+                        vm_check.index("VEYRA_LIVE_VPKG_CI_PASS"))
+        # The VM must never run the destructive installer without --preflight.
+        self.assertNotIn("/usr/libexec/veyra-installer --target", vm_check)
+        self.assertNotIn("systemd-repart", vm_check)
+
     def test_calamares_welcome_allows_unprivileged_live_frontend(self) -> None:
         welcome = (ROOT / "installer/calamares/modules/welcome.conf").read_text(encoding="utf-8")
         requirements = welcome.split("requirements:", 1)[1].split("geoip:", 1)[0]
