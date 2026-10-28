@@ -246,6 +246,10 @@ jobs:
           python3 -c 'from pathlib import Path; p=Path("scripts/veyra-install.py"); compile(p.read_text(), str(p), "exec")'
       - name: Test Recovery source and image installation contract
         run: python3 -m unittest discover -s tests -p 'test_recovery*.py' -v
+      - name: Test standalone Recovery QEMU harness safety
+        run: |
+          python3 -m py_compile scripts/test-recovery-uki-qemu.py tests/test_recovery_qemu.py
+          python3 -m unittest discover -s tests -p 'test_recovery_qemu.py' -v
       - name: Test v-dri sysfs inventory against isolated fixtures
         run: python3 -m unittest discover -s tests -p 'test_vdri.py' -v
       - name: Check v-dri syntax
@@ -299,6 +303,23 @@ jobs:
             rpm -q --qf "%{EVR}\\n" "$package" | grep -Eq "\\.fc44$"
           done
           '
+      - name: Boot standalone Recovery UKI in disposable UEFI QEMU
+        run: |
+          set -euo pipefail
+          mapfile -t recovery_ukis < <(find mkosi.output -maxdepth 1 -type f -name 'veyra-recovery*.efi' -print)
+          test "${#recovery_ukis[@]}" -eq 1
+          python3 scripts/test-recovery-uki-qemu.py \
+            --uki "${recovery_ukis[0]}" \
+            --report-dir build/recovery-uki-qemu --timeout 480
+      - name: Always preserve independent Recovery QEMU serial and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-independent-qemu-diagnostics
+          path: build/recovery-uki-qemu/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Verify the packages inside the built image
         run: |
           sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c "$(cat <<'VERIFY_PACKAGES'
@@ -467,6 +488,46 @@ jobs:
             --fingerprint "$fingerprint" \
             --log-directory build/bios-ota-logs \
             --boot-timeout 1200
+      # Validate atomic A/B and boot-attempt rollback independently of the
+      # signed vpkg guest fixture. Even when vpkg fails, a real clean guest
+      # still tests sysupdate, verity, trial blessing, and automatic rollback.
+      - name: Independently test signed UEFI A/B OTA and rollback (no vpkg fixture)
+        if: ${{ always() && steps.image_assets.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk -F= '/^ImageVersion=/ { print $2; exit }' mkosi.conf)"
+          export GNUPGHOME="$RUNNER_TEMP/veyra-independent-ota-gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --quick-generate-key "Veyra temporary independent OTA CI key" ed25519 sign 0
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys |
+            awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          ovmf_code=""
+          ovmf_vars=""
+          for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/x64/OVMF_CODE.4m.fd; do
+            if [[ -s "$candidate" ]]; then ovmf_code="$candidate"; break; fi
+          done
+          for candidate in /usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/OVMF/OVMF_VARS.fd /usr/share/edk2/x64/OVMF_VARS.4m.fd; do
+            if [[ -s "$candidate" ]]; then ovmf_vars="$candidate"; break; fi
+          done
+          test -n "$ovmf_code" && test -n "$ovmf_vars"
+          sudo --preserve-env=PATH,GNUPGHOME python3 scripts/test-sysupdate-image.py \
+            --image mkosi.output/veyra-next.raw \
+            --current-version "$version" \
+            --transfer-dir mkosi.extra/usr/lib/sysupdate.d \
+            --fingerprint "$fingerprint" \
+            --ovmf-code "$ovmf_code" --ovmf-vars "$ovmf_vars" \
+            --log-directory build/uefi-ota-base-logs --boot-timeout 1200
+      - name: Always preserve independent signed A/B OTA QEMU diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-ota-independent-qemu-diagnostics
+          path: build/uefi-ota-base-logs/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Prepare Recovery UKI for the Live Installer ISO
         id: prepare_recovery
         if: ${{ always() && steps.image_assets.outcome == 'success' }}
@@ -589,3 +650,64 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  installer-e2e-qemu:
+    name: Real Live install and installed UEFI boot on disposable disk
+    needs: live-installer-iso
+    # Explicit always() avoids inheriting the failed upstream Fedora/OTA
+    # dependency: if the ISO itself succeeded, install it even if OTA failed.
+    if: ${{ always() && needs.live-installer-iso.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate installer acceptance harness safety before running
+        run: |
+          python3 -m py_compile scripts/test-installer-e2e-qemu.py
+          python3 -m unittest discover -s tests -p 'test_installer_e2e_qemu.py' -v
+          python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
+      - name: Install emulation tooling (no host-disk loop mounts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+      - name: Get the independently built Live ISO with real Recovery UKI
+        uses: actions/download-artifact@v4
+        with:
+          name: veyra-next-prototype-live-iso
+          path: build/live-iso
+      - name: Verify media hash and OVMF firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd build/live-iso && sha256sum --check veyra-next-prototype-live.iso.sha256)
+          code=""
+          vars=""
+          for prefix in /usr/share/OVMF /usr/share/edk2/x64; do
+            for c in OVMF_CODE_4M.fd OVMF_CODE.fd OVMF_CODE.4m.fd; do
+              if [[ -s "$prefix/$c" ]]; then code="$prefix/$c"; break 2; fi
+            done
+          done
+          for prefix in /usr/share/OVMF /usr/share/edk2/x64; do
+            for v in OVMF_VARS_4M.fd OVMF_VARS.fd OVMF_VARS.4m.fd; do
+              if [[ -s "$prefix/$v" ]]; then vars="$prefix/$v"; break 2; fi
+            done
+          done
+          test -n "$code" && test -n "$vars"
+          echo "VEYRA_INSTALL_TEST_OVMF_CODE=$code" >> "$GITHUB_ENV"
+          echo "VEYRA_INSTALL_TEST_OVMF_VARS=$vars" >> "$GITHUB_ENV"
+      - name: Really install Veyra from the Live ISO onto a disposable QEMU disk and boot it
+        run: |
+          python3 scripts/test-installer-e2e-qemu.py \
+            --iso build/live-iso/veyra-next-prototype-live.iso \
+            --ovmf-code "$VEYRA_INSTALL_TEST_OVMF_CODE" \
+            --ovmf-vars "$VEYRA_INSTALL_TEST_OVMF_VARS" \
+            --boot-timeout 720 --install-timeout 7800 \
+            --report-dir build/installer-e2e-qemu
+      - name: Preserve real installer logs and installed first-boot QEMU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-e2e-qemu-diagnostics
+          path: build/installer-e2e-qemu/
+          if-no-files-found: warn
+          retention-days: 7

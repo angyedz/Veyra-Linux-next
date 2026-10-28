@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Veyra Glacier theme selector for an unprivileged, running Plasma session.
+set -euo pipefail
+
+usage() {
+    echo "Usage: veyra-theme {dark|light|status|help}"
+    echo "Choose a complete Veyra Glacier global theme; no sudo or reboot."
+}
+
+case "${1:-help}" in
+    dark) theme="org.veyra.glacier.dark" ;;
+    light) theme="org.veyra.glacier.light" ;;
+    status)
+        if command -v kreadconfig6 >/dev/null 2>&1; then
+            kreadconfig6 --file kdeglobals --group KDE --key LookAndFeelPackage
+        else
+            echo "kreadconfig6 is unavailable" >&2
+            exit 1
+        fi
+        exit 0 ;;
+    help|-h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+if [[ "${EUID}" -eq 0 ]]; then
+    echo "Run veyra-theme as the logged-in desktop user, without sudo." >&2
+    exit 2
+fi
+if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "No graphical session detected. Sign in to Plasma first." >&2
+    exit 2
+fi
+if ! command -v plasma-apply-lookandfeel >/dev/null 2>&1; then
+    echo "plasma-apply-lookandfeel is missing." >&2
+    exit 1
+fi
+if ! plasma-apply-lookandfeel --list | grep -Fqx "$theme"; then
+    echo "The Veyra theme $theme is not installed or not registered." >&2
+    exit 1
+fi
+plasma-apply-lookandfeel --apply "$theme"
+echo "Applied $theme. A few applications may need reopening."

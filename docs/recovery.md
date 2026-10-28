@@ -34,6 +34,21 @@ not yet implemented.
 The `recovery` mkosi subimage is configured to build independently and be copied to the main
 image's ESP during finalization. The image build has not yet confirmed this path. Unit tests validate boot-entry parsing,
 trial filtering, safe one-shot selection, and strict recovery-UKI artifact
-selection. The end-to-end acceptance test must boot the recovery UKI in a
-Fedora 44 QEMU guest, read the persistent journal, select the prior successful
-UKI, reboot, and verify the selected deployment becomes active.
+selection. The `scripts/test-recovery-uki-qemu.py` acceptance harness now
+constructs **only a sparse disposable GPT/FAT EFI image** and boots the real
+Recovery UKI through OVMF with disposable firmware variables and networking
+disabled. It requires both the Recovery banner and the interactive menu on
+the guest serial console; just finding a .efi file does not count. This
+harness originally reached the real Recovery UKI kernel in GitHub Actions
+run `40649658731`, but its guest initrd lacked
+`/usr/libexec/veyra-recovery` because `mkosi.finalize` copied the program
+after the UKI had been packed. The canonical program now has a byte-for-byte
+checked mirror in `mkosi.images/recovery/mkosi.extra/usr/libexec/veyra-recovery`,
+the tree that is included in the initrd. **A new real QEMU run must show the
+interactive menu** before independent Recovery boot is reported as verified.
+
+Even a passing independent menu test is **not** a full recovery acceptance:
+it does not prove journal access on an installed system, Recovery shell
+usefulness, selecting an old healthy UKI once, reboot, or correct A/B rollback.
+Those still require an installed-system QEMU scenario with a disposable
+64 GiB or larger disk and real Veyra system identities.

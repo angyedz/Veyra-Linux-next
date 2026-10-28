@@ -514,6 +514,26 @@ def inject_guest_ota_test(
                 "ConditionPathExists=/var/lib/veyra/vpkg-ci-stage-pass\n\n"
                 if run_vpkg_ci else ""
             )
+            # A unit file on disk does not start a target. Enable a timer
+            # in the *disposable guest /etc*, not graphical.target.wants:
+            # targets automatically order themselves AFTER wanted units, so
+            # putting an OTA target that itself runs After=graphical.target
+            # in graphical.target.wants creates a dependency cycle.
+            # A timer queues the OTA test independently after the boot begins.
+            ota_timer = systemd / "veyra-ota-ci.timer"
+            ota_timer.write_text(
+                "[Unit]\nDescription=Start disposable Veyra signed OTA QEMU acceptance\n"
+                "[Timer]\nOnBootSec=15s\nAccuracySec=1s\n"
+                "Unit=veyra-ota-ci.target\n"
+                "[Install]\nWantedBy=timers.target\n",
+                encoding="ascii",
+            )
+            ota_wants = systemd / "timers.target.wants"
+            ota_wants.mkdir(parents=True, exist_ok=True)
+            ota_link = ota_wants / "veyra-ota-ci.timer"
+            if ota_link.exists() or ota_link.is_symlink():
+                raise RuntimeError("disposable OTA timer enablement already exists")
+            ota_link.symlink_to("../veyra-ota-ci.timer")
             (systemd / "veyra-ota-ci.target").write_text(
                 "[Unit]\n"
                 "Description=Disposable Veyra OTA integration test sequence\n"

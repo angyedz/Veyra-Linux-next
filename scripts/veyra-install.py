@@ -621,6 +621,10 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         home_uid, home_gid = account_home.stat().st_uid, account_home.stat().st_gid
         command(["systemd-machine-id-setup", f"--root={root}"])
         command(["systemctl", f"--root={root}", "preset-all", "--preset-mode=enable-only"])
+        # The service is inert without a virtio-serial guest-agent channel.
+        # In a disposable QEMU installation it gives CI an independent,
+        # guest-origin proof of the installed roothash and graphical target.
+        command(["systemctl", f"--root={root}", "enable", "qemu-guest-agent.service"])
         flatpak_repo = "/usr/share/veyra/flathub.flatpakrepo"
         command(["chroot", str(root), "/usr/bin/flatpak", "remote-add", "--system", "--if-not-exists", "flathub", flatpak_repo])
 

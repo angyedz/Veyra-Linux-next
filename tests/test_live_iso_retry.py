@@ -70,7 +70,18 @@ echo "successful image fixture" > "$log"
         mock_xorriso = """#!/usr/bin/env bash
 printf '%s\\n' '-b images/eltorito.img -e images/efiboot.img'
 """
-        for name, value in (("livemedia-creator", mock_lorax), ("xorriso", mock_xorriso)):
+        mock_implant = """#!/usr/bin/env bash
+set -euo pipefail
+printf 'embedded-media-checksum\\n' >> "$1"
+"""
+        mock_check = """#!/usr/bin/env bash
+set -euo pipefail
+grep -Fq embedded-media-checksum "$1"
+"""
+        for name, value in (
+            ("livemedia-creator", mock_lorax), ("xorriso", mock_xorriso),
+            ("implantisomd5", mock_implant), ("checkisomd5", mock_check),
+        ):
             path = self.root / "mock-bin" / name
             path.write_text(value)
             path.chmod(0o755)
@@ -106,6 +117,13 @@ printf '%s\\n' '-b images/eltorito.img -e images/efiboot.img'
         self.assertTrue((self.root / "build/iso-attempt-logs/livemedia-attempt-1.log").is_file())
         self.assertTrue((self.root / "build/live-iso/veyra-next-prototype-live.iso").is_file())
         self.assertTrue((self.root / "build/live-iso/veyra-next-prototype-live.iso.sha256").is_file())
+        # Checksum must be implanted and checked before the published SHA256.
+        iso = self.root / "build/live-iso/veyra-next-prototype-live.iso"
+        self.assertIn(b"embedded-media-checksum", iso.read_bytes())
+        self.assertEqual(
+            (self.root / "build/live-iso/veyra-next-prototype-live.iso.sha256").read_text().split()[0],
+            __import__("hashlib").sha256(iso.read_bytes()).hexdigest(),
+        )
 
     def test_console_only_failure_is_detected_and_preserved(self):
         result = self.run_builder("first-console-network")

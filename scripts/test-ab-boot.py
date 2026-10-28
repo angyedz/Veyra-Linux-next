@@ -228,6 +228,21 @@ def stop_vm(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=10)
 
 
+def guest_vpkg_service_failed(serial: str) -> bool:
+    """Detect a failed real guest Vforge/Vpkg systemd service, not just CI traps.
+
+    The shell ERR trap can fail to emit its marker on the serial device after
+    an abrupt service exit. systemd's unit failure remains independently
+    observable. Ignore other services (e.g. the optional v-dri probe).
+    """
+    normalized = normalize_log(serial)
+    return any(marker in normalized for marker in (
+        "VEYRA_VPKG_CI_FAILURE",
+        "veyra-vpkg-ci.service: Failed with result",
+        "veyra-vpkg-ci.service: Main process exited, code=exited, status=",
+    ))
+
+
 def boot_until(
     *,
     image: pathlib.Path,
@@ -271,6 +286,12 @@ def boot_until(
         "-drive", f"if=none,id=systemdisk,format=raw,file={image}",
         "-device", "ide-hd,drive=systemdisk,bus=ahci.0",
         "-nic", f"user,restrict=on,guestfwd=tcp:10.0.2.100:{ota_port}-tcp:127.0.0.1:{ota_port}",
+        # The disposable image also contains the v-dri QEMU smoke unit.
+        # Default Q35 VGA maps to bochs-drm and causes that unit to fail even
+        # on a healthy A/B boot. Match the independently validated BIOS/v-dri
+        # QEMU fixture: a single in-tree virtio_gpu without default VGA.
+        "-vga", "none",
+        "-device", "virtio-vga",
         "-display", "none",
         "-serial", f"file:{log_path}",
         "-monitor", "none",
@@ -286,7 +307,7 @@ def boot_until(
             except FileNotFoundError:
                 log = ""
             normalized = normalize_log(log)
-            if "VEYRA_VPKG_CI_FAILURE" in normalized:
+            if guest_vpkg_service_failed(normalized):
                 excerpt = "\n".join(normalized.splitlines()[-100:])
                 raise RuntimeError(
                     "guest Vforge/Vpkg integration test failed before completing:\n"

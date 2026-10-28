@@ -112,7 +112,6 @@ class Session:
         self.base.setup()
         self.base.get_repo_sack().create_repos_from_system_configuration()
         query = self.libdnf5.repo.RepoQuery(self.base)
-        self._repo_callbacks = []
         veyra_repo_paths = self._resolve_veyra_repositories(query, cache_dir)
         for repo in query:
             repo_config = repo.get_config()
@@ -122,17 +121,16 @@ class Session:
                 local_path = veyra_repo_paths.get(repo.get_id())
                 if local_path is not None:
                     _set_option(repo_config, "baseurl", [local_path.as_uri().rstrip("/") + "/"])
+                # The Fedora 44 SWIG set_callbacks API takes an owning
+                # std::unique_ptr, not a Python RepoCallbacks instance.
+                # Do not circumvent that type mismatch with a permissive
+                # fallback or disable signatures: pin the *only* allowable
+                # key source and require signed metadata and RPMs instead.
+                # libdnf5 uses the configured gpgkey when loading the repo.
                 trusted_key = "file:///usr/share/veyra/RPM-GPG-KEY-VEYRA"
-                class PinnedRepoKeyCallbacks(self.libdnf5.repo.RepoCallbacks):
-                    def repokey_import(self, key_info) -> bool:
-                        return key_info.get_url() == trusted_key
-
-                    def repokey_imported(self, key_info) -> None:
-                        del key_info
-
-                callbacks = PinnedRepoKeyCallbacks()
-                repo.set_callbacks(callbacks)
-                self._repo_callbacks.append(callbacks)
+                _set_option(repo_config, "gpgkey", [trusted_key])
+                _set_option(repo_config, "repo_gpgcheck", True)
+                _set_option(repo_config, "pkg_gpgcheck", True)
             if refresh and repo.get_id() in self.repo_ids:
                 _set_option(repo_config, "metadata_expire", 0)
         sack = self.base.get_repo_sack()

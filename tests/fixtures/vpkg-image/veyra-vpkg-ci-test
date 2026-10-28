@@ -72,10 +72,13 @@ assert marker["base_digest"] in cmdline
 '\''
     printf "upper-layer-persisted\\n" > /usr/share/veyra-vforge-ci-overlay-marker
 '
+echo "VEYRA_VFORGE_CI_FIRST_EXEC_PASS"
 vforge_ci exec vm-smoke -- /usr/bin/bash -ceu \
     'grep -Fxq upper-layer-persisted /usr/share/veyra-vforge-ci-overlay-marker'
+echo "VEYRA_VFORGE_CI_SECOND_EXEC_PASS"
 test ! -e "$vforge_marker"
 vforge_ci delete vm-smoke
+echo "VEYRA_VFORGE_CI_DELETE_PASS"
 echo "Veyra vforge VM test: Veyra lower identity, rootless OverlayFS persistence, and host isolation passed"
 
 grep -Fxq "$marker" /etc/veyra/vpkg-ci-persisted
@@ -124,6 +127,12 @@ fi
 
 vpkg channel testing
 vpkg install veyra-shell-tools
+echo "VEYRA_VPKG_CI_SIGNED_INSTALL_TRANSACTION_PASS"
+# Confirm activation independently before checking individual installed tools.
+# An RPM already written during preflight would be present in the private DB
+# without an active overlay; this catches exactly that regression in QEMU.
+assert_extension_active veyra-shell-tools
+echo "VEYRA_VPKG_CI_SYSEXT_ACTIVATION_PASS"
 installed="$(rpm --root "$root" -q --qf '%{VERSION}' veyra-shell-tools)"
 test "$installed" = "0.1.0"
 command -v fzf >/dev/null

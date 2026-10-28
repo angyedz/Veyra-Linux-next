@@ -115,6 +115,21 @@ if ((size > max_bytes)); then
   exit 1
 fi
 
+# Fedora's default Live GRUB entry can include rd.live.check. The Lorax
+# custom ISO previously booted straight into checkisomd5 and reported
+# "Media check failed", leaving dracut waiting for the Live root. Implant and
+# verify the checksum on the *final* copied ISO before hashing/publishing it.
+# Do not ship a Live image with a default boot entry that cannot verify itself.
+command -v implantisomd5 >/dev/null || {
+  echo "Missing isomd5sum package: implantisomd5 is required." >&2; exit 1;
+}
+command -v checkisomd5 >/dev/null || {
+  echo "Missing isomd5sum package: checkisomd5 is required." >&2; exit 1;
+}
+implantisomd5 "$iso"
+checkisomd5 "$iso" || {
+  echo "Live Installer ISO failed its own embedded media checksum." >&2; exit 1;
+}
 xorriso -indev "$iso" -report_el_torito as_mkisofs > "$output_dir/eltorito.txt"
 grep -Eq '(^|[[:space:]])-b[[:space:]]' "$output_dir/eltorito.txt" || {
   echo "ISO has no Legacy BIOS El Torito boot entry." >&2

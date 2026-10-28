@@ -59,6 +59,45 @@ class NativeLiveIsoTests(unittest.TestCase):
         ):
             self.assertIn(required, SCRIPT)
 
+    def test_native_live_includes_branded_fastfetch_and_both_glacier_themes(self):
+        self.assertIn("konsole-part kate udisks2 fastfetch", SCRIPT)
+        self.assertIn('"$root/etc/xdg/fastfetch/config.jsonc"', SCRIPT)
+        self.assertIn('"$root/usr/share/veyra/fastfetch/logo.txt"', SCRIPT)
+        self.assertIn("plasma/desktoptheme plasma/look-and-feel", SCRIPT)
+        self.assertIn('"$root/usr/bin/veyra-theme"', SCRIPT)
+        self.assertIn("Glacier dark theme is missing", SCRIPT)
+
+    def test_failed_calamares_explains_error_not_just_log_path(self):
+        # Previously the desktop popped up only a pathname, concealing Qt,
+        # missing module, or policy errors that actually caused exit.
+        self.assertIn('tail -n 50 "$log_file" >&2', SCRIPT)
+        self.assertIn('excerpt="$(tail -n 12 "$log_file" | cut -c 1-240)"', SCRIPT)
+        self.assertIn('Calamares exited with status $status.', SCRIPT)
+        self.assertIn('! -r /etc/calamares/settings.conf', SCRIPT)
+        self.assertIn('if [[ "${EUID}" -eq 0 ]]; then', SCRIPT)
+
+    def test_calamares_explicit_app_data_root_has_packaged_qml(self):
+        # Exact Calamares fatal from a real Live desktop:
+        # "explicitly configured application data directory is missing qml/"
+        # -c changes QML lookup into /etc/calamares/qml, not just settings.
+        self.assertIn('/usr/bin/calamares -c /etc/calamares', SCRIPT)
+        self.assertIn('[[ -d "$root/usr/share/calamares/qml" ]]', SCRIPT)
+        self.assertIn('ln -s ../../usr/share/calamares/qml "$root/etc/calamares/qml"', SCRIPT)
+        self.assertIn('[[ -d "$root/etc/calamares/qml" ]]', SCRIPT)
+        # An empty qml directory would conceal the original failure and
+        # break subsequent QML module loading.
+        self.assertNotIn('mkdir -p "$root/etc/calamares/qml"', SCRIPT)
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "usr/share/calamares/qml").mkdir(parents=True)
+            config = root / "etc/calamares"
+            config.mkdir(parents=True)
+            link = config / "qml"
+            link.symlink_to("../../usr/share/calamares/qml")
+            self.assertTrue(link.is_dir())
+            self.assertEqual(link.resolve(), (root / "usr/share/calamares/qml").resolve())
+
     def test_calamares_is_desktop_visible_and_wayland_user_gui(self):
         self.assertIn("konsole konsole-part", SCRIPT)
         self.assertIn("konsolepart.so", SCRIPT)

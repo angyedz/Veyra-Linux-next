@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="84" viewBox="0 0 128 84">
+<!-- Veyra Glacier light widget heading; no runtime effects or filters. -->
+  <g id="header-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#EFF5FC"/><path d="M0 8 A8 8 0 0 1 8 0" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="header-top"><rect x="8" y="0" width="24" height="8" fill="#EFF5FC"/><path d="M8 .5 H32" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="header-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#EFF5FC"/><path d="M32 0 A8 8 0 0 1 40 8" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="header-left"><rect x="0" y="8" width="8" height="24" fill="#EFF5FC"/><path d="M.5 8 V32" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="header-center"><rect x="8" y="8" width="24" height="24" fill="#EFF5FC"/></g>
+  <g id="header-right"><rect x="32" y="8" width="8" height="24" fill="#EFF5FC"/><path d="M39.5 8 V32" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="header-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#EFF5FC"/><path d="M8 40 A8 8 0 0 1 0 32" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="header-bottom"><rect x="8" y="32" width="24" height="8" fill="#EFF5FC"/><path d="M8 39.5 H32" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="header-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#EFF5FC"/><path d="M40 32 A8 8 0 0 1 32 40" fill="none" stroke="#B5C9DD" stroke-width="1" stroke-opacity=".8"/></g>  <g id="footer-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#F0F5FA"/><path d="M0 8 A8 8 0 0 1 8 0" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="footer-top"><rect x="8" y="0" width="24" height="8" fill="#F0F5FA"/><path d="M8 .5 H32" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="footer-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#F0F5FA"/><path d="M32 0 A8 8 0 0 1 40 8" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="footer-left"><rect x="0" y="8" width="8" height="24" fill="#F0F5FA"/><path d="M.5 8 V32" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="footer-center"><rect x="8" y="8" width="24" height="24" fill="#F0F5FA"/></g>
+  <g id="footer-right"><rect x="32" y="8" width="8" height="24" fill="#F0F5FA"/><path d="M39.5 8 V32" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="footer-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#F0F5FA"/><path d="M8 40 A8 8 0 0 1 0 32" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="footer-bottom"><rect x="8" y="32" width="24" height="8" fill="#F0F5FA"/><path d="M8 39.5 H32" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="footer-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#F0F5FA"/><path d="M40 32 A8 8 0 0 1 32 40" fill="none" stroke="#B9CCDE" stroke-width="1" stroke-opacity=".8"/></g>  <rect id="hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+</svg>

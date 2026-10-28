@@ -100,3 +100,44 @@ with a disposable disk in a full end-to-end QEMU acceptance run.
 ## Open sizing decision
 
 The current partition definitions require at least 55.5 GiB for the installed disk. The installer must report the required capacity before allowing installation. Making the layout fit smaller target disks requires changing the partition sizing contract and is not implied by the 8 GiB ISO limit.
+
+## Real installer → first installed UEFI boot QEMU gate (new, not yet passed)
+
+`scripts/test-installer-e2e-qemu.py` implements an isolated test of the
+**unmodified Live installer backend** that is run by Calamares:
+
+1. Create one 64 GiB temporary **qcow2 regular file**, not a real block
+   device, and unique disposable OVMF variable store.
+2. Boot the installable Live ISO in QEMU with a `virtio-blk` target whose
+   serial is exactly `VEYRA_CI_INSTALL` and a private virtio guest-agent
+   socket. Never attach host `/dev/*` as a QEMU disk.
+3. Inside the actual Live guest, verify QEMU/KVM identity, exact
+   `/dev/vda` disk type, serial, 64 GiB size and Recovery UKI presence
+   **before** running any destructive tool. Perform the installer preflight.
+4. Invoke `/usr/libexec/veyra-installer --target /dev/vda
+   --confirm-device /dev/vda` only after those checks. Supply randomized
+   one-time account credentials through QEMU guest-agent stdin, **not**
+   command arguments, source code, GitHub logs or image files. This invokes
+   real Fedora package download, GPT repartitioning, dm-verity and both boot
+   asset installations.
+5. Shut down the Live VM, remove the CD drive, start a fresh QEMU boot from
+   that same qcow2 file, and interrogate the installed system using the
+   normal `qemu-guest-agent` service. Require Fedora 44/Veyra identity,
+   a real 64-digit kernel `roothash`, read-only EROFS `/`, ext4
+   `/home`, active `graphical.target` and display manager.
+6. Preserve bounded guest and serial diagnostics and fail the gate if any
+   stage is missing. No synthetic PASS marker counts as an installed boot.
+
+The new separate `installer-e2e-qemu` job downloads the ISO artifact from
+the preceding Live ISO build. Its Linux guest-agent package is a normal,
+virtual-machine-only system utility; the installer enables it in the target
+for first-boot introspection. The guest does not automatically run any
+installer: it requires a deliberate authorized guest-exec invocation through
+its private QEMU agent socket, and the destructive command checks the exact
+isolated target identity itself.
+
+**Status: code and source tests exist; the real guest install-and-reboot gate
+has NOT passed.** It must stay mandatory before claiming the Pre-alpha has
+a working installed system. This test uses the CLI backend that Calamares
+launches, so a separate GUI click-through test is still needed to validate
+the Calamares front-end itself.

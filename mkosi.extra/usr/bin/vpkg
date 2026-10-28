@@ -2381,9 +2381,21 @@ def download_for_inspection(
         directory = Path(temporary)
         if action not in {"install", "upgrade"}:
             raise VpkgError(f"Unsupported Veyra package preflight: {action}")
+        # Session.resolve() executes its libdnf5 transaction: calling it on
+        # VPKG_ROOT here would *install the RPM during inspection*. The real
+        # transaction would then see no changes, skip sysext refresh, and leave
+        # an installed RPM with no activated extension. Always inspect using a
+        # private disposable snapshot of the installed RPM root instead.
+        inspection_root = directory / "inspection-root"
+        if VPKG_ROOT.is_symlink() or (VPKG_ROOT.exists() and not VPKG_ROOT.is_dir()):
+            raise VpkgError("The Veyra RPM root is not a safe directory for inspection.")
+        if VPKG_ROOT.exists():
+            shutil.copytree(VPKG_ROOT, inspection_root, symlinks=True)
+        else:
+            inspection_root.mkdir(mode=0o700)
         try:
             result = package_session(
-                VPKG_ROOT,
+                inspection_root,
                 channel,
                 include_rpmfusion=False,
                 refresh=action == "upgrade",
@@ -2404,7 +2416,7 @@ def download_for_inspection(
             inspect_extension_rpms(
                 directory,
                 allow_empty=action == "upgrade",
-                rpm_root=VPKG_ROOT,
+                rpm_root=inspection_root,
             )
         )
 

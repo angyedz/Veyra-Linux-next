@@ -5,7 +5,12 @@ running on the machine. A small system service exposes the active EROFS root at
 `/run/veyra/vforge/base` as a read-only, non-recursive bind mount. In the user's
 private mount namespace, rootless OverlayFS uses that base as its lower layer
 and directs most writes into the environment's persistent `upper` and `work`
-directories. A separate private, persistent `var` directory under each
+directories. Before attaching OverlayFS it seeds user-owned directory metadata
+for `/usr`, `/usr/share`, `/usr/bin`, `/usr/lib`, `/usr/lib64`, `/usr/local`,
+`/etc`, `/opt`, and `/root` **inside the private upper only**. This lets
+rootless commands create files under those paths without trying to write through
+the unmapped host-root-owned EROFS directory inodes. The original lower tree is
+still merged and untouched; preexisting unsafe symlinks/permissions fail closed. A separate private, persistent `var` directory under each
 environment is bind-mounted at its guest `/var`. Fedora's EROFS `/var`
 may be host-root-owned and unwritable in the rootless user namespace; this
 bind avoids the real guest `EACCES: /var/lib` failure while retaining Vforge's
@@ -76,10 +81,11 @@ This is an early native implementation. Only the `integrated` project profile
 is accepted today. GPU, Wayland, PipeWire, D-Bus, shared networking, capability
 selection, seccomp policy, SELinux policy, snapshot/rollback, automatic base
 compatibility management, and project package reconciliation are not
-implemented. Package installation and real OverlayFS behavior have not yet
-been validated in a Veyra guest. A user namespace and rootless OverlayFS
-supporting the host kernel/storage filesystem are required; Vforge reports the
-kernel or mount error when those prerequisites are unavailable.
+implemented. Real guest validation is limited to rootless OverlayFS
+creation, lower identity, write persistence, host isolation, and deletion;
+package installation *inside Vforge* is not yet validated. A user namespace and
+rootless OverlayFS supporting the host kernel/storage filesystem are required;
+Vforge reports the kernel or mount error when those prerequisites are unavailable.
 
 Vforge environments are compatible with the Veyra root from which they were
 created. After a Veyra system update, review or recreate environments before
@@ -88,14 +94,23 @@ version.
 
 ## Verification status
 
-Source tests cover persistent upper/work layout, project state placement,
-read-only explicit mounts, reserved targets, Veyra root identity, and namespace
-selection. GitHub Actions runs those checks and builds the installed Veyra
-image directly. A Fedora 44 Veyra guest run
-has not yet confirmed namespace creation, OverlayFS mount, package installation,
-or persistence across process restarts. In OTA run
-`40636497267`, the rootless mount setup advanced past the earlier
-`/proc/self/fd/3` error but then failed in `ensure_vpkg_state` with
-`[Errno 13] Permission denied: '/var/lib'`; the private `/var` fix has
-source tests but must pass another **real QEMU guest** before runtime support
-is claimed.
+In signed OTA QEMU run `40670181999` (2026-10-28), the serial artifact
+`uefi-ota-boot-diagnostics/boot-b.log` **confirmed real Fedora 44 guest**
+`VEYRA_VFORGE_CI_FIRST_EXEC_PASS`, `VEYRA_VFORGE_CI_SECOND_EXEC_PASS`, and
+`VEYRA_VFORGE_CI_DELETE_PASS`. The guest proved:
+- rootless native OverlayFS with the running Veyra EROFS lower;
+- persistence of a private `/usr/share` marker across separate `vforge exec` sessions;
+- absence of the marker on the host filesystem;
+- cleanup of the restricted kernel-created `work/work` staging directory.
+
+This followed previous failures on `/proc/self/fd/3` (mount source descriptor),
+`/var/lib` (unmapped EROFS lower parent), `/usr/share` (mapped ownership),
+and `work/work` (kernel's restricted private overlay staging directory).
+Each had a targeted change; their real-QEMU smoke test is now green.
+
+**The full signed vpkg/OTA integration is not yet verified.** The next guest
+stage failed while running its source tests because the fixture injected only
+a partial repository snapshot (24 missing-file errors). The OTA test setup
+now exports Git-tracked `HEAD` sources, excluding build output and untracked
+local files; the full guest re-run is pending. A green source test suite
+alone does **not** establish success of vpkg transactions or A/B rollback.

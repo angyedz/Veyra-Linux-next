@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="84" viewBox="0 0 128 84">
+<!-- Veyra Glacier light list items; no runtime effects or filters. -->
+  <g id="normal-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#F1F5FB"/><path d="M0 8 A8 8 0 0 1 8 0" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="normal-top"><rect x="8" y="0" width="24" height="8" fill="#F1F5FB"/><path d="M8 .5 H32" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="normal-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#F1F5FB"/><path d="M32 0 A8 8 0 0 1 40 8" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="normal-left"><rect x="0" y="8" width="8" height="24" fill="#F1F5FB"/><path d="M.5 8 V32" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="normal-center"><rect x="8" y="8" width="24" height="24" fill="#F1F5FB"/></g>
+  <g id="normal-right"><rect x="32" y="8" width="8" height="24" fill="#F1F5FB"/><path d="M39.5 8 V32" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="normal-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#F1F5FB"/><path d="M8 40 A8 8 0 0 1 0 32" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="normal-bottom"><rect x="8" y="32" width="24" height="8" fill="#F1F5FB"/><path d="M8 39.5 H32" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="normal-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#F1F5FB"/><path d="M40 32 A8 8 0 0 1 32 40" fill="none" stroke="#C2D0E0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#E3EFFB"/><path d="M0 8 A8 8 0 0 1 8 0" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-top"><rect x="8" y="0" width="24" height="8" fill="#E3EFFB"/><path d="M8 .5 H32" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#E3EFFB"/><path d="M32 0 A8 8 0 0 1 40 8" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-left"><rect x="0" y="8" width="8" height="24" fill="#E3EFFB"/><path d="M.5 8 V32" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-center"><rect x="8" y="8" width="24" height="24" fill="#E3EFFB"/></g>
+  <g id="hover-right"><rect x="32" y="8" width="8" height="24" fill="#E3EFFB"/><path d="M39.5 8 V32" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#E3EFFB"/><path d="M8 40 A8 8 0 0 1 0 32" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-bottom"><rect x="8" y="32" width="24" height="8" fill="#E3EFFB"/><path d="M8 39.5 H32" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="hover-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#E3EFFB"/><path d="M40 32 A8 8 0 0 1 32 40" fill="none" stroke="#93BDE0" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#C8E4F8"/><path d="M0 8 A8 8 0 0 1 8 0" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-top"><rect x="8" y="0" width="24" height="8" fill="#C8E4F8"/><path d="M8 .5 H32" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#C8E4F8"/><path d="M32 0 A8 8 0 0 1 40 8" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-left"><rect x="0" y="8" width="8" height="24" fill="#C8E4F8"/><path d="M.5 8 V32" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-center"><rect x="8" y="8" width="24" height="24" fill="#C8E4F8"/></g>
+  <g id="pressed-right"><rect x="32" y="8" width="8" height="24" fill="#C8E4F8"/><path d="M39.5 8 V32" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#C8E4F8"/><path d="M8 40 A8 8 0 0 1 0 32" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-bottom"><rect x="8" y="32" width="24" height="8" fill="#C8E4F8"/><path d="M8 39.5 H32" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="pressed-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#C8E4F8"/><path d="M40 32 A8 8 0 0 1 32 40" fill="none" stroke="#4B9CD5" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#EAF1F8"/><path d="M0 8 A8 8 0 0 1 8 0" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-top"><rect x="8" y="0" width="24" height="8" fill="#EAF1F8"/><path d="M8 .5 H32" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#EAF1F8"/><path d="M32 0 A8 8 0 0 1 40 8" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-left"><rect x="0" y="8" width="8" height="24" fill="#EAF1F8"/><path d="M.5 8 V32" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-center"><rect x="8" y="8" width="24" height="24" fill="#EAF1F8"/></g>
+  <g id="section-right"><rect x="32" y="8" width="8" height="24" fill="#EAF1F8"/><path d="M39.5 8 V32" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#EAF1F8"/><path d="M8 40 A8 8 0 0 1 0 32" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-bottom"><rect x="8" y="32" width="24" height="8" fill="#EAF1F8"/><path d="M8 39.5 H32" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <g id="section-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#EAF1F8"/><path d="M40 32 A8 8 0 0 1 32 40" fill="none" stroke="#B8CADC" stroke-width="1" stroke-opacity=".8"/></g>
+  <rect id="normal-hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="normal-hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="normal-hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="normal-hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+  <rect id="hover-hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="hover-hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="hover-hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="hover-hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+  <rect id="pressed-hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="pressed-hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="pressed-hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="pressed-hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+  <rect id="section-hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="section-hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="section-hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="section-hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+</svg>
