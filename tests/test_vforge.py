@@ -211,6 +211,11 @@ class VforgeNativeTests(unittest.TestCase):
         test_state = private_var / "vpkg-generation-marker"
         test_state.write_text("survives across sessions", encoding="utf-8")
         self.assertEqual(test_state.read_text(encoding="utf-8"), "survives across sessions")
+        # Fedora OTA QEMU previously failed on this exact rootless copy-up:
+        # creating /usr/share/veyra-vforge-ci-overlay-marker. Overlay parents
+        # must exist in the private upper *before* the overlay mount.
+        self.assertTrue((environment / "upper/usr/share").is_dir())
+        self.assertEqual((environment / "upper/usr/share").stat().st_uid, os.getuid())
         overlay_mount = next(command for command in commands if command[:3] == ["mount", "-t", "overlay"])
         self.assertIn("userxattr", overlay_mount[overlay_mount.index("-o") + 1].split(","))
         self.assertFalse(any(command[:2] == ["mount", "--rbind"] for command in commands))
@@ -219,6 +224,42 @@ class VforgeNativeTests(unittest.TestCase):
                 for command in commands)
         )
         self.assertEqual(list((runtime / "vforge").iterdir()), [])
+
+    def test_rootless_overlay_upper_preseeds_writable_usr_without_touching_base(self) -> None:
+        path = vforge.create("backend")
+        metadata = vforge.environment_metadata(path)
+        upper = Path(metadata["upper"])
+        vforge.prepare_rootless_overlay_upper(upper)
+        for relative in ("usr", "usr/bin", "usr/lib", "usr/lib64", "usr/share", "etc", "opt"):
+            target = upper / relative
+            self.assertTrue(target.is_dir(), relative)
+            self.assertFalse(target.is_symlink(), relative)
+            self.assertEqual(target.stat().st_uid, os.getuid())
+            self.assertTrue(target.stat().st_mode & 0o200, relative)
+            self.assertFalse(target.stat().st_mode & 0o002, relative)
+        self.assertFalse((upper / "usr/share/veyra-vforge-ci-overlay-marker").exists())
+        # Reentry must retain all writes and never clear the persistent upper.
+        marker = upper / "usr/share/veyra-vforge-ci-overlay-marker"
+        marker.write_text("persistent lower-independent content", encoding="utf-8")
+        vforge.prepare_rootless_overlay_upper(upper)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "persistent lower-independent content")
+
+    def test_rootless_overlay_upper_rejects_symlink_to_outside(self) -> None:
+        path = vforge.create("backend")
+        upper = Path(vforge.environment_metadata(path)["upper"])
+        outside = self.root / "outside"
+        outside.mkdir()
+        (upper / "usr").symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(vforge.VforgeError, "unsafe or non-writable"):
+            vforge.prepare_rootless_overlay_upper(upper)
+        self.assertFalse((outside / "share").exists())
+
+    def test_rootless_overlay_upper_rejects_unwritable_parent(self) -> None:
+        path = vforge.create("backend")
+        upper = Path(vforge.environment_metadata(path)["upper"])
+        (upper / "usr").mkdir(mode=0o500)
+        with self.assertRaisesRegex(vforge.VforgeError, "unsafe or non-writable"):
+            vforge.prepare_rootless_overlay_upper(upper)
 
     def test_rootless_var_bind_rejects_preexisting_symlink(self) -> None:
         path = vforge.create("backend")
