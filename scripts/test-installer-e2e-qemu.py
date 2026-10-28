@@ -65,6 +65,9 @@ def guest_install_shell() -> str:
     # This shell runs exclusively *inside* the guest. The exact virtio disk
     # serial and size are checked before even an installer preflight.
     return """set -euo pipefail
+# Never expose credentials in a guest process argument or CI capture output.
+# All installer output stays on the disposable guest tmpfs for diagnostics.
+exec >/run/veyra-ci-install.log 2>&1
 test "$(id -u)" -eq 0
 case "$(systemd-detect-virt --vm 2>/dev/null)" in qemu|kvm) ;; *) exit 80 ;; esac
 test "$(lsblk -dn -o TYPE /dev/vda | tr -d '[:space:]')" = disk
@@ -242,9 +245,7 @@ def main() -> int:
                             credentials = guest_credentials()
                             try:
                                 pid = run_guest_command(
-                                    agent, guest_install_shell() +
-                                    " >/run/veyra-ci-install.log 2>&1",
-                                    stdin=credentials,
+                                    agent, guest_install_shell(), stdin=credentials,
                                 )
                             finally:
                                 del credentials
@@ -252,9 +253,19 @@ def main() -> int:
                             (report / "installer-exit.json").write_text(
                                 json.dumps({"exitcode": code_status}, indent=2) + "\n"
                             )
-                            if code_status:
+                            try:
+                                tail_pid = run_guest_command(
+                                    agent, "tail -c 20000 /run/veyra-ci-install.log"
+                                )
+                                tail_status, tail_text = wait_guest_exit(agent, tail_pid, 60)
+                                if tail_status == 0:
+                                    (report / "installer-tail.log").write_text(tail_text)
+                            except (OSError, ValueError, InstallQemuError):
+                                tail_text = "<could not read installer log from guest>"
+                            if code_status or "VEYRA_REAL_INSTALLER_QEMU_PASS" not in tail_text:
                                 raise InstallQemuError(
-                                    f"guest installer failed with code {code_status}: {output[-3000:]}"
+                                    f"guest installer failed or success marker absent (code={code_status}): "
+                                    + tail_text[-5000:]
                                 )
                             results["installer_completed"] = True
                         else:
