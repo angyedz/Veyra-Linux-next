@@ -34,6 +34,19 @@ class IndependentRecoveryQemuTests(unittest.TestCase):
             b"Veyra Recovery\nSelect an action:\nRecovery could not complete the requested operation"
         ))
 
+    def test_fatal_initrd_errors_fail_without_waiting_for_timeout(self) -> None:
+        for error in (
+            b"/usr/bin/python3: can't open file '/usr/libexec/veyra-recovery'",
+            b"Kernel panic - not syncing",
+            b"Traceback (most recent call last)",
+            b"Recovery could not complete the requested operation",
+        ):
+            with self.subTest(error=error):
+                self.assertTrue(recovery_qemu.fatal_recovery_boot(error))
+        self.assertFalse(recovery_qemu.fatal_recovery_boot(
+            "Veyra Recovery\\nSelect an action: ".encode("utf-8")
+        ))
+
     def test_only_disposable_firmware_and_disk_are_given_to_qemu(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
