@@ -70,14 +70,29 @@ class BiosBootDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("std", command)
 
     def test_vdri_failure_is_not_hidden_by_bios_boot_marker(self) -> None:
-        valid = bios_boot.BOOT_MARKER + b"\\n" + bios_boot.GPU_MARKER
+        valid = (
+            bios_boot.BOOT_MARKER + b"\n"
+            + bios_boot.GPU_MARKER
+            + b"\n[  OK  ] Reached target \x1b[0;1;39mgraphical.target\x1b[0m - Graphical Interface.\n"
+        )
         self.assertTrue(bios_boot.boot_evidence_verified(valid))
         self.assertFalse(bios_boot.boot_evidence_verified(bios_boot.BOOT_MARKER))
         self.assertFalse(bios_boot.boot_evidence_verified(bios_boot.GPU_MARKER))
-        self.assertFalse(bios_boot.boot_evidence_verified(valid + b"\\n" + bios_boot.GPU_FAILURE_MARKER))
+        self.assertFalse(bios_boot.boot_evidence_verified(valid.replace(b"graphical.target", b"multi-user.target")))
+        self.assertFalse(bios_boot.boot_evidence_verified(valid.replace(bios_boot.BOOT_MARKER, b"")))
+        self.assertFalse(bios_boot.boot_evidence_verified(valid + b"\n" + bios_boot.GPU_FAILURE_MARKER))
         self.assertFalse(bios_boot.boot_evidence_verified(
-            valid + b"\\nvdri-qemu-smoke.service: Failed with result 'exit-code'."
+            valid + b"\nvdri-qemu-smoke.service: Failed with result 'exit-code'."
         ))
+
+    def test_bios_guest_marker_service_has_no_graphical_target_ordering_cycle(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = (root / "tests/fixtures/firmware/veyra-bios-ci.service").read_text(encoding="utf-8")
+        self.assertIn("WantedBy=graphical.target", fixture)
+        self.assertIn("After=multi-user.target", fixture)
+        self.assertNotIn("\nAfter=graphical.target\n", fixture)
+        self.assertIn("ConditionKernelCommandLine=veyra_bios_ci=1", fixture)
+        self.assertIn("VEYRA_BIOS_BOOT_CI_PASS", fixture)
 
     def test_restores_the_grub_config_even_when_qemu_test_fails(self) -> None:
         original = (
