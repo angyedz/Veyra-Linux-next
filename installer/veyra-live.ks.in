@@ -7,7 +7,7 @@ network --bootproto=dhcp --device=link --activate
 url --url=__VEYRA_FEDORA_REPO_URL__
 firewall --enabled --service=mdns
 selinux --enforcing
-services --enabled=NetworkManager,livesys,livesys-late
+services --enabled=NetworkManager,livesys,livesys-late,qemu-guest-agent
 shutdown
 bootloader --location=none
 clearpart --all --initlabel
