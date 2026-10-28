@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import struct
 import tempfile
 import unittest
 
@@ -11,6 +12,34 @@ SPEC = importlib.util.spec_from_file_location("veyra_installer", ROOT / "scripts
 assert SPEC is not None and SPEC.loader is not None
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
+
+
+
+def write_recovery_fixture(path: pathlib.Path, *, image_id: str = "veyra-recovery") -> bytes:
+    """Minimal PE layout for metadata tests; never bootable or trusted."""
+    image = bytearray(0x400 + 4 * 512)
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3c, 0x80)
+    image[0x80:0x84] = b"PE\x00\x00"
+    struct.pack_into("<H", image, 0x86, 4)
+    struct.pack_into("<H", image, 0x94, 0xf0)
+    table = 0x80 + 24 + 0xf0
+    payloads = (
+        (b".osrel", (
+            f"ID=fedora\nVERSION_ID=44\nIMAGE_ID={image_id}\nIMAGE_VERSION=0.1.0\n"
+        ).encode("ascii")),
+        (b".cmdline", b"rdinit=/init console=ttyS0\x00"),
+        (b".linux", b"synthetic kernel fixture"),
+        (b".initrd", b"synthetic initrd fixture"),
+    )
+    for index, (name, payload) in enumerate(payloads):
+        header = table + index * 40
+        image[header:header + len(name)] = name
+        offset = 0x400 + index * 512
+        struct.pack_into("<II", image, header + 16, 512, offset)
+        image[offset:offset + len(payload)] = payload
+    path.write_bytes(image)
+    return bytes(image)
 
 
 class InstallerManifestTests(unittest.TestCase):
@@ -104,18 +133,118 @@ Packages=systemd
             kickstart,
         )
 
+    def test_boot_assets_survive_disposable_staging_disk_reformat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = pathlib.Path(directory)
+            root = work / "scratch-root"
+            kernel = root / "usr/lib/modules/7.2.13-200.fc44.x86_64/vmlinuz"
+            initrd = root / "boot/initramfs-7.2.13-200.fc44.x86_64.img"
+            release = root / "usr/lib/os-release"
+            for source, content in ((kernel, b"kernel"), (initrd, b"initrd"),
+                                    (release, b"ID=fedora\\nVERSION_ID=44\\n")):
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(content)
+            host_assets = work / "host-private"
+            host_assets.mkdir(mode=0o700)
+            staged_kernel, staged_initrd, staged_release = installer.stage_installer_boot_assets(
+                root, kernel, initrd, host_assets
+            )
+            with self.assertRaisesRegex(installer.InstallError, "overwrite staged"):
+                installer.stage_installer_boot_assets(root, kernel, initrd, host_assets)
+            # The scratch disk is unmounted/reformatted at this point.
+            import shutil
+            shutil.rmtree(root)
+            self.assertEqual(staged_kernel.read_bytes(), b"kernel")
+            self.assertEqual(staged_initrd.read_bytes(), b"initrd")
+            self.assertEqual(staged_release.read_bytes(), b"ID=fedora\\nVERSION_ID=44\\n")
+
+    def test_boot_assets_reject_missing_initrd_and_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = pathlib.Path(directory)
+            root = work / "scratch-root"
+            kernel = root / "usr/lib/modules/test/vmlinuz"
+            initrd = root / "boot/initramfs-test.img"
+            release = root / "usr/lib/os-release"
+            for path in (kernel, release):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"valid")
+            dest = work / "staged"
+            dest.mkdir()
+            with self.assertRaisesRegex(installer.InstallError, "missing or invalid"):
+                installer.stage_installer_boot_assets(root, kernel, initrd, dest)
+            kernel.unlink()
+            kernel.symlink_to(release)
+            with self.assertRaisesRegex(installer.InstallError, "missing or invalid"):
+                installer.stage_installer_boot_assets(root, kernel, initrd, dest)
+
+    def test_installer_stages_boot_files_before_reformat_then_uses_copies(self) -> None:
+        source = (ROOT / "scripts/veyra-install.py").read_text(encoding="utf-8")
+        installed = source.split("def install_system(", 1)[1].split("\ndef main()", 1)[0]
+        stage_call = installed.index("stage_installer_boot_assets(")
+        scratch_unmount = installed.index('command(["umount", str(SCRATCH_MOUNT)])')
+        ext4_format = installed.index('command(["mkfs.ext4"')
+        uki = installed.index('"ukify", "build"')
+        self.assertLess(stage_call, scratch_unmount)
+        self.assertLess(scratch_unmount, ext4_format)
+        self.assertLess(ext4_format, uki)
+        self.assertIn('f"--os-release=@{os_release}"', installed)
+        self.assertIn("shutil.copy2(linux, bios_dir", installed)
+        self.assertIn("shutil.copy2(initrd, bios_dir", installed)
+        self.assertIn("shutil.rmtree(staged_boot_dir, ignore_errors=True)", installed)
+
     def test_recovery_uki_copy_into_target_esp(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = pathlib.Path(directory)
             source = base / "source"
             (source / "assets").mkdir(parents=True)
-            (source / "assets/veyra-recovery.efi").write_bytes(b"isolated prototype fixture")
+            payload = write_recovery_fixture(source / "assets/veyra-recovery.efi")
             esp = base / "esp"
             installer.write_recovery_uki(esp, source)
             self.assertEqual(
                 (esp / "EFI/Linux/veyra-recovery.efi").read_bytes(),
-                b"isolated prototype fixture",
+                payload,
             )
+
+    def test_recovery_preflight_rejects_arbitrary_nonempty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            src = root / "source"
+            (src / "assets").mkdir(parents=True)
+            recovery = src / "assets/veyra-recovery.efi"
+            recovery.write_bytes(b"not a PE binary" * 100)
+            with self.assertRaisesRegex(installer.InstallError, "Recovery UKI"):
+                installer.validate_recovery_uki_metadata(recovery)
+            with self.assertRaisesRegex(installer.InstallError, "Recovery UKI"):
+                installer.write_recovery_uki(root / "esp", src)
+            self.assertFalse((root / "esp/EFI/Linux/veyra-recovery.efi").exists())
+
+    def test_recovery_preflight_enforces_pe_identity_and_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            recovery = pathlib.Path(directory) / "veyra-recovery.efi"
+            write_recovery_fixture(recovery)
+            installer.validate_recovery_uki_metadata(recovery)
+
+            write_recovery_fixture(recovery, image_id="veyra-next")
+            with self.assertRaisesRegex(installer.InstallError, "IMAGE_ID"):
+                installer.validate_recovery_uki_metadata(recovery)
+
+            image = bytearray(write_recovery_fixture(recovery))
+            table = 0x80 + 24 + 0xf0
+            image[table + 3 * 40:table + 3 * 40 + 8] = b".other\x00\x00"
+            recovery.write_bytes(image)
+            with self.assertRaisesRegex(installer.InstallError, "missing .initrd"):
+                installer.validate_recovery_uki_metadata(recovery)
+
+            image = bytearray(write_recovery_fixture(recovery))
+            struct.pack_into("<I", image, table + 3 * 40 + 20, len(image) + 1024)
+            recovery.write_bytes(image)
+            with self.assertRaisesRegex(installer.InstallError, "bounds"):
+                installer.validate_recovery_uki_metadata(recovery)
+
+            image = write_recovery_fixture(recovery)
+            recovery.write_bytes(image[:700])
+            with self.assertRaisesRegex(installer.InstallError, "bounds"):
+                installer.validate_recovery_uki_metadata(recovery)
 
     def test_recovery_uki_must_not_be_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -137,6 +266,7 @@ Packages=systemd
                 entry = source / rel
                 entry.parent.mkdir(parents=True, exist_ok=True)
                 entry.write_text("safe test fixture", encoding="utf-8")
+            write_recovery_fixture(source / "assets/veyra-recovery.efi")
             installer.validate_installer_assets(source)
             recovery = source / "assets/veyra-recovery.efi"
             recovery.unlink()

@@ -43,6 +43,10 @@ Calamares, or installed-system A/B boot succeeds.
 
 The Live environment and install-media build run only on GitHub Actions. The install flow must use the existing Veyra package manifest and boot/update definitions rather than a separately maintained package list. CI must verify both the ISO and the resulting installed system in disposable QEMU guests.
 
+**Verification gap (28 October 2026):** The native experimental Live ISO was independently observed at 300 seconds in BIOS and UEFI QEMU with an actual KDE Plasma desktop, while `vpkg` Live guest tests exercised **offline policy only**. The `live-installer-iso` job in `.github/workflows/ci.yml` currently builds and publishes an installer ISO; it has **no** destructive disposable-disk install-and-reboot stage. This is an acceptance criterion, not a completed capability. Before declaring Pre-alpha, add a separate disposable 64 GiB QEMU install test with a verified Recovery UKI and a real first boot, keeping destructive operations away from all real user disks.
+
+The Fedora image BIOS smoke job in run `40636497267` demonstrated why guest errors matter even when CI is green: `VEYRA_BIOS_BOOT_CI_PASS` was emitted while `vdri-qemu-smoke.service` failed (status 2), because the smoke harness supplied standard VGA rather than the VirtIO GPU expected by v-dri. The follow-up harness fix is to attach `virtio-vga` and require `VDRI_QEMU_PASS` in addition to the BIOS boot marker; this change still requires a fresh real QEMU run.
+
 The Live desktop launches the Qt 6 Calamares installer. Its Veyra-branded flow opens Calamares' KonsolePart terminal module and runs the existing `/usr/libexec/veyra-installer`, preserving its whole-disk checks and explicit erase confirmation. Anaconda packages are rejected from the built Live system. Lorax still uses Anaconda inside the isolated GitHub Actions builder to compose the ISO; those build-only packages are not part of the downloaded media.
 
 ## Safe installation preflight
@@ -58,8 +62,13 @@ touching any disk**:
 On a connected disposable VM with an explicit target, use
 `/usr/libexec/veyra-installer --preflight --target /dev/vdb`. Preflight
 checks the local Fedora package manifest, GPT partition definitions, built-in
-GRUB helper, Dracut module and nonempty Recovery UKI. It reports the minimum
-target capacity. It does **not** partition, format, download or install.
+GRUB helper, Dracut module and structural Recovery UKI metadata: PE/COFF
+sections, Fedora 44 identity, `IMAGE_ID=veyra-recovery`, version, and independent
+`rdinit=/init`. A nonempty placeholder or a normal system UKI is rejected
+**before disk erasure**. It reports the minimum target capacity. It does
+**not** partition, format, download or install. These checks do not validate
+a cryptographic signature or prove that Recovery boots: the current prototype
+Recovery UKI is unsigned, and standalone QEMU boot acceptance is still required.
 
 Actual destructive installation still requires selecting an eligible whole
 disk and typing the exact `ERASE /dev/... ` confirmation string. After that
@@ -71,6 +80,22 @@ Read-only, mounted, active-swap and Live-media devices remain excluded.
 hostile privileged processes, faulty firmware, or a device disappearing after
 the final check. Perform the first destructive tests only on a disposable
 QEMU disk, never against a development workstation's real block devices.
+
+## Installer boot-asset lifetime (fix pending end-to-end verification)
+
+The installer initially composes Fedora into a temporary Btrfs home partition,
+then runs `systemd-repart` to copy it into the immutable A/B roots. The
+temporary Btrfs filesystem is unmounted and reformatted as the persistent
+ext4 `/home` **before** writing the final EFI UKI and BIOS kernel/initrd.
+The original implementation retained source paths under that temporary root,
+causing `ukify` and BIOS asset copies to reference files that had disappeared
+after reformatting. The installer now stages a private, disposable copy of
+`vmlinuz`, `initramfs.img`, and `os-release` on the Live host first, uses
+only those staged copies for UKI/GRUB, and removes them in `finally`.
+
+This fixes a source-level lifetime bug but does **not** prove successful real
+installation, UEFI/BIOS first boot, user creation, or Recovery boot. Verify
+with a disposable disk in a full end-to-end QEMU acceptance run.
 
 ## Open sizing decision
 

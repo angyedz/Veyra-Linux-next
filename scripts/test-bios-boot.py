@@ -20,6 +20,8 @@ BIOS_BOOT_TYPE = "21686148-6449-6e6f-744e-656564454649"
 EFI_SYSTEM_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 BOOT_MARKER = b"VEYRA_BIOS_BOOT_CI_PASS"
+GPU_MARKER = b"VDRI_QEMU_PASS"
+GPU_FAILURE_MARKER = b"VDRI_QEMU_FAILURE"
 
 
 def check_layout(image: pathlib.Path) -> None:
@@ -108,6 +110,35 @@ def serial_console_diagnostics(image: pathlib.Path) -> Iterator[None]:
             )
 
 
+def boot_evidence_verified(data: bytes) -> bool:
+    """A BIOS graphical target is not a pass if the VirtIO GPU check failed."""
+    return (
+        BOOT_MARKER in data
+        and GPU_MARKER in data
+        and GPU_FAILURE_MARKER not in data
+        and b"vdri-qemu-smoke.service: Failed with result" not in data
+    )
+
+
+def bios_qemu_command(image: pathlib.Path, monitor_socket: pathlib.Path, serial_log: pathlib.Path) -> list[str]:
+    """Boot SeaBIOS with the same VirtIO display class tested by v-dri."""
+    return [
+        "qemu-system-x86_64",
+        "-machine", "pc,accel=tcg",
+        "-cpu", "max",
+        "-smp", "2",
+        "-m", "2048",
+        "-vga", "none",
+        "-device", "virtio-vga",
+        "-display", "none",
+        "-monitor", f"unix:{monitor_socket},server=on,wait=off",
+        "-no-reboot",
+        "-boot", "order=c,menu=off",
+        "-drive", f"if=ide,index=0,format=raw,snapshot=on,file={image.resolve()}",
+        "-serial", f"file:{serial_log.resolve()}",
+    ]
+
+
 def log_tail(path: pathlib.Path, lines: int = 80) -> str:
     try:
         return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
@@ -165,30 +196,7 @@ def main() -> int:
     screen_dump = args.report_dir / "screen.ppm"
     monitor_socket.unlink(missing_ok=True)
 
-    command = [
-        "qemu-system-x86_64",
-        "-machine",
-        "pc,accel=tcg",
-        "-cpu",
-        "max",
-        "-smp",
-        "2",
-        "-m",
-        "2048",
-        "-vga",
-        "std",
-        "-display",
-        "none",
-        "-monitor",
-        f"unix:{monitor_socket},server=on,wait=off",
-        "-no-reboot",
-        "-boot",
-        "order=c,menu=off",
-        "-drive",
-        f"if=ide,index=0,format=raw,snapshot=on,file={args.image.resolve()}",
-        "-serial",
-        f"file:{serial_log.resolve()}",
-    ]
+    command = bios_qemu_command(args.image, monitor_socket, serial_log)
 
     try:
         with serial_console_diagnostics(args.image):
@@ -196,17 +204,26 @@ def main() -> int:
             process: subprocess.Popen[bytes] | None = None
             passed = False
             timed_out = False
+            guest_failed = False
             try:
                 with qemu_stdout.open("wb") as stdout, qemu_stderr.open("wb") as stderr:
                     process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
                     while time.monotonic() - start < args.timeout:
-                        if serial_log.exists() and BOOT_MARKER in serial_log.read_bytes():
-                            passed = True
-                            break
+                        if serial_log.exists():
+                            evidence = serial_log.read_bytes()
+                            if boot_evidence_verified(evidence):
+                                passed = True
+                                break
+                            # A failed guest device smoke check must not be
+                            # hidden by an otherwise successful BIOS boot.
+                            if (GPU_FAILURE_MARKER in evidence or
+                                    b"vdri-qemu-smoke.service: Failed with result" in evidence):
+                                guest_failed = True
+                                break
                         if process.poll() is not None:
                             break
                         time.sleep(0.5)
-                    timed_out = not passed and process.poll() is None
+                    timed_out = not passed and not guest_failed and process.poll() is None
             except OSError as error:
                 print(f"Could not start SeaBIOS QEMU: {error}", file=sys.stderr)
                 return 1
@@ -228,11 +245,12 @@ def main() -> int:
 
     if passed:
         elapsed = int(time.monotonic() - start)
-        print(f"Legacy BIOS boot reached graphical.target in {elapsed}s; logs: {args.report_dir}")
+        print(f"Legacy BIOS reached graphical.target and v-dri PASS in {elapsed}s; logs: {args.report_dir}")
         return 0
 
-    state = "timed out" if timed_out else "QEMU exited before the marker"
-    print(f"Legacy BIOS boot {state}; expected {BOOT_MARKER.decode()}.", file=sys.stderr)
+    state = ("guest v-dri test failed" if guest_failed else
+             "timed out" if timed_out else "QEMU exited before the marker")
+    print(f"Legacy BIOS boot {state}; expected {BOOT_MARKER.decode()} and {GPU_MARKER.decode()}, without guest v-dri failure.", file=sys.stderr)
     print("--- serial output ---", file=sys.stderr)
     print(log_tail(serial_log), file=sys.stderr)
     print("--- QEMU stderr ---", file=sys.stderr)
