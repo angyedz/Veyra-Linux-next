@@ -610,3 +610,62 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  installer-e2e-qemu:
+    name: Real Live install and installed UEFI boot on disposable disk
+    needs: live-installer-iso
+    if: ${{ needs.live-installer-iso.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate installer acceptance harness safety before running
+        run: |
+          python3 -m py_compile scripts/test-installer-e2e-qemu.py
+          python3 -m unittest discover -s tests -p 'test_installer_e2e_qemu.py' -v
+          python3 -m unittest discover -s tests -p 'test_veyra_installer.py' -v
+      - name: Install emulation tooling (no host-disk loop mounts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+      - name: Get the independently built Live ISO with real Recovery UKI
+        uses: actions/download-artifact@v4
+        with:
+          name: veyra-next-prototype-live-iso
+          path: build/live-iso
+      - name: Verify media hash and OVMF firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd build/live-iso && sha256sum --check veyra-next-prototype-live.iso.sha256)
+          code=""
+          vars=""
+          for prefix in /usr/share/OVMF /usr/share/edk2/x64; do
+            for c in OVMF_CODE_4M.fd OVMF_CODE.fd OVMF_CODE.4m.fd; do
+              if [[ -s "$prefix/$c" ]]; then code="$prefix/$c"; break 2; fi
+            done
+          done
+          for prefix in /usr/share/OVMF /usr/share/edk2/x64; do
+            for v in OVMF_VARS_4M.fd OVMF_VARS.fd OVMF_VARS.4m.fd; do
+              if [[ -s "$prefix/$v" ]]; then vars="$prefix/$v"; break 2; fi
+            done
+          done
+          test -n "$code" && test -n "$vars"
+          echo "VEYRA_INSTALL_TEST_OVMF_CODE=$code" >> "$GITHUB_ENV"
+          echo "VEYRA_INSTALL_TEST_OVMF_VARS=$vars" >> "$GITHUB_ENV"
+      - name: Really install Veyra from the Live ISO onto a disposable QEMU disk and boot it
+        run: |
+          python3 scripts/test-installer-e2e-qemu.py \
+            --iso build/live-iso/veyra-next-prototype-live.iso \
+            --ovmf-code "$VEYRA_INSTALL_TEST_OVMF_CODE" \
+            --ovmf-vars "$VEYRA_INSTALL_TEST_OVMF_VARS" \
+            --boot-timeout 720 --install-timeout 7800 \
+            --report-dir build/installer-e2e-qemu
+      - name: Preserve real installer logs and installed first-boot QEMU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-e2e-qemu-diagnostics
+          path: build/installer-e2e-qemu/
+          if-no-files-found: warn
+          retention-days: 7
