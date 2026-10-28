@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,6 +33,41 @@ class VdriQemuSerialTests(unittest.TestCase):
         )
         self.assertIn("VDRI_QEMU_PASS", decoded)
         self.assertIn("\ufffd", decoded)
+
+
+    def test_bios_acceptance_does_not_power_off_before_graphical_target(self) -> None:
+        # The same fixture is used by two real QEMU tests. Standalone UEFI
+        # v-dri should still shut down after PASS; BIOS must stay alive until
+        # the independent graphical.target marker is emitted.
+        fixture = (
+            Path(__file__).resolve().parents[1]
+            / "tests/fixtures/vdri-qemu/usr/libexec/vdri-qemu-smoke"
+        )
+        source = fixture.read_text(encoding="utf-8")
+        subprocess.run(["bash", "-n", str(fixture)], check=True)
+        self.assertLess(source.index("VDRI_QEMU_PASS"), source.index("if bios_acceptance_requested; then"))
+        self.assertIn("VDRI_QEMU_BIOS_HANDOFF", source)
+        branch = source.split("if bios_acceptance_requested; then", 1)[1].split("\\nfi", 1)[0]
+        self.assertIn("/usr/bin/systemctl poweroff --no-block", branch.split("else", 1)[1])
+        self.assertNotIn("systemctl poweroff", branch.split("else", 1)[0])
+
+        helper = source.split("bios_acceptance_requested() {", 1)[1].split("\\n}", 1)[0]
+        script = "bios_acceptance_requested() {" + helper + "\\n}\\nbios_acceptance_requested \\"$1\\""
+        with tempfile.TemporaryDirectory() as temporary:
+            cmdline = Path(temporary) / "cmdline"
+            for text, expected in (
+                ("quiet veyra_bios_ci=1 systemd.unit=graphical.target\\n", True),
+                ("veyra_bios_ci=1\\n", True),
+                ("quiet module.sig_enforce=1\\n", False),
+                ("quiet veyra_bios_ci=10\\n", False),
+                ("quiet xveyra_bios_ci=1\\n", False),
+                ("quiet veyra_bios_ci=1extra\\n", False),
+            ):
+                with self.subTest(cmdline=text):
+                    cmdline.write_text(text, encoding="ascii")
+                    result = subprocess.run(["bash", "-c", script, "bash", str(cmdline)],
+                                            check=False, capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, expected, result.stderr)
 
 
 class VdriStatusTests(unittest.TestCase):
