@@ -1,0 +1,5 @@
+# Conventional Windows/KDE window controls: minimize, maximize, close.
+# No macOS traffic lights, no left-side window control cluster.
+[org.kde.kdecoration2]
+ButtonsOnLeft=
+ButtonsOnRight=IAX

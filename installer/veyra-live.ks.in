@@ -41,6 +41,7 @@ grub2-tools
 grub2-tools-extra
 kdialog
 konsole
+fastfetch
 livesys-scripts
 NetworkManager
 polkit
@@ -88,6 +89,28 @@ install -m 0644 "$source_root/build/recovery-uki/veyra-recovery.efi" \
   "$live_root/usr/share/veyra/installer/source/assets/veyra-recovery.efi"
 install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
   "$live_root/usr/share/veyra/branding/veyra-logo.svg"
+# Install Veyra's existing Fastfetch preset as a genuine global XDG
+# configuration: root and liveuser get it without changing their home files.
+install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/fastfetch/logo.txt" \
+  "$live_root/usr/share/veyra/fastfetch/logo.txt"
+install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/fastfetch/config.jsonc" \
+  "$live_root/etc/xdg/fastfetch/config.jsonc"
+# Reuse the committed Glacier themes verbatim for Live and installed Veyra;
+# do not modify /home/liveuser, boot loader, or system identity.
+for theme_dir in color-schemes plasma/desktoptheme plasma/look-and-feel; do
+  mkdir -p "$live_root/usr/share/$theme_dir"
+  cp -a "$source_root/mkosi.extra/usr/share/$theme_dir/." "$live_root/usr/share/$theme_dir/"
+done
+for default in kdeglobals plasmarc kwinrc; do
+  install -D -m 0644 "$source_root/mkosi.extra/etc/xdg/$default" \
+    "$live_root/etc/xdg/$default"
+done
+install -D -m 0755 "$source_root/mkosi.extra/usr/bin/veyra-theme" \
+  "$live_root/usr/bin/veyra-theme"
+test -x "$live_root/usr/bin/fastfetch"
+test -s "$live_root/usr/share/veyra/fastfetch/logo.txt"
+test -s "$live_root/etc/xdg/fastfetch/config.jsonc"
+test -s "$live_root/usr/share/plasma/look-and-feel/org.veyra.glacier.dark/metadata.json"
 if [ -f "$live_root/etc/os-release" ]; then
   sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
   sed -i 's/^NAME=.*/NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
