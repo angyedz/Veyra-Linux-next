@@ -133,6 +133,65 @@ Packages=systemd
             kickstart,
         )
 
+    def test_boot_assets_survive_disposable_staging_disk_reformat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = pathlib.Path(directory)
+            root = work / "scratch-root"
+            kernel = root / "usr/lib/modules/7.2.13-200.fc44.x86_64/vmlinuz"
+            initrd = root / "boot/initramfs-7.2.13-200.fc44.x86_64.img"
+            release = root / "usr/lib/os-release"
+            for source, content in ((kernel, b"kernel"), (initrd, b"initrd"),
+                                    (release, b"ID=fedora\\nVERSION_ID=44\\n")):
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(content)
+            host_assets = work / "host-private"
+            host_assets.mkdir(mode=0o700)
+            staged_kernel, staged_initrd, staged_release = installer.stage_installer_boot_assets(
+                root, kernel, initrd, host_assets
+            )
+            # The scratch disk is unmounted/reformatted at this point.
+            import shutil
+            shutil.rmtree(root)
+            self.assertEqual(staged_kernel.read_bytes(), b"kernel")
+            self.assertEqual(staged_initrd.read_bytes(), b"initrd")
+            self.assertEqual(staged_release.read_bytes(), b"ID=fedora\\nVERSION_ID=44\\n")
+            with self.assertRaisesRegex(installer.InstallError, "overwrite staged"):
+                installer.stage_installer_boot_assets(root, kernel, initrd, host_assets)
+
+    def test_boot_assets_reject_missing_initrd_and_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = pathlib.Path(directory)
+            root = work / "scratch-root"
+            kernel = root / "usr/lib/modules/test/vmlinuz"
+            initrd = root / "boot/initramfs-test.img"
+            release = root / "usr/lib/os-release"
+            for path in (kernel, release):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"valid")
+            dest = work / "staged"
+            dest.mkdir()
+            with self.assertRaisesRegex(installer.InstallError, "missing or invalid"):
+                installer.stage_installer_boot_assets(root, kernel, initrd, dest)
+            kernel.unlink()
+            kernel.symlink_to(release)
+            with self.assertRaisesRegex(installer.InstallError, "missing or invalid"):
+                installer.stage_installer_boot_assets(root, kernel, initrd, dest)
+
+    def test_installer_stages_boot_files_before_reformat_then_uses_copies(self) -> None:
+        source = (ROOT / "scripts/veyra-install.py").read_text(encoding="utf-8")
+        installed = source.split("def install_system(", 1)[1].split("\\ndef main()", 1)[0]
+        stage_call = installed.index("stage_installer_boot_assets(")
+        scratch_unmount = installed.index('command(["umount", str(SCRATCH_MOUNT)])')
+        ext4_format = installed.index('command(["mkfs.ext4"')
+        uki = installed.index('"ukify", "build"')
+        self.assertLess(stage_call, scratch_unmount)
+        self.assertLess(scratch_unmount, ext4_format)
+        self.assertLess(ext4_format, uki)
+        self.assertIn('f"--os-release=@{os_release}"', installed)
+        self.assertIn("shutil.copy2(linux, bios_dir", installed)
+        self.assertIn("shutil.copy2(initrd, bios_dir", installed)
+        self.assertIn("shutil.rmtree(staged_boot_dir, ignore_errors=True)", installed)
+
     def test_recovery_uki_copy_into_target_esp(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = pathlib.Path(directory)
