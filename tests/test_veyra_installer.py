@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import struct
 import tempfile
 import unittest
 
@@ -11,6 +12,34 @@ SPEC = importlib.util.spec_from_file_location("veyra_installer", ROOT / "scripts
 assert SPEC is not None and SPEC.loader is not None
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
+
+
+
+def write_recovery_fixture(path: pathlib.Path, *, image_id: str = "veyra-recovery") -> bytes:
+    """Minimal PE layout for metadata tests; never bootable or trusted."""
+    image = bytearray(0x400 + 4 * 512)
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3c, 0x80)
+    image[0x80:0x84] = b"PE\x00\x00"
+    struct.pack_into("<H", image, 0x86, 4)
+    struct.pack_into("<H", image, 0x94, 0xf0)
+    table = 0x80 + 24 + 0xf0
+    payloads = (
+        (b".osrel", (
+            f"ID=fedora\nVERSION_ID=44\nIMAGE_ID={image_id}\nIMAGE_VERSION=0.1.0\n"
+        ).encode("ascii")),
+        (b".cmdline", b"rdinit=/init console=ttyS0\x00"),
+        (b".linux", b"synthetic kernel fixture"),
+        (b".initrd", b"synthetic initrd fixture"),
+    )
+    for index, (name, payload) in enumerate(payloads):
+        header = table + index * 40
+        image[header:header + len(name)] = name
+        offset = 0x400 + index * 512
+        struct.pack_into("<II", image, header + 16, 512, offset)
+        image[offset:offset + len(payload)] = payload
+    path.write_bytes(image)
+    return bytes(image)
 
 
 class InstallerManifestTests(unittest.TestCase):
@@ -109,13 +138,54 @@ Packages=systemd
             base = pathlib.Path(directory)
             source = base / "source"
             (source / "assets").mkdir(parents=True)
-            (source / "assets/veyra-recovery.efi").write_bytes(b"isolated prototype fixture")
+            payload = write_recovery_fixture(source / "assets/veyra-recovery.efi")
             esp = base / "esp"
             installer.write_recovery_uki(esp, source)
             self.assertEqual(
                 (esp / "EFI/Linux/veyra-recovery.efi").read_bytes(),
-                b"isolated prototype fixture",
+                payload,
             )
+
+    def test_recovery_preflight_rejects_arbitrary_nonempty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            src = root / "source"
+            (src / "assets").mkdir(parents=True)
+            recovery = src / "assets/veyra-recovery.efi"
+            recovery.write_bytes(b"not a PE binary" * 100)
+            with self.assertRaisesRegex(installer.InstallError, "Recovery UKI"):
+                installer.validate_recovery_uki_metadata(recovery)
+            with self.assertRaisesRegex(installer.InstallError, "Recovery UKI"):
+                installer.write_recovery_uki(root / "esp", src)
+            self.assertFalse((root / "esp/EFI/Linux/veyra-recovery.efi").exists())
+
+    def test_recovery_preflight_enforces_pe_identity_and_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            recovery = pathlib.Path(directory) / "veyra-recovery.efi"
+            write_recovery_fixture(recovery)
+            installer.validate_recovery_uki_metadata(recovery)
+
+            write_recovery_fixture(recovery, image_id="veyra-next")
+            with self.assertRaisesRegex(installer.InstallError, "IMAGE_ID"):
+                installer.validate_recovery_uki_metadata(recovery)
+
+            image = bytearray(write_recovery_fixture(recovery))
+            table = 0x80 + 24 + 0xf0
+            image[table + 3 * 40:table + 3 * 40 + 8] = b".other\x00\x00"
+            recovery.write_bytes(image)
+            with self.assertRaisesRegex(installer.InstallError, "missing .initrd"):
+                installer.validate_recovery_uki_metadata(recovery)
+
+            image = bytearray(write_recovery_fixture(recovery))
+            struct.pack_into("<I", image, table + 3 * 40 + 20, len(image) + 1024)
+            recovery.write_bytes(image)
+            with self.assertRaisesRegex(installer.InstallError, "bounds"):
+                installer.validate_recovery_uki_metadata(recovery)
+
+            image = write_recovery_fixture(recovery)
+            recovery.write_bytes(image[:700])
+            with self.assertRaisesRegex(installer.InstallError, "bounds"):
+                installer.validate_recovery_uki_metadata(recovery)
 
     def test_recovery_uki_must_not_be_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -137,6 +207,7 @@ Packages=systemd
                 entry = source / rel
                 entry.parent.mkdir(parents=True, exist_ok=True)
                 entry.write_text("safe test fixture", encoding="utf-8")
+            write_recovery_fixture(source / "assets/veyra-recovery.efi")
             installer.validate_installer_assets(source)
             recovery = source / "assets/veyra-recovery.efi"
             recovery.unlink()
