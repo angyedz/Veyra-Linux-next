@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check early boot evidence for *both* firmware modes without claiming KDE success."""
+"""Require late Plasma-process, framebuffer, vpkg and installer-preflight evidence in BIOS/UEFI."""
 from __future__ import annotations
 
 import argparse
@@ -55,6 +55,8 @@ def verify(report: dict) -> list[str]:
             issues.append(f"{mode}: systemd-pam is absent or broken")
         if not isinstance(signals, dict) or not signals.get("vpkg_guest_test_passed"):
             issues.append(f"{mode}: Live vpkg QEMU policy and privilege checks did not pass")
+        if not isinstance(signals, dict) or not signals.get("installer_preflight_passed"):
+            issues.append(f"{mode}: installer read-only preflight did not pass (with Recovery or fail-closed without it)")
         if isinstance(signals, dict) and signals.get("vpkg_guest_test_failed"):
             issues.append(f"{mode}: Live vpkg QEMU policy suite reported a failure")
     if seen != {"bios", "uefi"}:
@@ -76,8 +78,8 @@ def main() -> int:
         print(f"Live ISO boot check: {problem}", file=sys.stderr)
     if problems:
         return 1
-    print("BIOS and UEFI both reached Linux kernel and early userspace.")
-    print("Note: graphical KDE session and Calamares installation are NOT verified.")
+    print("BIOS and UEFI both showed late framebuffer activity, Plasma processes and guest policy/preflight evidence.")
+    print("Note: this does NOT verify interactive desktop functionality or a completed Calamares installation.")
     return 0
 
 

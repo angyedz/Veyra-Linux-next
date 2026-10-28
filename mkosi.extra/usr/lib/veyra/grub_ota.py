@@ -189,7 +189,7 @@ if [ -n "$veyra_trial_version" ]; then
     fi
 fi
 function veyra_boot_stable {{
-    if linux /VEYRA/veyra-next_${{veyra_stable_version}}.vmlinuz roothash=${{veyra_stable_roothash}} veyra.image_version=${{veyra_stable_version}} systemd.firstboot=no systemd.unit=graphical.target; then
+    if linux /VEYRA/veyra-next_${{veyra_stable_version}}.vmlinuz roothash=${{veyra_stable_roothash}} veyra.image_version=${{veyra_stable_version}} systemd.firstboot=no module.sig_enforce=1 systemd.unit=graphical.target; then
         if initrd /VEYRA/veyra-next_${{veyra_stable_version}}.initrd; then
             return
         fi
@@ -209,7 +209,7 @@ function veyra_boot_trial {{
         return
     fi
     if save_env --file=/grub2/grubenv veyra_trial_tries_left; then
-        if linux /VEYRA/veyra-next_${{veyra_trial_version}}.vmlinuz roothash=${{veyra_trial_roothash}} veyra.image_version=${{veyra_trial_version}} systemd.firstboot=no systemd.unit=graphical.target; then
+        if linux /VEYRA/veyra-next_${{veyra_trial_version}}.vmlinuz roothash=${{veyra_trial_roothash}} veyra.image_version=${{veyra_trial_version}} systemd.firstboot=no module.sig_enforce=1 systemd.unit=graphical.target; then
             if initrd /VEYRA/veyra-next_${{veyra_trial_version}}.initrd; then
                 return
             fi

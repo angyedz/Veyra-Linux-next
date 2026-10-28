@@ -69,5 +69,30 @@ grep -Fq 'REJECT: refusing kernel-core' "$log" || {
     fail "$LINENO" 'kernel rejection did not pass through vpkg policy'
 }
 rm -f "$log"
+
+# The Live ISO may intentionally omit Recovery, but the installer preflight
+# must fail closed in that mode. If a verified Recovery UKI was bundled,
+# require a successful read-only preflight instead. No target disk is used.
+step installer-preflight
+recovery=/usr/share/veyra/installer/source/assets/veyra-recovery.efi
+install_log="$(mktemp /run/veyra-installer-preflight.XXXXXXXX)"
+if [[ -f "$recovery" || -L "$recovery" ]]; then
+    if ! /usr/bin/runuser -u liveuser -- /usr/bin/sudo -n /usr/libexec/veyra-installer --preflight > "$install_log" 2>&1; then
+        cat "$install_log"
+        fail "$LINENO" 'Live installer rejected its bundled Recovery UKI during preflight'
+    fi
+    echo 'VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=present'
+else
+    if /usr/bin/runuser -u liveuser -- /usr/bin/sudo -n /usr/libexec/veyra-installer --preflight > "$install_log" 2>&1; then
+        cat "$install_log"
+        fail "$LINENO" 'Live installer accepted installation without a Recovery UKI'
+    fi
+    grep -Eq 'assets/veyra-recovery[.]efi|Recovery UKI' "$install_log" || {
+        cat "$install_log"
+        fail "$LINENO" 'Live installer failed preflight for an unexpected reason'
+    }
+    echo 'VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=absent-rejected'
+fi
+rm -f "$install_log"
 step completed
-echo 'VEYRA_LIVE_VPKG_CI_PASS (offline policy + full Python policy suite; RPM transaction not tested)'
+echo 'VEYRA_LIVE_VPKG_CI_PASS (offline policy + installer preflight; RPM transaction not tested)'

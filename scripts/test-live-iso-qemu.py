@@ -173,6 +173,7 @@ def serial_signals(path: pathlib.Path) -> dict[str, bool]:
         "vpkg_guest_test_started": b"VEYRA_LIVE_VPKG_CI_BEGIN" in data,
         "vpkg_guest_test_passed": b"VEYRA_LIVE_VPKG_CI_PASS" in data,
         "vpkg_guest_test_failed": b"VEYRA_LIVE_VPKG_CI_FAILURE" in data,
+        "installer_preflight_passed": bool(re.search(rb"VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=(?:present|absent-rejected)(?:\r?\n|$)", data)),
         "plasma_runtime_confirmed": b"VEYRA_LIVE_PLASMA_PROCESS_PASS" in data,
         "plasma_runtime_failed": b"VEYRA_LIVE_PLASMA_PROCESS_FAILURE" in data,
         "ksplash_timed_out": b"plasma-ksplash.service: Failed with result" in data and b"timeout" in data,

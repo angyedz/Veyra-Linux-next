@@ -138,6 +138,23 @@ class IsoQemuSmokeTests(unittest.TestCase):
             path.write_text("VEYRA_LIVE_VPKG_CI_FAILURE\n", encoding="utf-8")
             self.assertTrue(iso_qemu.serial_signals(path)["vpkg_guest_test_failed"])
 
+    def test_installer_preflight_marker_must_show_safe_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "serial.log"
+            for data, expected in (
+                ("", False),
+                ("VEYRA_LIVE_VPKG_CI_PASS\n", False),
+                ("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=present\n", True),
+                ("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=absent-rejected\n", True),
+                ("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=unknown\n", False),
+            ):
+                with self.subTest(data=data):
+                    path.write_text(data, encoding="utf-8")
+                    self.assertEqual(
+                        iso_qemu.serial_signals(path)["installer_preflight_passed"],
+                        expected,
+                    )
+
     def test_output_refuses_reuse_before_invoking_qemu(self):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "boot.iso"

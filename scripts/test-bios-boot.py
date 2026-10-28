@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import subprocess
@@ -22,6 +23,7 @@ ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 BOOT_MARKER = b"VEYRA_BIOS_BOOT_CI_PASS"
 GPU_MARKER = b"VDRI_QEMU_PASS"
 GPU_FAILURE_MARKER = b"VDRI_QEMU_FAILURE"
+GRAPHICAL_TARGET_MARKER = b"Reached target graphical.target"
 
 
 def check_layout(image: pathlib.Path) -> None:
@@ -111,12 +113,16 @@ def serial_console_diagnostics(image: pathlib.Path) -> Iterator[None]:
 
 
 def boot_evidence_verified(data: bytes) -> bool:
-    """A BIOS graphical target is not a pass if the VirtIO GPU check failed."""
+    """Require actual graphical.target, GPU success and an independent CI marker."""
+    # systemd status adds SGR color escapes around target names on ttyS0.
+    # Checking raw "Reached target graphical.target" would falsely fail.
+    normalized = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data).replace(b"\r", b"\n")
     return (
-        BOOT_MARKER in data
-        and GPU_MARKER in data
-        and GPU_FAILURE_MARKER not in data
-        and b"vdri-qemu-smoke.service: Failed with result" not in data
+        BOOT_MARKER in normalized
+        and GPU_MARKER in normalized
+        and GRAPHICAL_TARGET_MARKER in normalized
+        and GPU_FAILURE_MARKER not in normalized
+        and b"vdri-qemu-smoke.service: Failed with result" not in normalized
     )
 
 
@@ -250,7 +256,7 @@ def main() -> int:
 
     state = ("guest v-dri test failed" if guest_failed else
              "timed out" if timed_out else "QEMU exited before the marker")
-    print(f"Legacy BIOS boot {state}; expected {BOOT_MARKER.decode()} and {GPU_MARKER.decode()}, without guest v-dri failure.", file=sys.stderr)
+    print(f"Legacy BIOS boot {state}; expected {BOOT_MARKER.decode()}, {GPU_MARKER.decode()}, and {GRAPHICAL_TARGET_MARKER.decode()}, without guest v-dri failure.", file=sys.stderr)
     print("--- serial output ---", file=sys.stderr)
     print(log_tail(serial_log), file=sys.stderr)
     print("--- QEMU stderr ---", file=sys.stderr)

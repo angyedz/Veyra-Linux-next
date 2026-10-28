@@ -193,6 +193,24 @@ class VforgeNativeTests(unittest.TestCase):
             and command[-1].endswith("/lower")
         ]
         self.assertEqual(len(lower_binds), 1)
+        # Fedora's EROFS-owned /var cannot be written by rootless users.
+        # The child gets a persisted user-owned environment /var, never
+        # the host's persistent /var through a recursive bind.
+        private_var = environment / "var"
+        self.assertTrue(private_var.is_dir())
+        self.assertEqual(private_var.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(
+            len([
+                command for command in commands
+                if command[:3] == ["mount", "--bind", str(private_var)]
+                and command[-1].endswith("/merged/var")
+            ]),
+            1,
+        )
+        self.assertFalse(any(command[:3] == ["mount", "--bind", "/var"] for command in commands))
+        test_state = private_var / "vpkg-generation-marker"
+        test_state.write_text("survives across sessions", encoding="utf-8")
+        self.assertEqual(test_state.read_text(encoding="utf-8"), "survives across sessions")
         overlay_mount = next(command for command in commands if command[:3] == ["mount", "-t", "overlay"])
         self.assertIn("userxattr", overlay_mount[overlay_mount.index("-o") + 1].split(","))
         self.assertFalse(any(command[:2] == ["mount", "--rbind"] for command in commands))
@@ -201,6 +219,20 @@ class VforgeNativeTests(unittest.TestCase):
                 for command in commands)
         )
         self.assertEqual(list((runtime / "vforge").iterdir()), [])
+
+    def test_rootless_var_bind_rejects_preexisting_symlink(self) -> None:
+        path = vforge.create("backend")
+        parent = self.root / "external-data"
+        parent.mkdir()
+        (path / "var").symlink_to(parent, target_is_directory=True)
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        with (
+            patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(runtime)}),
+            patch.object(vforge, "verify_vforge_base_mount"),
+        ):
+            with self.assertRaisesRegex(vforge.VforgeError, "real directory"):
+                vforge.run_environment(path, ["/bin/true"])
 
     def test_bind_mount_pins_regular_files_and_rejects_symlinks(self) -> None:
         source = self.root / "device"
