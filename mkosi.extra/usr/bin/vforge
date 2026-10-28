@@ -602,6 +602,47 @@ def ensure_vpkg_state(root: Path) -> None:
             raise VforgeError(f"Vpkg state path is not private to the Vforge root: {directory}")
 
 
+# Only these standard system directories are seeded as *empty directory
+# metadata* in the private upper. OverlayFS still merges their EROFS lower
+# contents, but a mapped rootless user can then create files below them.
+# Do not copy or chmod any host /usr files, and do not use the host /var.
+WRITABLE_OVERLAY_PARENT_PATHS = (
+    "usr", "usr/bin", "usr/lib", "usr/lib64", "usr/local", "usr/share",
+    "etc", "opt", "root",
+)
+
+
+def prepare_rootless_overlay_upper(upper: Path) -> None:
+    """Seed safe user-owned upper directory parents before an OverlayFS mount.
+
+    A Fedora EROFS /usr/share owned by host UID 0 is unmapped under
+    'unshare --map-root-user' for a normal user. Without an upper copy of
+    that directory, attempts to create /usr/share/file may get EACCES.
+    No base filesystem path is modified; every created inode stays in the
+    verified, user-owned environment upper layer.
+    """
+    verify_private_directory(upper, "OverlayFS upper directory")
+    for relative in WRITABLE_OVERLAY_PARENT_PATHS:
+        current = upper
+        for component in relative.split("/"):
+            current = current / component
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                current.mkdir(mode=0o755)
+                info = current.lstat()
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid()
+                or not (info.st_mode & stat.S_IWUSR)
+                or info.st_mode & stat.S_IWOTH
+            ):
+                raise VforgeError(
+                    f"unsafe or non-writable private OverlayFS parent: {current}"
+                )
+
+
 def run_environment(path: Path, command: Sequence[str]) -> int:
     metadata = environment_metadata(path)
     verify_project_mount_approvals(metadata)
@@ -620,6 +661,10 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
     # Never recursively bind the host's /var into the isolated environment.
     private_var = path / "var"
     ensure_private_directory(private_var)
+    # OverlayFS cannot reliably copy up a file into lower EROFS directories
+    # whose original host-root ownership is unmapped in this user namespace.
+    # Prepare only user-owned upper metadata before mounting the overlay.
+    prepare_rootless_overlay_upper(Path(metadata["upper"]))
     with tempfile.TemporaryDirectory(prefix=f"{metadata['name']}-", dir=runtime_parent) as temporary:
         root = Path(temporary)
         lower, merged = root / "lower", root / "merged"
