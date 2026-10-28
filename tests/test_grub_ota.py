@@ -40,6 +40,12 @@ class GrubOtaTests(unittest.TestCase):
         ]
         self.assertEqual(len(bios_kernel_entries), 2)
         self.assertTrue(all("systemd.firstboot=no" in line for line in bios_kernel_entries))
+        # BIOS must enforce the same signed-module policy as the UEFI UKI.
+        # Missing module.sig_enforce made v-dri return exit 2 despite virtio_gpu
+        # being bound in real QEMU run 40638902157.
+        self.assertTrue(
+            all(line.count("module.sig_enforce=1") == 1 for line in bios_kernel_entries)
+        )
         self.assertIn("veyra_stable_version=1.0.0", config)
         self.assertIn("veyra_stable_roothash=" + "a" * 64, config)
 
