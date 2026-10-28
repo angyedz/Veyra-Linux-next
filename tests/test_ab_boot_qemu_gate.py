@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/test-ab-boot.py"
@@ -24,6 +26,28 @@ class QemuGuestVpkgGateTests(unittest.TestCase):
         for serial in samples:
             with self.subTest(serial=serial):
                 self.assertTrue(ota.guest_vpkg_service_failed(serial))
+
+    def test_ab_qemu_boot_uses_real_virtio_gpu_and_not_bochs_vga(self) -> None:
+        # The previous A/B QEMU commands used the default Q35 Bochs VGA.
+        # The guest v-dri check then failed despite a working system.
+        class FinishedGuest:
+            def poll(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "serial.log"
+            with patch.object(ota.subprocess, "Popen", return_value=FinishedGuest()) as popen:
+                with self.assertRaisesRegex(RuntimeError, "QEMU did not reach"):
+                    ota.boot_until(
+                        image=Path(temporary) / "unused-disposable.raw",
+                        log_path=log,
+                        code=None, vars_path=None, qemu="qemu-system-x86_64",
+                        qemu_data_dir=None, expected=("expected-marker",), timeout=0,
+                    )
+            args = popen.call_args.args[0]
+            self.assertEqual(args[args.index("-vga") + 1], "none")
+            self.assertIn(["-device", "virtio-vga"], [args[i:i+2] for i in range(len(args)-1)])
+            self.assertEqual(args[args.index("-display") + 1], "none")
 
     def test_ignores_other_units_and_expected_package_rejection_diagnostics(self) -> None:
         samples = (
