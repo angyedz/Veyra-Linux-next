@@ -110,24 +110,41 @@ def inject(image: pathlib.Path, repository: pathlib.Path) -> None:
             run(["install", "-d", "-m", "0755", str(repo_target)], privileged=True)
             run(["cp", "-a", str(repository.resolve()) + "/.", str(repo_target)], privileged=True)
 
+            # The guest runs the SAME complete source-level unittest suite as
+            # the host. Copying only tests/ plus selected imports caused 24
+            # bogus QEMU failures: source contracts need workflows, the complete
+            # sysupdate transfer definitions, installer, DRM and ISO scripts.
+            # Export precisely tracked HEAD files (not the checkout's huge
+            # mkosi.output/, build/, .git/, cache or signing secrets). Git
+            # archive preserves the source tree and its read-only contracts.
             unit_test_root = var / "lib/veyra/vpkg-ci-tests/repo"
             run(["install", "-d", "-m", "0755", str(unit_test_root)], privileged=True)
-            run(["cp", "-a", str(PROJECT_ROOT / "tests"), str(unit_test_root)], privileged=True)
-            test_sources = unit_test_sources()
-            vforge_test = PROJECT_ROOT / "tests/test_vforge.py"
-            vforge_script = pathlib.Path("mkosi.extra/usr/bin/vforge")
-            if vforge_test.is_file():
-                if not (PROJECT_ROOT / vforge_script).is_file():
-                    raise RuntimeError(
-                        "Vforge QEMU unit tests require mkosi.extra/usr/bin/vforge."
-                    )
-                test_sources.append(vforge_script)
-            for relative in test_sources:
-                destination = unit_test_root / relative
-                run([
-                    "install", "-D", "-m", "0644",
-                    str(PROJECT_ROOT / relative), str(destination),
-                ], privileged=True)
+            source_archive = work / "tracked-guest-tests.tar"
+            run([
+                "git", "-C", str(PROJECT_ROOT), "archive", "--format=tar",
+                f"--output={source_archive}", "HEAD",
+            ])
+            if (not source_archive.is_file() or source_archive.stat().st_size == 0
+                    or source_archive.stat().st_size > 64 * 1024 * 1024):
+                raise RuntimeError("Invalid or unexpectedly large tracked guest test source archive")
+            run([
+                "tar", "--extract", "--file", str(source_archive),
+                "--directory", str(unit_test_root), "--no-same-owner",
+            ], privileged=True)
+            for relative in unit_test_sources():
+                if not (unit_test_root / relative).is_file():
+                    raise RuntimeError(f"Guest test snapshot is missing a required source: {relative}")
+            for relative in (
+                pathlib.Path(".github/workflows/release.yml"),
+                pathlib.Path(".github/workflows/native-live-iso.yml"),
+                pathlib.Path("mkosi.extra/usr/bin/v-dri"),
+                pathlib.Path("mkosi.extra/usr/bin/vforge"),
+                pathlib.Path("scripts/veyra-install.py"),
+                pathlib.Path("mkosi.extra/usr/lib/sysupdate.d/80-bios-kernel.transfer"),
+                pathlib.Path("mkosi.extra/usr/lib/sysupdate.d/90-bios-initrd.transfer"),
+            ):
+                if not (unit_test_root / relative).is_file():
+                    raise RuntimeError(f"Guest test snapshot omitted a source-contract dependency: {relative}")
 
             main_repo = work / "veyra-main.repo"
             main_repo.write_text(
