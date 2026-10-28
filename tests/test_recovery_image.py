@@ -36,6 +36,22 @@ class RecoveryUkiInstallTests(unittest.TestCase):
         finalizer = (ROOT / "mkosi.finalize").read_text(encoding="utf-8")
         self.assertIn('--output-dir "$SRCDIR/mkosi.output"', finalizer)
 
+    def test_embedded_recovery_program_matches_canonical_source_before_uki_pack(self) -> None:
+        canonical = ROOT / "scripts/veyra_recovery.py"
+        embedded = ROOT / "mkosi.images/recovery/mkosi.extra/usr/libexec/veyra-recovery"
+        init = ROOT / "mkosi.images/recovery/mkosi.extra/init"
+        finalize = ROOT / "mkosi.finalize"
+        self.assertEqual(embedded.read_bytes(), canonical.read_bytes())
+        compile(embedded.read_bytes(), str(embedded), "exec")
+        self.assertIn(
+            "exec /usr/bin/python3 /usr/libexec/veyra-recovery",
+            init.read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            'install -D -m 0755 "$SRCDIR/scripts/veyra_recovery.py"',
+            finalize.read_text(encoding="utf-8"),
+        )
+
     def test_installs_single_recovery_uki_into_esp_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary) / "root"
