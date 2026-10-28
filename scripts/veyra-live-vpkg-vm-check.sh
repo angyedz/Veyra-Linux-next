@@ -77,13 +77,13 @@ step installer-preflight
 recovery=/usr/share/veyra/installer/source/assets/veyra-recovery.efi
 install_log="$(mktemp /run/veyra-installer-preflight.XXXXXXXX)"
 if [[ -f "$recovery" || -L "$recovery" ]]; then
-    if ! /usr/libexec/veyra-installer --preflight > "$install_log" 2>&1; then
+    if ! /usr/bin/runuser -u liveuser -- /usr/bin/sudo -n /usr/libexec/veyra-installer --preflight > "$install_log" 2>&1; then
         cat "$install_log"
         fail "$LINENO" 'Live installer rejected its bundled Recovery UKI during preflight'
     fi
     echo 'VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=present'
 else
-    if /usr/libexec/veyra-installer --preflight > "$install_log" 2>&1; then
+    if /usr/bin/runuser -u liveuser -- /usr/bin/sudo -n /usr/libexec/veyra-installer --preflight > "$install_log" 2>&1; then
         cat "$install_log"
         fail "$LINENO" 'Live installer accepted installation without a Recovery UKI'
     fi
