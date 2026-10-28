@@ -286,6 +286,12 @@ def boot_until(
         "-drive", f"if=none,id=systemdisk,format=raw,file={image}",
         "-device", "ide-hd,drive=systemdisk,bus=ahci.0",
         "-nic", f"user,restrict=on,guestfwd=tcp:10.0.2.100:{ota_port}-tcp:127.0.0.1:{ota_port}",
+        # The disposable image also contains the v-dri QEMU smoke unit.
+        # Default Q35 VGA maps to bochs-drm and causes that unit to fail even
+        # on a healthy A/B boot. Match the independently validated BIOS/v-dri
+        # QEMU fixture: a single in-tree virtio_gpu without default VGA.
+        "-vga", "none",
+        "-device", "virtio-vga",
         "-display", "none",
         "-serial", f"file:{log_path}",
         "-monitor", "none",
