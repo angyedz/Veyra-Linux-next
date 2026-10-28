@@ -4,10 +4,14 @@
 running on the machine. A small system service exposes the active EROFS root at
 `/run/veyra/vforge/base` as a read-only, non-recursive bind mount. In the user's
 private mount namespace, rootless OverlayFS uses that base as its lower layer
-and directs writes into the environment's persistent `upper` and `work`
-directories. The bind mount leaves the host's persistent `/etc`, `/var`, and
-`/home` mounts outside the environment. Vforge does not import a separate
-distribution root or use Podman.
+and directs most writes into the environment's persistent `upper` and `work`
+directories. A separate private, persistent `var` directory under each
+environment is bind-mounted at its guest `/var`. Fedora's EROFS `/var`
+may be host-root-owned and unwritable in the rootless user namespace; this
+bind avoids the real guest `EACCES: /var/lib` failure while retaining Vforge's
+private vpkg history and cache. The bind mount leaves the host's persistent
+`/etc`, `/var`, and `/home` mounts outside the environment. Vforge does
+not import a separate distribution root or use Podman.
 
 ## Create and enter environments
 
@@ -23,8 +27,8 @@ The default storage root is `$XDG_DATA_HOME/vforge` or
 `~/.local/share/vforge`. Choose another persistent location with
 `vforge config storage-root /path/to/vforge-data` or
 `VFORGE_STORAGE_ROOT=/path/to/vforge-data`. Each named environment stores its
-metadata, OverlayFS upper layer, and work directory under
-`<storage-root>/environments/<name>/`.
+metadata, OverlayFS upper layer, work directory, and private `var`
+directory under `<storage-root>/environments/<name>/`.
 
 Project environments use `.vforge/` in the project directory. `vforge up`
 creates or refreshes the environment from `.vforge.toml`; `vforge enter` with no
@@ -89,4 +93,9 @@ read-only explicit mounts, reserved targets, Veyra root identity, and namespace
 selection. GitHub Actions runs those checks and builds the installed Veyra
 image directly. A Fedora 44 Veyra guest run
 has not yet confirmed namespace creation, OverlayFS mount, package installation,
-or persistence across process restarts.
+or persistence across process restarts. In OTA run
+`40636497267`, the rootless mount setup advanced past the earlier
+`/proc/self/fd/3` error but then failed in `ensure_vpkg_state` with
+`[Errno 13] Permission denied: '/var/lib'`; the private `/var` fix has
+source tests but must pass another **real QEMU guest** before runtime support
+is claimed.
