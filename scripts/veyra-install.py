@@ -387,6 +387,33 @@ def install_initrd_module(root: pathlib.Path, source: pathlib.Path) -> None:
     command(["cp", "--archive", str(module_source) + "/.", str(module_target)])
 
 
+def stage_installer_boot_assets(
+    root: pathlib.Path, kernel: pathlib.Path, initrd: pathlib.Path, destination: pathlib.Path
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    """Keep boot inputs outside the scratch filesystem before it is reformatted.
+
+    systemd-repart copies the staged OS into immutable root slots, after which
+    the temporary Btrfs staging filesystem is destroyed to make persistent
+    /home. Boot inputs must live on the Live host until UKI/GRUB are written.
+    """
+    if destination.is_symlink() or not destination.is_dir():
+        raise InstallError("boot asset staging directory is missing or unsafe")
+    sources = (
+        (kernel, destination / "vmlinuz"),
+        (initrd, destination / "initramfs.img"),
+        (root / "usr/lib/os-release", destination / "os-release"),
+    )
+    for source_path, output in sources:
+        if source_path.is_symlink() or not source_path.is_file() or source_path.stat().st_size == 0:
+            raise InstallError(f"installed boot asset missing or invalid: {source_path}")
+        if output.exists() or output.is_symlink():
+            raise InstallError(f"refusing to overwrite staged boot asset: {output}")
+        shutil.copy2(source_path, output)
+        if not output.is_file() or output.stat().st_size != source_path.stat().st_size:
+            raise InstallError(f"boot asset staging copy incomplete: {output}")
+    return tuple(output for _, output in sources)
+
+
 def write_recovery_uki(esp: pathlib.Path, source: pathlib.Path) -> None:
     recovery = source / "assets/veyra-recovery.efi"
     validate_recovery_uki_metadata(recovery)
@@ -558,6 +585,7 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
     scratch_mounted = False
     bind_mounts: list[pathlib.Path] = []
     esp_mounted = False
+    staged_boot_dir: pathlib.Path | None = None
     try:
         command([
             "systemd-repart", "--dry-run=no", "--empty=force", "--seed=random",
@@ -609,6 +637,14 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         if not initrd.is_file() or initrd.stat().st_size == 0:
             raise InstallError("dracut did not produce the Veyra initramfs")
 
+        # /run/veyra-installer/.veyra-install/root lives on the scratch
+        # filesystem, which is later unmounted and formatted as persistent
+        # /home. Copy the boot assets to the Live host *before* erasing it.
+        staged_boot_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-installer-boot-"))
+        linux, initrd, os_release = stage_installer_boot_assets(
+            root, linux, initrd, staged_boot_dir
+        )
+
         cleanup_mounts(bind_mounts)
         bind_mounts = []
 
@@ -648,7 +684,7 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         command([
             "ukify", "build", f"--linux={linux}", f"--initrd={initrd}",
             f"--cmdline=roothash={roothash} systemd.firstboot=no systemd.unit=graphical.target module.sig_enforce=1",
-            f"--os-release=@{root / 'usr/lib/os-release'}", f"--uname={kernel_version}",
+            f"--os-release=@{os_release}", f"--uname={kernel_version}",
             f"--output={uki}",
         ])
         loader_conf = esp / "loader/loader.conf"
@@ -681,6 +717,8 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
             subprocess.run(["umount", str(pathlib.Path("/run/veyra-installer/esp"))], check=False)
         if scratch_mounted:
             subprocess.run(["umount", str(SCRATCH_MOUNT)], check=False)
+        if staged_boot_dir is not None:
+            shutil.rmtree(staged_boot_dir, ignore_errors=True)
         shutil.rmtree(scratch_conf_dir, ignore_errors=True)
         shutil.rmtree(final_conf_dir, ignore_errors=True)
 
