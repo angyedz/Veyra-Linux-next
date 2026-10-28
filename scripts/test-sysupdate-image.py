@@ -514,6 +514,16 @@ def inject_guest_ota_test(
                 "ConditionPathExists=/var/lib/veyra/vpkg-ci-stage-pass\n\n"
                 if run_vpkg_ci else ""
             )
+            # A unit file on disk does not start a target. The original
+            # disposable OTA fixture created veyra-ota-ci.target but never
+            # enabled it, so neither preflight nor rollback ran on first boot.
+            # Only the mounted /etc of the disposable test image is modified.
+            ota_wants = systemd / "graphical.target.wants"
+            ota_wants.mkdir(parents=True, exist_ok=True)
+            ota_link = ota_wants / "veyra-ota-ci.target"
+            if ota_link.exists() or ota_link.is_symlink():
+                raise RuntimeError("disposable OTA target enablement already exists")
+            ota_link.symlink_to("../veyra-ota-ci.target")
             (systemd / "veyra-ota-ci.target").write_text(
                 "[Unit]\n"
                 "Description=Disposable Veyra OTA integration test sequence\n"
