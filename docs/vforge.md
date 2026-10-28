@@ -5,7 +5,12 @@ running on the machine. A small system service exposes the active EROFS root at
 `/run/veyra/vforge/base` as a read-only, non-recursive bind mount. In the user's
 private mount namespace, rootless OverlayFS uses that base as its lower layer
 and directs most writes into the environment's persistent `upper` and `work`
-directories. A separate private, persistent `var` directory under each
+directories. Before attaching OverlayFS it seeds user-owned directory metadata
+for `/usr`, `/usr/share`, `/usr/bin`, `/usr/lib`, `/usr/lib64`, `/usr/local`,
+`/etc`, `/opt`, and `/root` **inside the private upper only**. This lets
+rootless commands create files under those paths without trying to write through
+the unmapped host-root-owned EROFS directory inodes. The original lower tree is
+still merged and untouched; preexisting unsafe symlinks/permissions fail closed. A separate private, persistent `var` directory under each
 environment is bind-mounted at its guest `/var`. Fedora's EROFS `/var`
 may be host-root-owned and unwritable in the rootless user namespace; this
 bind avoids the real guest `EACCES: /var/lib` failure while retaining Vforge's
@@ -96,6 +101,11 @@ has not yet confirmed namespace creation, OverlayFS mount, package installation,
 or persistence across process restarts. In OTA run
 `40636497267`, the rootless mount setup advanced past the earlier
 `/proc/self/fd/3` error but then failed in `ensure_vpkg_state` with
-`[Errno 13] Permission denied: '/var/lib'`; the private `/var` fix has
-source tests but must pass another **real QEMU guest** before runtime support
-is claimed.
+`[Errno 13] Permission denied: '/var/lib'`; the private `/var` fix progressed through that checkpoint in run
+`40648970958`. The next real guest failure was
+`Permission denied: /usr/share/veyra-vforge-ci-overlay-marker` during the
+rootless upper-layer persistence test, before package installation. We now
+preseed only private upper directory metadata with source-level regression
+tests for ownership, symlink rejection, and preservation of upper contents.
+**A new actual Fedora QEMU guest run must pass** before vforge write support
+or OTA readiness is claimed.
