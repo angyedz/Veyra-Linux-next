@@ -81,6 +81,22 @@ hostile privileged processes, faulty firmware, or a device disappearing after
 the final check. Perform the first destructive tests only on a disposable
 QEMU disk, never against a development workstation's real block devices.
 
+## Installer boot-asset lifetime (fix pending end-to-end verification)
+
+The installer initially composes Fedora into a temporary Btrfs home partition,
+then runs `systemd-repart` to copy it into the immutable A/B roots. The
+temporary Btrfs filesystem is unmounted and reformatted as the persistent
+ext4 `/home` **before** writing the final EFI UKI and BIOS kernel/initrd.
+The original implementation retained source paths under that temporary root,
+causing `ukify` and BIOS asset copies to reference files that had disappeared
+after reformatting. The installer now stages a private, disposable copy of
+`vmlinuz`, `initramfs.img`, and `os-release` on the Live host first, uses
+only those staged copies for UKI/GRUB, and removes them in `finally`.
+
+This fixes a source-level lifetime bug but does **not** prove successful real
+installation, UEFI/BIOS first boot, user creation, or Recovery boot. Verify
+with a disposable disk in a full end-to-end QEMU acceptance run.
+
 ## Open sizing decision
 
 The current partition definitions require at least 55.5 GiB for the installed disk. The installer must report the required capacity before allowing installation. Making the layout fit smaller target disks requires changing the partition sizing contract and is not implied by the 8 GiB ISO limit.
