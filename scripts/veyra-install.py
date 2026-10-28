@@ -9,7 +9,9 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
+import struct
 import stat
 import subprocess
 import sys
@@ -75,6 +77,90 @@ def populate_installed_home(device: pathlib.Path, username: str, uid: int, gid: 
 
 class InstallError(RuntimeError):
     pass
+
+
+
+def validate_recovery_uki_metadata(recovery: pathlib.Path) -> None:
+    """Fail closed on malformed or wrong-identity Recovery UKIs.
+
+    This is structural validation, NOT a signature check or a boot test.
+    The prototype Recovery UKI is unsigned until a production trust root exists.
+    """
+    if recovery.is_symlink() or not recovery.is_file():
+        raise InstallError("the Live ISO does not contain a regular Veyra Recovery UKI")
+    size = recovery.stat().st_size
+    if not 512 <= size <= 1024**3:
+        raise InstallError("Recovery UKI has an implausible file size")
+    try:
+        with recovery.open("rb") as stream:
+            dos = stream.read(64)
+            if len(dos) != 64 or dos[:2] != b"MZ":
+                raise ValueError("missing MZ executable header")
+            pe_offset = struct.unpack_from("<I", dos, 0x3c)[0]
+            if not 64 <= pe_offset <= size - 24:
+                raise ValueError("invalid PE header offset")
+            stream.seek(pe_offset)
+            coff = stream.read(24)
+            if len(coff) != 24 or coff[:4] != b"PE\x00\x00":
+                raise ValueError("missing PE signature")
+            count = struct.unpack_from("<H", coff, 6)[0]
+            optional_size = struct.unpack_from("<H", coff, 20)[0]
+            table = pe_offset + 24 + optional_size
+            if not 4 <= count <= 32 or table + count * 40 > size:
+                raise ValueError("invalid PE section table")
+            sections: dict[bytes, tuple[int, int]] = {}
+            for index in range(count):
+                stream.seek(table + index * 40)
+                header = stream.read(40)
+                if len(header) != 40:
+                    raise ValueError("truncated PE section header")
+                name = header[:8].split(b"\x00", 1)[0]
+                raw_size, raw_offset = struct.unpack_from("<II", header, 16)
+                if name in sections:
+                    raise ValueError("duplicate PE section")
+                sections[name] = (raw_offset, raw_size)
+
+            def read_section(name: bytes, maximum: int) -> bytes:
+                if name not in sections:
+                    raise ValueError(f"missing {name.decode('ascii')} UKI section")
+                offset, length = sections[name]
+                if not 0 < length <= maximum or offset < table + count * 40 or offset > size - length:
+                    raise ValueError(f"invalid {name.decode('ascii')} UKI section bounds")
+                stream.seek(offset)
+                return stream.read(length)
+
+            osrel = read_section(b".osrel", 16384).split(b"\x00", 1)[0].decode("utf-8")
+            cmdline = read_section(b".cmdline", 4096).split(b"\x00", 1)[0]
+            # The large kernel/initrd payloads need validated bounds, not
+            # loading their bytes into the installer process.
+            for name in (b".linux", b".initrd"):
+                if name not in sections:
+                    raise ValueError(f"missing {name.decode('ascii')} UKI section")
+                offset, length = sections[name]
+                if length == 0 or offset < table + count * 40 or offset > size - length:
+                    raise ValueError(f"invalid {name.decode('ascii')} UKI payload bounds")
+        fields: dict[str, str] = {}
+        for line in osrel.splitlines():
+            if not line or line.lstrip().startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key in fields:
+                raise ValueError(f"duplicate {key} .osrel field")
+            parsed = shlex.split(value, comments=True, posix=True)
+            if len(parsed) != 1:
+                raise ValueError(f"invalid {key} .osrel field")
+            fields[key] = parsed[0]
+        expected = {"ID": "fedora", "VERSION_ID": FEDORA_RELEASE, "IMAGE_ID": "veyra-recovery"}
+        for key, value in expected.items():
+            if fields.get(key) != value:
+                raise ValueError(f"{key} must be {value}")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", fields.get("IMAGE_VERSION", "")):
+            raise ValueError("missing or invalid IMAGE_VERSION")
+        if b"rdinit=/init" not in cmdline.split():
+            raise ValueError("Recovery UKI lacks its independent rdinit=/init")
+    except (OSError, ValueError, UnicodeError, struct.error) as error:
+        raise InstallError(f"invalid Veyra Recovery UKI metadata: {error}") from error
+
 
 
 def command(args: list[str], *, capture: bool = False) -> str:
@@ -303,8 +389,7 @@ def install_initrd_module(root: pathlib.Path, source: pathlib.Path) -> None:
 
 def write_recovery_uki(esp: pathlib.Path, source: pathlib.Path) -> None:
     recovery = source / "assets/veyra-recovery.efi"
-    if recovery.is_symlink() or not recovery.is_file() or recovery.stat().st_size == 0:
-        raise InstallError("the Live ISO does not contain Veyra Recovery UKI")
+    validate_recovery_uki_metadata(recovery)
     destination = esp / "EFI/Linux/veyra-recovery.efi"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(recovery, destination)
@@ -352,6 +437,7 @@ def validate_installer_assets(source: pathlib.Path) -> None:
         path = source / relative
         if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
             raise InstallError(f"Live installer missing or invalid required asset: {relative}")
+    validate_recovery_uki_metadata(source / "assets/veyra-recovery.efi")
     definitions = source / "mkosi.repart"
     if not definitions.is_dir() or not list(definitions.glob("*.conf")):
         raise InstallError("Live installer has no mkosi.repart partition definitions")
