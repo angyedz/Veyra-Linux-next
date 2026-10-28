@@ -76,6 +76,28 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn('! -r /etc/calamares/settings.conf', SCRIPT)
         self.assertIn('if [[ "${EUID}" -eq 0 ]]; then', SCRIPT)
 
+    def test_calamares_explicit_app_data_root_has_packaged_qml(self):
+        # Exact Calamares fatal from a real Live desktop:
+        # "explicitly configured application data directory is missing qml/"
+        # -c changes QML lookup into /etc/calamares/qml, not just settings.
+        self.assertIn('/usr/bin/calamares -c /etc/calamares', SCRIPT)
+        self.assertIn('[[ -d "$root/usr/share/calamares/qml" ]]', SCRIPT)
+        self.assertIn('ln -s ../../usr/share/calamares/qml "$root/etc/calamares/qml"', SCRIPT)
+        self.assertIn('[[ -d "$root/etc/calamares/qml" ]]', SCRIPT)
+        # An empty qml directory would conceal the original failure and
+        # break subsequent QML module loading.
+        self.assertNotIn('mkdir -p "$root/etc/calamares/qml"', SCRIPT)
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "usr/share/calamares/qml").mkdir(parents=True)
+            config = root / "etc/calamares"
+            config.mkdir(parents=True)
+            link = config / "qml"
+            link.symlink_to("../../usr/share/calamares/qml")
+            self.assertTrue(link.is_dir())
+            self.assertEqual(link.resolve(), (root / "usr/share/calamares/qml").resolve())
+
     def test_calamares_is_desktop_visible_and_wayland_user_gui(self):
         self.assertIn("konsole konsole-part", SCRIPT)
         self.assertIn("konsolepart.so", SCRIPT)
