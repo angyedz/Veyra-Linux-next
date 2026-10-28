@@ -58,8 +58,13 @@ touching any disk**:
 On a connected disposable VM with an explicit target, use
 `/usr/libexec/veyra-installer --preflight --target /dev/vdb`. Preflight
 checks the local Fedora package manifest, GPT partition definitions, built-in
-GRUB helper, Dracut module and nonempty Recovery UKI. It reports the minimum
-target capacity. It does **not** partition, format, download or install.
+GRUB helper, Dracut module and structural Recovery UKI metadata: PE/COFF
+sections, Fedora 44 identity, `IMAGE_ID=veyra-recovery`, version, and independent
+`rdinit=/init`. A nonempty placeholder or a normal system UKI is rejected
+**before disk erasure**. It reports the minimum target capacity. It does
+**not** partition, format, download or install. These checks do not validate
+a cryptographic signature or prove that Recovery boots: the current prototype
+Recovery UKI is unsigned, and standalone QEMU boot acceptance is still required.
 
 Actual destructive installation still requires selecting an eligible whole
 disk and typing the exact `ERASE /dev/... ` confirmation string. After that
