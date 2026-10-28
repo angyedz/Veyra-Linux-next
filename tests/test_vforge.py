@@ -217,6 +217,11 @@ class VforgeNativeTests(unittest.TestCase):
         descriptor = int(run.call_args.args[0][2].rsplit("/", 1)[1])
         self.assertEqual(run.call_args.kwargs["pass_fds"], (descriptor,))
 
+        link = self.root / "device-link"
+        link.symlink_to(source)
+        with self.assertRaisesRegex(vforge.VforgeError, "symlink"):
+            vforge.mount_in_namespace(str(link), str(target))
+
     def test_pinned_descriptor_reaches_subprocess(self) -> None:
         # This is the exact failure the real QEMU guest hit: mount(8)
         # cannot resolve /proc/self/fd/N when Popen closes N at exec.
@@ -235,11 +240,6 @@ class VforgeNativeTests(unittest.TestCase):
             self.assertEqual(result.stdout.strip(), str(source))
         finally:
             os.close(descriptor)
-
-        link = self.root / "device-link"
-        link.symlink_to(source)
-        with self.assertRaisesRegex(vforge.VforgeError, "symlink"):
-            vforge.mount_in_namespace(str(link), str(target))
 
     def test_storage_root_can_be_selected_and_reused(self) -> None:
         selected = self.root / "persistent-vforge"
