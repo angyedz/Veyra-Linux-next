@@ -3,8 +3,10 @@ set -euo pipefail
 
 case "${IMAGE_ID:-}" in
     veyra-recovery)
-        install -D -m 0755 "$SRCDIR/scripts/veyra_recovery.py" \
-            "$BUILDROOT/usr/libexec/veyra-recovery"
+        # Recovery code must be present BEFORE the initrd and UKI are packed.
+        # The canonical source is mirrored into mkosi.images/recovery/mkosi.extra
+        # and source tests enforce byte-for-byte equality. Installing into the
+        # final build root at this point is too late for a standalone UKI.
         ;;
     veyra-next)
         python3 "$SRCDIR/scripts/install_recovery_uki.py" \
