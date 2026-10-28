@@ -59,6 +59,26 @@ class BiosBootDiagnosticsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already contains serial diagnostics"):
             bios_boot.add_serial_diagnostics(config)
 
+    def test_bios_qemu_provides_virtio_gpu_without_default_vga(self) -> None:
+        command = bios_boot.bios_qemu_command(
+            Path("/tmp/test-disk.raw"), Path("/tmp/qemu-monitor.sock"), Path("/tmp/serial.log")
+        )
+        self.assertEqual(command[command.index("-vga") + 1], "none")
+        self.assertEqual(command[command.index("-device") + 1], "virtio-vga")
+        self.assertEqual(command[command.index("-display") + 1], "none")
+        self.assertIn("snapshot=on", " ".join(command))
+        self.assertNotIn("std", command)
+
+    def test_vdri_failure_is_not_hidden_by_bios_boot_marker(self) -> None:
+        valid = bios_boot.BOOT_MARKER + b"\\n" + bios_boot.GPU_MARKER
+        self.assertTrue(bios_boot.boot_evidence_verified(valid))
+        self.assertFalse(bios_boot.boot_evidence_verified(bios_boot.BOOT_MARKER))
+        self.assertFalse(bios_boot.boot_evidence_verified(bios_boot.GPU_MARKER))
+        self.assertFalse(bios_boot.boot_evidence_verified(valid + b"\\n" + bios_boot.GPU_FAILURE_MARKER))
+        self.assertFalse(bios_boot.boot_evidence_verified(
+            valid + b"\\nvdri-qemu-smoke.service: Failed with result 'exit-code'."
+        ))
+
     def test_restores_the_grub_config_even_when_qemu_test_fails(self) -> None:
         original = (
             "if linux /stable.vmlinuz roothash=abc systemd.unit=graphical.target; then\n"
