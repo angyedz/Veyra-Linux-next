@@ -67,6 +67,19 @@ install -m 0644 "$repo/installer/calamares/modules/"*.conf "$root/etc/calamares/
   die "Calamares terminal plugin missing: install Fedora konsole-part"
 [[ -x "$root/usr/bin/calamares" ]] ||
   die "Calamares GUI executable missing from Live rootfs"
+[[ -s "$root/usr/lib64/calamares/modules/interactiveterminal/libcalamares_viewmodule_interactiveterminal.so" ]] ||
+  die "Calamares interactiveterminal module itself is missing"
+[[ -s "$root/etc/calamares/settings.conf" ]] ||
+  die "Calamares main settings.conf is missing"
+[[ -s "$root/etc/calamares/modules/interactiveterminal.conf" ]] ||
+  die "Calamares interactiveterminal configuration is missing"
+# Catch unresolved Qt/KF libraries while composing the ISO, not from a
+# mysterious generic 'could not start' desktop dialog afterward.
+if chroot "$root" /usr/bin/ldd \
+  /usr/lib64/calamares/modules/interactiveterminal/libcalamares_viewmodule_interactiveterminal.so \
+  | grep -F 'not found'; then
+  die "Calamares interactiveterminal has unresolved shared libraries"
+fi
 # KDE Solid/Dolphin queries org.freedesktop.UDisks2 over the system bus.
 # Without this service, Plasma repeatedly reports "Failed to fetch all devices".
 [[ -s "$root/usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service" ]] ||
