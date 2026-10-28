@@ -117,6 +117,17 @@ def menu_verified(serial_bytes: bytes) -> bool:
     )
 
 
+def fatal_recovery_boot(serial_bytes: bytes) -> bool:
+    """Fail promptly on fatal initrd exceptions instead of waiting 8 minutes."""
+    output = serial_bytes.decode("utf-8", errors="replace").replace("\r", "\n")
+    return any(item in output for item in (
+        "can't open file '/usr/libexec/veyra-recovery'",
+        "Kernel panic",
+        "Traceback (most recent call last)",
+        "Recovery could not complete the requested operation",
+    ))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uki", type=pathlib.Path, required=True)
@@ -154,6 +165,8 @@ def main() -> int:
                 try:
                     while time.monotonic() < deadline:
                         raw = serial.read_bytes() if serial.exists() else b""
+                        if fatal_recovery_boot(raw):
+                            break
                         if menu_verified(raw):
                             passed = process.poll() is None
                             break
