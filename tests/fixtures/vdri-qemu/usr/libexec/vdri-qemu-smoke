@@ -20,5 +20,22 @@ if not any(
     raise SystemExit("QEMU virtio_gpu is not bound to a DRM device")
 PY
 printf 'VDRI_QEMU_PASS\n' >/dev/console
-/usr/bin/sleep 1
-/usr/bin/systemctl poweroff --no-block
+
+# This fixture is shared by two distinct QEMU tests:
+#  - Standalone UEFI v-dri probe expects automatic poweroff on success.
+#  - Legacy BIOS test waits for an independent graphical.target marker.
+# Powering off in the BIOS probe before graphical.target makes a healthy
+# guest look broken. Only skip the automatic shutdown for that exact
+# CI-only kernel parameter (never for real installed systems).
+bios_acceptance_requested() {
+    local cmdline
+    IFS= read -r cmdline < "${1:-/proc/cmdline}"
+    [[ " $cmdline " == *" veyra_bios_ci=1 "* ]]
+}
+
+if bios_acceptance_requested; then
+    printf 'VDRI_QEMU_BIOS_HANDOFF\n' >/dev/console
+else
+    /usr/bin/sleep 1
+    /usr/bin/systemctl poweroff --no-block
+fi
