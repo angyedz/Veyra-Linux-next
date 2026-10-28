@@ -87,7 +87,7 @@ else
         cat "$install_log"
         fail "$LINENO" 'Live installer accepted installation without a Recovery UKI'
     fi
-    grep -Fq 'Recovery UKI' "$install_log" || {
+    grep -Eq 'assets/veyra-recovery[.]efi|Recovery UKI' "$install_log" || {
         cat "$install_log"
         fail "$LINENO" 'Live installer failed preflight for an unexpected reason'
     }
