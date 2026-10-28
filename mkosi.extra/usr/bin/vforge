@@ -760,6 +760,38 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
     return 0
 
 
+def prepare_rootless_overlay_work_for_removal(work: Path) -> None:
+    """Permit deletion of OverlayFS's 000-mode private work/work directory.
+
+    OverlayFS can create its internal work/work staging directory with no
+    access bits. The mapped owner can cleanly unmount a rootless overlay but
+    shutil.rmtree subsequently gets EACCES traversing that private directory.
+    Change only that exact user-owned, non-symlinked staging directory; never
+    chmod the host root, the overlay lower, or arbitrary user files.
+    """
+    verify_private_directory(work, "OverlayFS work directory")
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(work, flags)
+    try:
+        try:
+            info = os.stat("work", dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            raise VforgeError("unsafe private OverlayFS work/work entry; refusing deletion")
+        if (info.st_mode & 0o700) != 0o700:
+            # No-follow dirfd relative chmod avoids a symlink swap escaping
+            # the verified private work directory.
+            os.chmod("work", 0o700, dir_fd=descriptor, follow_symlinks=False)
+        updated = os.stat("work", dir_fd=descriptor, follow_symlinks=False)
+        if (not stat.S_ISDIR(updated.st_mode) or updated.st_uid != os.getuid()
+                or updated.st_mode & 0o777 != 0o700):
+            raise VforgeError("cannot safely prepare OverlayFS work/work for deletion")
+    finally:
+        os.close(descriptor)
+
+
 def list_environments() -> int:
     root = store_root() / "environments"
     if not root.is_dir():
@@ -833,6 +865,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.action == "delete":
             if path.exists():
                 environment_metadata(path)
+                prepare_rootless_overlay_work_for_removal(path / "work")
                 shutil.rmtree(path)
                 print(f"Deleted environment '{args.name}'")
             return 0
