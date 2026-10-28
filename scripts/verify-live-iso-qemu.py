@@ -55,6 +55,8 @@ def verify(report: dict) -> list[str]:
             issues.append(f"{mode}: systemd-pam is absent or broken")
         if not isinstance(signals, dict) or not signals.get("vpkg_guest_test_passed"):
             issues.append(f"{mode}: Live vpkg QEMU policy and privilege checks did not pass")
+        if not isinstance(signals, dict) or not signals.get("installer_preflight_passed"):
+            issues.append(f"{mode}: installer read-only preflight did not pass (with Recovery or fail-closed without it)")
         if isinstance(signals, dict) and signals.get("vpkg_guest_test_failed"):
             issues.append(f"{mode}: Live vpkg QEMU policy suite reported a failure")
     if seen != {"bios", "uefi"}:
