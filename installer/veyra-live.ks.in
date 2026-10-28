@@ -44,6 +44,7 @@ konsole
 livesys-scripts
 NetworkManager
 polkit
+qemu-guest-agent
 python3
 systemd-ukify
 systemd-boot-unsigned
