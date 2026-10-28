@@ -61,8 +61,8 @@ class NativeLiveIsoTests(unittest.TestCase):
 
     def test_native_live_includes_branded_fastfetch_and_both_glacier_themes(self):
         self.assertIn("konsole-part kate udisks2 fastfetch", SCRIPT)
-        self.assertIn('"/etc/xdg/fastfetch/config.jsonc"', SCRIPT)
-        self.assertIn('"/usr/share/veyra/fastfetch/logo.txt"', SCRIPT)
+        self.assertIn('"$root/etc/xdg/fastfetch/config.jsonc"', SCRIPT)
+        self.assertIn('"$root/usr/share/veyra/fastfetch/logo.txt"', SCRIPT)
         self.assertIn("plasma/desktoptheme plasma/look-and-feel", SCRIPT)
         self.assertIn('"$root/usr/bin/veyra-theme"', SCRIPT)
         self.assertIn("Glacier dark theme is missing", SCRIPT)
