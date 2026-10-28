@@ -43,6 +43,10 @@ Calamares, or installed-system A/B boot succeeds.
 
 The Live environment and install-media build run only on GitHub Actions. The install flow must use the existing Veyra package manifest and boot/update definitions rather than a separately maintained package list. CI must verify both the ISO and the resulting installed system in disposable QEMU guests.
 
+**Verification gap (28 October 2026):** The native experimental Live ISO was independently observed at 300 seconds in BIOS and UEFI QEMU with an actual KDE Plasma desktop, while `vpkg` Live guest tests exercised **offline policy only**. The `live-installer-iso` job in `.github/workflows/ci.yml` currently builds and publishes an installer ISO; it has **no** destructive disposable-disk install-and-reboot stage. This is an acceptance criterion, not a completed capability. Before declaring Pre-alpha, add a separate disposable 64 GiB QEMU install test with a verified Recovery UKI and a real first boot, keeping destructive operations away from all real user disks.
+
+The Fedora image BIOS smoke job in run `40636497267` demonstrated why guest errors matter even when CI is green: `VEYRA_BIOS_BOOT_CI_PASS` was emitted while `vdri-qemu-smoke.service` failed (status 2), because the smoke harness supplied standard VGA rather than the VirtIO GPU expected by v-dri. The follow-up harness fix is to attach `virtio-vga` and require `VDRI_QEMU_PASS` in addition to the BIOS boot marker; this change still requires a fresh real QEMU run.
+
 The Live desktop launches the Qt 6 Calamares installer. Its Veyra-branded flow opens Calamares' KonsolePart terminal module and runs the existing `/usr/libexec/veyra-installer`, preserving its whole-disk checks and explicit erase confirmation. Anaconda packages are rejected from the built Live system. Lorax still uses Anaconda inside the isolated GitHub Actions builder to compose the ISO; those build-only packages are not part of the downloaded media.
 
 ## Safe installation preflight
