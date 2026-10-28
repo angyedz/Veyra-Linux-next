@@ -93,8 +93,22 @@ getent passwd veyra-ci >/dev/null
 test -d /home/veyra-ci
 test "$(stat -c %U /home/veyra-ci)" = veyra-ci
 id -nG veyra-ci | grep -wq wheel
-systemctl is-active --quiet graphical.target
-systemctl is-active --quiet display-manager.service
+# QGA may start before Plasma/SDDM reaches graphical.target. Require both
+# to become healthy within the bounded guest-exec deadline; do not mark PASS
+# merely because the agent is already answering.
+ready=0
+for attempt in $(seq 1 45); do
+    if systemctl is-active --quiet graphical.target &&
+       systemctl is-active --quiet display-manager.service; then
+        ready=1
+        break
+    fi
+    sleep 4
+done
+if [ "$ready" -ne 1 ]; then
+    systemctl --no-pager --full status graphical.target display-manager.service || :
+    exit 84
+fi
 test -x /usr/bin/vpkg
 test -x /usr/bin/qemu-ga
 echo VEYRA_INSTALLED_UEFI_QEMU_PASS
