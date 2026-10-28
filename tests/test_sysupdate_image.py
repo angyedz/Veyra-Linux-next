@@ -174,9 +174,14 @@ class SysupdateImageTests(unittest.TestCase):
         fixture = source.split("def inject_guest_ota_test(", 1)[1].split(
             "def inject_bios_guest_ota_test(", 1
         )[0]
-        self.assertIn('ota_wants = systemd / "graphical.target.wants"', fixture)
-        self.assertIn('ota_link = ota_wants / "veyra-ota-ci.target"', fixture)
-        self.assertIn('ota_link.symlink_to("../veyra-ota-ci.target")', fixture)
+        # The graph target must not directly want an OTA target with
+        # After=graphical.target: systemd target ordering would be cyclic.
+        self.assertNotIn('ota_wants = systemd / "graphical.target.wants"', fixture)
+        self.assertIn('ota_wants = systemd / "timers.target.wants"', fixture)
+        self.assertIn('ota_timer = systemd / "veyra-ota-ci.timer"', fixture)
+        self.assertIn('ota_link = ota_wants / "veyra-ota-ci.timer"', fixture)
+        self.assertIn('ota_link.symlink_to("../veyra-ota-ci.timer")', fixture)
+        self.assertIn('Unit=veyra-ota-ci.target', fixture)
         self.assertIn("ConditionPathExists=/var/lib/veyra/vpkg-ci-stage-pass", fixture)
 
     def test_boot_log_normalizer_preserves_systemd_markers_around_terminal_escapes(self) -> None:
