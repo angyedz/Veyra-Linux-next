@@ -18,10 +18,20 @@ OVMF_PAIRS = (
 )
 
 
+def decode_qemu_output(stdout: bytes | str | None, stderr: bytes | str | None) -> str:
+    """Serial firmware output is a byte stream, not guaranteed UTF-8."""
+    def decode(piece: bytes | str | None) -> str:
+        if isinstance(piece, bytes):
+            return piece.decode("utf-8", errors="replace")
+        return piece or ""
+    return decode(stdout) + decode(stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path)
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--log-directory", type=Path)
     args = parser.parse_args()
 
     if not args.image.is_file():
@@ -55,16 +65,29 @@ def main() -> int:
             "-no-reboot",
         ]
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=args.timeout, check=False)
-            output = result.stdout + result.stderr
+            # Never use text=True on a firmware serial stream. A stray non-UTF8
+            # terminal byte used to crash the test before it inspected VDRI.
+            result = subprocess.run(command, capture_output=True, timeout=args.timeout, check=False)
+            raw_stdout, raw_stderr = result.stdout, result.stderr
+            output = decode_qemu_output(raw_stdout, raw_stderr)
         except subprocess.TimeoutExpired as error:
-            stdout = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
-            stderr = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else (error.stderr or "")
-            print(stdout + stderr, file=sys.stderr)
+            raw_stdout, raw_stderr = error.stdout or b"", error.stderr or b""
+            output = decode_qemu_output(raw_stdout, raw_stderr)
+            result = None
+        if args.log_directory:
+            args.log_directory.mkdir(parents=True, exist_ok=True)
+            if args.log_directory.is_symlink():
+                print("Refusing symlinked v-dri QEMU diagnostic directory", file=sys.stderr)
+                return 2
+            (args.log_directory / "qemu-stdout.bin").write_bytes(raw_stdout)
+            (args.log_directory / "qemu-stderr.bin").write_bytes(raw_stderr)
+            (args.log_directory / "serial-readable.txt").write_text(output, encoding="utf-8")
+        if result is None:
+            print(output[-24000:], file=sys.stderr)
             print(f"QEMU did not finish within {args.timeout} seconds.", file=sys.stderr)
             return 1
 
-    if result.returncode != 0 or "VDRI_QEMU_PASS" not in output:
+    if result.returncode != 0 or "VDRI_QEMU_PASS" not in output or "VDRI_QEMU_FAILURE" in output:
         print(output[-24000:], file=sys.stderr)
         print(f"QEMU/v-dri smoke check failed (QEMU exit {result.returncode}).", file=sys.stderr)
         return 1

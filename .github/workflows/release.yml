@@ -2,6 +2,11 @@ name: Veyra signed system update
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: New signed A/B update version (greater than installed 0.1.0)
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -17,6 +22,24 @@ jobs:
     container: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select distinct OTA version without changing tracked files
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, re
+          version = os.environ["REQUESTED_VERSION"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+              raise SystemExit("Specify a strict X.Y.Z version, e.g. 0.1.1")
+          config = pathlib.Path("mkosi.conf")
+          value = config.read_text()
+          found = re.search(r"(?m)^ImageVersion=(.+)$", value)
+          if found is None or tuple(map(int, version.split("."))) <= tuple(map(int, found.group(1).split("."))):
+              raise SystemExit("OTA version must exceed the base ISO version")
+          config.write_text(value[:found.start()] + f"ImageVersion={version}" + value[found.end():])
+          PY
 
       - name: Verify the pinned Fedora 44 build container before using DNF
         run: bash scripts/check-build-environment.sh
@@ -80,8 +103,8 @@ jobs:
           fi
           fingerprint="${fingerprints[0]}"
           install -d mkosi.extra/usr/lib/systemd
-          gpg --batch --export "$fingerprint" > mkosi.extra/usr/lib/systemd/import-pubring.gpg
-          test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
+          gpg --batch --export "$fingerprint" > mkosi.extra/usr/lib/systemd/import-pubring.pgp
+          test -s mkosi.extra/usr/lib/systemd/import-pubring.pgp
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
 
@@ -99,7 +122,7 @@ jobs:
           test -s "mkosi.output/veyra-next_${version}.initrd"
           test -s mkosi.output/veyra-next_*.root.raw.zst
           test -s mkosi.output/veyra-next_*.root-verity.raw.zst
-          test -s mkosi.extra/usr/lib/systemd/import-pubring.gpg
+          test -s mkosi.extra/usr/lib/systemd/import-pubring.pgp
           test -s mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
           sudo --preserve-env=PATH scripts/mkosi.sh shell -- \
             sh -eu -c '
@@ -144,6 +167,8 @@ jobs:
           fi
           gpg --batch --verify SHA256SUMS.gpg SHA256SUMS
           sha256sum --check SHA256SUMS
+          cd ..
+          python3 scripts/verify-release-assets.py mkosi.output "$IMAGE_VERSION"
 
       - name: Publish the signed update release
         env:
@@ -152,10 +177,14 @@ jobs:
         run: |
           set -euo pipefail
           tag="veyra-next-${IMAGE_VERSION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release already exists for $tag; refusing to overwrite signed OTA assets." >&2
+            exit 1
+          fi
           cat > build-release-notes.md <<EOF
           Veyra Next pre-alpha system update ${IMAGE_VERSION}.
 
-          Update bundles are authenticated by the detached signature on `SHA256SUMS.gpg`.
+          Update bundles are authenticated by the detached signature in SHA256SUMS.gpg.
           The matching public key is embedded in the image's systemd-sysupdate keyring.
           The full disk image is not attached: this release contains the A/B update assets only.
           EOF
@@ -170,3 +199,20 @@ jobs:
             --title "Veyra Linux pre-alpha ${IMAGE_VERSION}" \
             --notes-file build-release-notes.md \
             --latest
+
+      - name: Re-download the five published A/B assets and revalidate signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_VERSION: ${{ steps.artifacts.outputs.version }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/veyra-release-download"
+          mkdir -p "$output"
+          gh release download "veyra-next-$IMAGE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" --dir "$output" \
+            --pattern 'veyra-next_*' \
+            --pattern 'SHA256SUMS*'
+          python3 scripts/verify-release-assets.py "$output" "$IMAGE_VERSION"
+          gpg --batch --verify "$output/SHA256SUMS.gpg" "$output/SHA256SUMS"
+          (cd "$output" && sha256sum --check SHA256SUMS)
+          echo 'Signed A/B update fetched and verified from GitHub Releases.' >> "$GITHUB_STEP_SUMMARY"

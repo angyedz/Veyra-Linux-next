@@ -11,6 +11,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LiveIsoRetryTests(unittest.TestCase):
+    def test_legacy_lorax_is_explicitly_manual_and_has_both_uefi_assets(self):
+        workflow = (ROOT / ".github/workflows/prototype-iso-unblock.yml").read_text()
+        kickstart = (ROOT / "installer/veyra-live.ks.in").read_text()
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("recovery_run_id:", workflow)
+        self.assertIn("run-id: ${{ inputs.recovery_run_id }}", workflow)
+        self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
+        self.assertNotIn("40362375406", workflow)
+        self.assertIn("shim-x64", kickstart)
+        self.assertIn("shimx64.efi", kickstart)
+        self.assertIn("gcdx64.efi", kickstart)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

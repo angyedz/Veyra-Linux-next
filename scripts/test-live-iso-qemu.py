@@ -61,7 +61,7 @@ def qemu_args(
     args = [
         "qemu-system-x86_64", "-machine", "q35,accel=tcg",
         "-cpu", "max", "-smp", "2", "-m", str(memory),
-        "-vga", "std", "-display", "none", "-nic", "none",
+        "-vga", "none", "-device", "virtio-vga", "-display", "none", "-nic", "none",
         "-boot", "order=d,menu=off", "-no-reboot",
         "-monitor", f"unix:{monitor},server=on,wait=off",
         "-serial", f"file:{serial}",
@@ -109,6 +109,33 @@ def ppm_to_png(source: pathlib.Path, destination: pathlib.Path) -> tuple[int, in
     return width, height
 
 
+def ppm_has_visible_pixels(source: pathlib.Path) -> bool:
+    """Require actual scene content, not just a 12-pixel mouse cursor.
+
+    A black QEMU scanout has previously passed this test because one cursor
+    pixel was nonzero. This is only a framebuffer heuristic; proof that KDE
+    started requires an independent compositor/process marker.
+    """
+    data = source.read_bytes()
+    match = re.match(rb"\AP6\r?\n([0-9]+) ([0-9]+)\r?\n255\r?\n", data)
+    if match is None:
+        raise SmokeError("invalid QEMU P6 screenshot header")
+    width, height = map(int, match.groups())
+    if width < 1 or height < 1 or len(data) - match.end() != width * height * 3:
+        raise SmokeError("QEMU P6 screenshot has invalid dimensions or pixel data")
+    payload = memoryview(data)[match.end():]
+    visible = 0
+    # 3% visibly lit pixels at intensity >32: excludes mouse cursors and
+    # terminal blinkers, and handles full-screen dark Plasma wallpapers.
+    minimum = max(1, (width * height * 3 + 99) // 100)
+    for offset in range(0, len(payload), 3):
+        if max(payload[offset:offset + 3]) > 32:
+            visible += 1
+            if visible >= minimum:
+                return True
+    return False
+
+
 def screendump(monitor: pathlib.Path, ppm: pathlib.Path, deadline: float) -> None:
     while not monitor.exists() and time.monotonic() < deadline:
         time.sleep(0.2)
@@ -140,6 +167,17 @@ def serial_signals(path: pathlib.Path) -> dict[str, bool]:
         "kernel_seen": bool(re.search(rb"Linux version|Command line:|Kernel command line:", data, re.I)),
         "init_seen": bool(re.search(rb"systemd\[1\]|dracut|Reached target", data, re.I)),
         "live_desktop_confirmed": False,  # Only visual/human inspection can confirm this.
+        "plasma_session_crashed": bool(re.search(rb"Session crashed \(exit code [0-9]+\)", data, re.I)),
+        "pam_systemd_missing": b"PAM unable to dlopen(" in data and b"pam_systemd.so" in data,
+        "plasma_session_invoked": b"startplasma-wayland" in data,
+        "vpkg_guest_test_started": b"VEYRA_LIVE_VPKG_CI_BEGIN" in data,
+        "vpkg_guest_test_passed": b"VEYRA_LIVE_VPKG_CI_PASS" in data,
+        "vpkg_guest_test_failed": b"VEYRA_LIVE_VPKG_CI_FAILURE" in data,
+        "plasma_runtime_confirmed": b"VEYRA_LIVE_PLASMA_PROCESS_PASS" in data,
+        "plasma_runtime_failed": b"VEYRA_LIVE_PLASMA_PROCESS_FAILURE" in data,
+        "ksplash_timed_out": b"plasma-ksplash.service: Failed with result" in data and b"timeout" in data,
+        "milou_qml_missing": b'module "org.kde.milou" is not installed' in data,
+        "kwin_drm_node_error": b"Failed to open drm node" in data,
     }
 
 
@@ -186,6 +224,7 @@ def capture_one(
                         "seconds_after_launch": second,
                         "file": png.name,
                         "dimensions": list(size),
+                        "non_black_pixels_detected": ppm_has_visible_pixels(ppm),
                     })
             except (OSError, SmokeError) as exc:
                 record["errors"].append(str(exc))

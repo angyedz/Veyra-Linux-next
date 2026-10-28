@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import pathlib
@@ -18,6 +19,58 @@ import tempfile
 DEFAULT_SOURCE = pathlib.Path("/usr/share/veyra/installer/source")
 SCRATCH_MOUNT = pathlib.Path("/run/veyra-installer/scratch")
 FEDORA_RELEASE = "44"
+ACCOUNT_NAME = re.compile(r"[a-z_][a-z0-9_-]{0,30}")
+
+
+def requested_account() -> tuple[str, str, str]:
+    """Collect credentials before erasing any disk. Never log secrets."""
+    username = input("New Veyra username: ").strip()
+    if not ACCOUNT_NAME.fullmatch(username) or username in {"root", "liveuser", "nobody"}:
+        raise InstallError("username must be a simple lowercase account name (not root/liveuser)")
+    user_password = getpass.getpass("New user password: ")
+    user_confirm = getpass.getpass("Repeat user password: ")
+    root_password = getpass.getpass("Choose installed-system root password: ")
+    root_confirm = getpass.getpass("Repeat installed root password: ")
+    if user_password != user_confirm or root_password != root_confirm:
+        raise InstallError("account passwords do not match; no disk was modified")
+    if len(user_password) < 8 or len(root_password) < 8:
+        raise InstallError("both passwords must contain at least eight characters")
+    if any("\n" in value or "\x00" in value for value in (user_password, root_password)):
+        raise InstallError("password contains invalid control characters")
+    return username, user_password, root_password
+
+
+def configure_installed_accounts(root: pathlib.Path, username: str, user_password: str, root_password: str) -> None:
+    """Create installed accounts in its own root; never import Live credentials."""
+    if not ACCOUNT_NAME.fullmatch(username):
+        raise InstallError("invalid installed account name")
+    command(["chroot", str(root), "/usr/sbin/useradd",
+             "--create-home", "--groups", "wheel", "--shell", "/bin/bash", username])
+    # Password input uses stdin, not command arguments or installer logs.
+    accounts = f"{username}:{user_password}\nroot:{root_password}\n"
+    subprocess.run(
+        ["chroot", str(root), "/usr/sbin/chpasswd"],
+        input=accounts, encoding="utf-8", check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+
+def populate_installed_home(device: pathlib.Path, username: str, uid: int, gid: int) -> None:
+    """Create an owned home directory on the persistent ext4 home partition."""
+    if not ACCOUNT_NAME.fullmatch(username) or uid < 1000 or gid < 1000:
+        raise InstallError("invalid persistent home owner")
+    mountpoint = pathlib.Path("/run/veyra-installer/home")
+    mountpoint.mkdir(parents=True, exist_ok=True)
+    command(["mount", "-o", "nodev,nosuid", str(device), str(mountpoint)])
+    try:
+        destination = mountpoint / username
+        if destination.exists() or destination.is_symlink():
+            raise InstallError("refusing to overwrite a preexisting installed home")
+        destination.mkdir(mode=0o700)
+        os.chown(destination, uid, gid)
+        command(["sync"])
+    finally:
+        command(["umount", str(mountpoint)])
 
 
 class InstallError(RuntimeError):
@@ -394,6 +447,9 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
     assert_target_identity_unchanged(candidate, refreshed)
     if required_again != required:
         raise InstallError("required partition size changed during confirmation")
+    # For safety require interactive credentials even with --confirm-device.
+    # Do not begin destructive operations when no terminal can provide them.
+    username, user_password, root_password = requested_account()
 
     scratch_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-scratch-repart-"))
     final_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-final-repart-"))
@@ -438,9 +494,17 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
             f"--releasever={FEDORA_RELEASE}", "install", *packages,
         ])
         overlay_veyra_files(root, source)
+        # Accounts are created in the installed root, NOT cloned from Live.
+        configure_installed_accounts(root, username, user_password, root_password)
+        user_password = root_password = ""
         install_initrd_module(root, source)
         write_image_identity(root, version)
 
+        # Save numeric ownership before the temporary root is unmounted.
+        account_home = root / "home" / username
+        if account_home.is_symlink() or not account_home.is_dir():
+            raise InstallError("new user home missing from the staged root")
+        home_uid, home_gid = account_home.stat().st_uid, account_home.stat().st_gid
         command(["systemd-machine-id-setup", f"--root={root}"])
         command(["systemctl", f"--root={root}", "preset-all", "--preset-mode=enable-only"])
         flatpak_repo = "/usr/share/veyra/flathub.flatpakrepo"
@@ -475,6 +539,7 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         command(["umount", str(SCRATCH_MOUNT)])
         scratch_mounted = False
         command(["mkfs.ext4", "--force", "-F", "-L", "VEYRA_HOME", str(home_device)])
+        populate_installed_home(home_device, username, home_uid, home_gid)
 
         root_label = f"veyra-next_{version}"
         verity_label = f"{root_label}_verity"

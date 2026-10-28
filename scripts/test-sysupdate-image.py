@@ -175,8 +175,33 @@ def append_uki_cmdline(uki: pathlib.Path, *arguments: str) -> None:
         stream.write(struct.pack("<I", len(cmdline)))
 
 
-def add_serial_to_initial_uki(image: pathlib.Path) -> None:
-    """Make the initial, test-copy boot visible on serial before the OTA UKI exists."""
+def initial_system_uki_names(names: list[str]) -> list[str]:
+    """Identify exactly the OS boot UKI, never a Recovery image."""
+    return [
+        name for name in names
+        if name.casefold().endswith(".efi")
+        and name.startswith(("veyra-next-", "veyra-next_", "veyra-"))
+        and not name.startswith(("veyra-recovery", "veyra-next-recovery"))
+    ]
+
+
+def select_system_uki_by_identity(
+    candidates: dict[str, tuple[str, str]], expected_version: str
+) -> list[str]:
+    """Select only the exact system identity; filenames are not trusted."""
+    return [
+        name for name, (image_id, image_version) in candidates.items()
+        if image_id == "veyra-next" and image_version == expected_version
+    ]
+
+
+def add_serial_to_initial_uki(image: pathlib.Path, expected_version: str) -> None:
+    """Patch only the built OS UKI, never the separately shipped Recovery UKI.
+
+    FAT can change the displayed casing/name of UKIs. Inspect the signed
+    image's own .osrel identity in the disposable copy instead of guessing
+    its filename from a mkosi version convention.
+    """
     table = json.loads(run(["sfdisk", "--json", str(image)], stdout=subprocess.PIPE).stdout)["partitiontable"]
     sector_size = int(table.get("sectorsize", 512))
     esp_type = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -189,14 +214,32 @@ def add_serial_to_initial_uki(image: pathlib.Path) -> None:
     names = [
         pathlib.PurePosixPath(line.strip()).name
         for line in listing.splitlines()
-        if line.strip().lower().endswith(".efi")
+        if line.strip().casefold().endswith(".efi")
     ]
-    system_names = [name for name in names if name.startswith(("veyra-next-", "veyra-next_"))]
-    if len(system_names) != 1:
-        raise RuntimeError(f"expected one initial Veyra system UKI in EFI/Linux, found {system_names!r}")
     with tempfile.TemporaryDirectory(prefix="veyra-serial-uki-") as temporary:
-        uki = pathlib.Path(temporary) / "initial.efi"
-        run(["mcopy", "-i", image_ref, f"::/EFI/Linux/{system_names[0]}", str(uki)])
+        candidates: dict[str, tuple[str, str]] = {}
+        local_files: dict[str, pathlib.Path] = {}
+        for index, name in enumerate(names):
+            candidate = pathlib.Path(temporary) / f"candidate-{index}.efi"
+            run(["mcopy", "-i", image_ref, f"::/EFI/Linux/{name}", str(candidate)])
+            try:
+                identity = (
+                    os_release_value(candidate, "IMAGE_ID"),
+                    os_release_value(candidate, "IMAGE_VERSION"),
+                )
+            except (RuntimeError, UnicodeError, OSError):
+                continue  # A bootloader/recovery/other EFI binary is not an OS UKI.
+            candidates[name] = identity
+            local_files[name] = candidate
+        system_names = select_system_uki_by_identity(candidates, expected_version)
+        if len(system_names) != 1:
+            raise RuntimeError(
+                f"expected exactly one IMAGE_ID=veyra-next IMAGE_VERSION={expected_version} "
+                f"system UKI in EFI/Linux, found {system_names!r}; "
+                f"EFI entries={names!r}, inspected identities={candidates!r}"
+            )
+        name = system_names[0]
+        uki = local_files[name]
         append_uki_cmdline(
             uki,
             "systemd.unit=veyra-ota-ci.target",
@@ -205,7 +248,7 @@ def add_serial_to_initial_uki(image: pathlib.Path) -> None:
             "systemd.show_status=1",
             "systemd.log_target=console",
         )
-        run(["mcopy", "-o", "-i", image_ref, str(uki), f"::/EFI/Linux/{system_names[0]}"])
+        run(["mcopy", "-o", "-i", image_ref, str(uki), f"::/EFI/Linux/{name}"])
 
 
 def os_release_value(uki: pathlib.Path, key: str) -> str:
@@ -916,7 +959,7 @@ def main() -> int:
                         ota_marker,
                         args.vpkg_test_repo is not None,
                     )
-                    add_serial_to_initial_uki(staged_image)
+                    add_serial_to_initial_uki(staged_image, args.current_version)
                     boot_command = [
                         sys.executable,
                         str(pathlib.Path(__file__).with_name("test-ab-boot.py")),

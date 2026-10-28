@@ -27,6 +27,39 @@ BOOT_SPEC.loader.exec_module(ab_boot)
 
 
 class SysupdateImageTests(unittest.TestCase):
+    def test_identifies_mkosi_initial_uki_without_selecting_recovery(self) -> None:
+        names = [
+            "veyra-7.2.12-200.fc44.x86_64-2ce02cd5976dc577.efi",
+            "veyra-recovery.efi",
+            "other-vendor.efi",
+        ]
+        self.assertEqual(
+            sysupdate_image.initial_system_uki_names(names),
+            ["veyra-7.2.12-200.fc44.x86_64-2ce02cd5976dc577.efi"],
+        )
+        self.assertEqual(
+            sysupdate_image.initial_system_uki_names(["veyra-next_0.1.0+3-0.efi"]),
+            ["veyra-next_0.1.0+3-0.efi"],
+        )
+
+    def test_initial_system_uki_uses_osrel_not_untrusted_fat_filename(self) -> None:
+        # Recovery is deliberately excluded even if its filename starts with
+        # veyra; the OS image is recognized despite a different FAT filename.
+        candidates = {
+            "veyra-recovery.efi": ("veyra-recovery", "0.1.0"),
+            "FEDORA-LINUX.EFI": ("veyra-next", "0.1.0"),
+            "veyra-next_0.0.9.efi": ("veyra-next", "0.0.9"),
+            "BOOTX64.EFI": ("", ""),
+        }
+        self.assertEqual(
+            sysupdate_image.select_system_uki_by_identity(candidates, "0.1.0"),
+            ["FEDORA-LINUX.EFI"],
+        )
+        self.assertEqual(
+            sysupdate_image.select_system_uki_by_identity(candidates, "1.0.0"),
+            [],
+        )
+
     def test_increments_the_last_numeric_version_component(self) -> None:
         self.assertEqual(sysupdate_image.next_version("0.1.9"), "0.1.10")
 

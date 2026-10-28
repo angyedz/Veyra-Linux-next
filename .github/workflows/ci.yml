@@ -353,7 +353,15 @@ jobs:
           sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw
 
       - name: Boot Fedora 44 with a virtual GPU and verify v-dri
-        run: python3 scripts/test-vdri-qemu.py mkosi.output/veyra-next.raw --timeout 600
+        run: python3 scripts/test-vdri-qemu.py mkosi.output/veyra-next.raw --timeout 600 --log-directory build/vdri-qemu
+      - name: Always preserve v-dri raw firmware/serial diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vdri-qemu-serial-diagnostics
+          path: build/vdri-qemu/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Boot the image through Legacy BIOS in QEMU
         run: python3 scripts/test-bios-boot.py --image mkosi.output/veyra-next.raw --report-dir build/bios-boot --timeout 1200
@@ -402,7 +410,16 @@ jobs:
             --fingerprint "$fingerprint" \
             --ovmf-code "$ovmf_code" \
             --ovmf-vars "$ovmf_vars" \
+            --log-directory build/uefi-ota-logs \
             --boot-timeout 1200
+      - name: Always preserve signed UEFI OTA QEMU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-ota-boot-diagnostics
+          path: build/uefi-ota-logs/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build target-version artifacts for Legacy BIOS OTA
         run: |

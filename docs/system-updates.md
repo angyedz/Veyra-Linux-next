@@ -121,7 +121,7 @@ reliably.
 `Verify=yes` makes `systemd-sysupdate` verify the detached signature on
 `SHA256SUMS.gpg`, then verify each downloaded file against that manifest. The
 public key must be available in the image as
-`/usr/lib/systemd/import-pubring.gpg`. The manual workflow builds an image with
+`/usr/lib/systemd/import-pubring.pgp`. The manual workflow builds an image with
 that public key, signs the root/verity/UKI checksums, and publishes those update
 assets as a GitHub release. It does not publish the full disk image or an
 installer.
@@ -158,3 +158,57 @@ dm-verity checks the root image while it is in use. The current UKIs are
 unsigned. This therefore does not provide Secure Boot or protect the EFI boot
 path from someone who can modify the boot partition. The prototype must not be
 described as Secure-Boot secured.
+
+## GitHub Releases-only QEMU update trial (not yet production-ready)
+
+To try the real OTA experience, **the initial installed image and its update
+must share the same pinned Veyra update key**. A random CI-generated key or a
+public checksum downloaded beside an asset is not a trust bootstrap. The
+installable Live ISO also needs the independently built Recovery UKI; installer
+preflight MUST NOT be bypassed when that UKI is absent.
+
+1. Install a release-signed Veyra Next base image `0.1.0` in QEMU with
+   Secure Boot disabled, ideally using a sparse 64 GiB virtual disk; the
+   current fixed repart recipe needs about 55.6 GiB, so a 30 GiB guest disk
+   **cannot** be used for this installer. The installer asks for the user's
+   name, user password and a separate root password. The public Live
+   `root:veyra` credential is **never** copied to the installed image.
+2. Set the dedicated `VEYRA_UPDATE_SIGNING_KEY` and
+   `VEYRA_RPM_SIGNING_KEY` Actions secrets. The package repository uses
+   the matching RPM private key under its own
+   `VEYRA_RPM_GPG_PRIVATE_KEY_B64` secret. Import **the same public
+   keys** into the base installer image before it is released. There is no
+   automatic cross-repository secret sharing.
+3. After review and merge of the release workflow, run the **Veyra signed
+   system update** workflow on `main` with a *new* version (for example
+   `0.1.1`). The workflow composes root/verity/UKI/kernel/initrd, signs
+   the five-file checksum manifest, enforces a **2,000,000,000-byte cap per
+   asset**, publishes a versioned GitHub Release and downloads the published
+   assets back for SHA-256 and GPG verification. It refuses to overwrite a
+   release tag. It does not publish an oversized raw disk image.
+4. In the booted installed QEMU guest:
+
+   ```sh
+   veyra-update check
+   sudo veyra-update install 0.1.1
+   veyra-update pending
+   sudo veyra-update reboot
+   ```
+
+   The new EROFS/dm-verity root is written into inactive A/B partitions.
+   The matching versioned UEFI UKI or BIOS kernel/initrd is installed only
+   after vpkg compatibility preflight. The trial can attempt three boots
+   before returning to the previously blessed OS.
+
+5. For optional Veyra RPMs, first publish signed `rpm-vX.Y.Z-testing`
+   GitHub Release assets from `angyedz/veyra-pkgrepo`, and promote the same
+   signed bytes to `rpm-vX.Y.Z` after testing. The installed image pins the
+   RPM key. `vpkg` downloads only the two named Release assets, checks their
+   SHA-256 and signed `repomd.xml`, and rejects metadata not signed by that
+   key. Fedora and RPM Fusion remain independent upstreams.
+
+**Current blocker:** this workflow and its installed-image trust bootstrap
+are in Draft PRs. Neither repository currently has a published Release or
+production signing key provisioned through this chat. Source/CI tests do not
+prove QEMU install/firstboot/OTA or real GitHub Release downloads. Never
+interpret a built Live ISO without Recovery UKI as safe to install.

@@ -138,13 +138,25 @@ def main() -> int:
     for path in (calamares_settings, calamares_terminal, calamares_welcome, calamares_branding):
         if not path.is_file():
             return fail(f"the Calamares installer is missing {path.relative_to(ROOT)}")
-    for expected in ("branding: veyra", "- interactiveterminal", "- finished"):
-        if expected not in calamares_settings.read_text(encoding="utf-8"):
+    current_settings = calamares_settings.read_text(encoding="utf-8")
+    for expected in ("branding: veyra", "- interactiveterminal"):
+        if expected not in current_settings:
             return fail(f"Calamares settings must include {expected!r}")
-    if "command: /usr/libexec/veyra-installer" not in calamares_terminal.read_text(encoding="utf-8"):
-        return fail("Calamares must run the existing Veyra disk installer in its integrated terminal")
-    if 'Exec=sh -c "pkexec calamares"' not in (ROOT / "installer/veyra-installer.desktop").read_text(encoding="utf-8"):
-        return fail("the Live desktop installer must launch Calamares with root privileges")
+    # The external terminal installer has its own pass/fail result; a generic
+    # 'finished' page could misleadingly claim success after failed preflight.
+    if "- finished" in current_settings:
+        return fail("Calamares must not show a success page for a failed terminal installer")
+    if "command: /usr/libexec/veyra-live-calamares-session" not in calamares_terminal.read_text(encoding="utf-8"):
+        return fail("Calamares must use the Recovery-gated terminal launcher")
+    native_live = (ROOT / "scripts/build-native-live-iso.sh").read_text(encoding="utf-8")
+    for required in (
+        "Exec=/usr/libexec/veyra-live-launch-calamares",
+        "/usr/libexec/veyra-installer --preflight",
+        "Install Veyra Next.desktop",
+        "konsole-part",
+    ):
+        if required not in native_live:
+            return fail(f"the native Live Calamares runtime must include {required!r}")
     for path in (
         "installer/calamares/settings.conf",
         "installer/calamares/modules/interactiveterminal.conf",

@@ -201,9 +201,14 @@ def write_metadata(path: Path, metadata: dict) -> None:
     write_private_json(path / "environment.json", metadata, "Vforge environment metadata")
 
 
-def run(command: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess:
+def run(
+    command: Sequence[str], *, check: bool = True, pass_fds: tuple[int, ...] = ()
+) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(
+            command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            pass_fds=pass_fds,
+        )
     except FileNotFoundError as error:
         raise VforgeError(f"required system tool is missing: {command[0]}") from error
     if check and result.returncode:
@@ -455,8 +460,12 @@ def mount_in_namespace(
             descriptor = next_descriptor
             if stat.S_ISLNK(os.fstat(descriptor).st_mode):
                 raise VforgeError(f"mount source may not traverse a symlink: {source}")
+        # subprocess closes nonstandard descriptors by default. Retain the
+        # O_PATH descriptor in mount(8) so /proc/self/fd/N resolves in the
+        # child, not only in Vforge's Python process. This also prevents a
+        # source-path swap after the symlink-free traversal above.
         pinned_source = f"/proc/self/fd/{descriptor}"
-        run(["mount", "--bind", pinned_source, target])
+        run(["mount", "--bind", pinned_source, target], pass_fds=(descriptor,))
         if mountpoints is not None:
             mountpoints.append(target)
         if readonly:

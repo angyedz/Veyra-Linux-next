@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import io
+from contextlib import redirect_stdout, redirect_stderr
 import subprocess
 import stat
 import struct
@@ -34,6 +36,13 @@ def running_in_qemu_vm() -> bool:
 
 
 class RunningIdentityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These cases validate an INSTALLED image's UKI/BIOS identity. They
+        # must not inherit /etc/veyra/live-mode from the QEMU Live test host.
+        installed = patch.object(vpkg, "running_live_mode", return_value=False)
+        installed.start()
+        self.addCleanup(installed.stop)
+
     def test_legacy_bios_reads_version_from_the_verity_protected_os_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             os_release = Path(temporary) / "os-release"
@@ -62,6 +71,85 @@ class RunningIdentityTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(vpkg.VpkgError, "exactly one IMAGE_VERSION"):
                     vpkg.running_uki_version()
+
+
+class LiveModeIdentityTests(unittest.TestCase):
+    def test_ephemeral_identity_requires_marker_and_kernel(self) -> None:
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "live-mode"
+            cmdline = Path(temporary) / "cmdline"
+            boot_id = Path(temporary) / "boot-id"
+            marker.write_text("veyra-next-native-live-iso\n", encoding="ascii")
+            cmdline.write_text("root=live:CDLABEL=VEYRA_NEXT_LIVE console=tty0\n", encoding="ascii")
+            boot_id.write_text("00000000-0000-4000-8000-000000000001\n", encoding="ascii")
+            with (
+                patch.object(vpkg, "LIVE_MODE_MARKER", marker),
+                patch.object(vpkg, "PROC_CMDLINE", cmdline),
+                patch.object(vpkg, "PROC_BOOT_ID", boot_id),
+            ):
+                self.assertTrue(vpkg.running_live_mode())
+                self.assertEqual(vpkg.running_uki_version(), "live")
+                self.assertEqual(
+                    vpkg.running_deployment_roothash(),
+                    hashlib.sha256(b"veyra-live:00000000-0000-4000-8000-000000000001").hexdigest(),
+                )
+                cmdline.write_text("roothash=not-allowed\n", encoding="ascii")
+                self.assertFalse(vpkg.running_live_mode())
+                with self.assertRaisesRegex(vpkg.VpkgError, "64-character roothash"):
+                    vpkg.running_deployment_roothash()
+
+    def test_marker_without_live_boot_cannot_bypass_installed_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "live-mode"
+            cmdline = Path(temporary) / "cmdline"
+            marker.write_text("veyra-next-native-live-iso\n", encoding="ascii")
+            cmdline.write_text("root=/dev/sda1\n", encoding="ascii")
+            with (
+                patch.object(vpkg, "LIVE_MODE_MARKER", marker),
+                patch.object(vpkg, "PROC_CMDLINE", cmdline),
+            ):
+                self.assertFalse(vpkg.running_live_mode())
+
+
+class VpkgDoctorTests(unittest.TestCase):
+    def test_doctor_success_in_live_mode_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            keys = [Path(directory) / name for name in ("free-key", "nonfree-key")]
+            for key in keys:
+                key.write_text("public test key", encoding="ascii")
+            output, errors = io.StringIO(), io.StringIO()
+            with (
+                patch.object(vpkg, "fedora_release_from_root", return_value="44"),
+                patch.object(vpkg, "running_live_mode", return_value=True),
+                patch.object(vpkg, "RPMFUSION_KEYS", tuple(keys)),
+                patch.object(vpkg, "VPKG_PUBLIC_KEY", Path(directory) / "not-signed"),
+                patch.object(vpkg.shutil, "which", return_value="/usr/bin/systemd-sysext"),
+                patch("vpkg_libdnf._bindings", return_value=object()),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                self.assertEqual(vpkg.main(["doctor"]), 0)
+            self.assertIn("disposable Live ISO", output.getvalue())
+            self.assertIn("actual RPM install has NOT been tested", output.getvalue())
+            self.assertEqual(errors.getvalue(), "")
+
+    def test_doctor_fails_closed_for_missing_trust_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output, errors = io.StringIO(), io.StringIO()
+            missing = Path(directory) / "missing-key"
+            with (
+                patch.object(vpkg, "fedora_release_from_root", return_value="44"),
+                patch.object(vpkg, "running_live_mode", return_value=False),
+                patch.object(vpkg, "RPMFUSION_KEYS", (missing,)),
+                patch.object(vpkg.shutil, "which", return_value="/usr/bin/systemd-sysext"),
+                patch("vpkg_libdnf._bindings", return_value=object()),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                self.assertEqual(vpkg.main(["doctor"]), 1)
+            self.assertIn("trust key missing", errors.getvalue())
 
 
 @unittest.skipUnless(running_in_qemu_vm(), "Veyra package tests run only inside QEMU/KVM")
@@ -204,7 +292,9 @@ class VpkgPolicyTests(unittest.TestCase):
                 vpkg,
                 "run",
                 return_value=subprocess.CompletedProcess([], 0, str(uki) + "\n", ""),
-            ), patch.object(vpkg, "SYS_FIRMWARE_EFI", efi_dir):
+            ), patch.object(vpkg, "SYS_FIRMWARE_EFI", efi_dir), patch.object(
+                vpkg, "running_live_mode", return_value=False
+            ):
                 self.assertEqual(vpkg.running_uki_version(), "1.2.3-test")
 
     def test_pending_completion_requires_exact_roothash_and_uki_version(self) -> None:
@@ -789,15 +879,19 @@ class VpkgPolicyTests(unittest.TestCase):
         )
 
     def test_veyra_extension_transactions_use_only_the_selected_channel(self) -> None:
-        selected = vpkg.selected_repo_ids(
-            "testing",
-            include_rpmfusion=False,
-            include_upstream=False,
-        )
-        self.assertEqual(
-            selected,
-            ("veyra-testing",),
-        )
+        # Source-built Live media intentionally has no production Veyra key.
+        # Validate this installed-system routing only with an explicit test key,
+        # rather than accidentally relying on the CI host's /usr contents.
+        with tempfile.TemporaryDirectory() as temporary:
+            key = Path(temporary) / "RPM-GPG-KEY-VEYRA"
+            key.write_text("fixture key", encoding="utf-8")
+            with patch.object(vpkg, "VPKG_PUBLIC_KEY", key):
+                selected = vpkg.selected_repo_ids(
+                    "testing",
+                    include_rpmfusion=False,
+                    include_upstream=False,
+                )
+        self.assertEqual(selected, ("veyra-testing",))
 
     def test_channel_switch_uses_the_package_transaction_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

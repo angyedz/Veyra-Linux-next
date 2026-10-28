@@ -28,6 +28,30 @@ class InstallerManifestTests(unittest.TestCase):
 
         self.assertEqual(installer.minimum_disk_size(ROOT / "mkosi.repart"), expected)
 
+    def test_installed_user_is_created_without_inheriting_live_passwords(self) -> None:
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(installer, "command") as command, mock.patch.object(
+                installer.subprocess, "run"
+            ) as run:
+                installer.configure_installed_accounts(
+                    pathlib.Path(directory), "tester", "user secret", "root secret"
+                )
+            command.assert_called_once()
+            self.assertIn("wheel", command.call_args.args[0])
+            args, kwargs = run.call_args
+            self.assertEqual(args[0][-1], "/usr/sbin/chpasswd")
+            self.assertEqual(kwargs["input"], "tester:user secret\nroot:root secret\n")
+            self.assertEqual(kwargs["check"], True)
+
+    def test_installed_account_input_rejects_invalid_users_before_erasure(self) -> None:
+        import unittest.mock as mock
+
+        with mock.patch("builtins.input", return_value="root"):
+            with self.assertRaises(installer.InstallError):
+                installer.requested_account()
+
     def test_package_manifest_rejects_unsafe_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = pathlib.Path(directory) / "mkosi.conf"

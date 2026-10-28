@@ -34,6 +34,8 @@ class IsoQemuSmokeTests(unittest.TestCase):
         self.assertNotIn("pflash", rendered)
         self.assertNotIn("accel=kvm", rendered)
         self.assertIn("-boot order=d,menu=off", rendered)
+        self.assertIn("-vga none -device virtio-vga", rendered)
+        self.assertNotIn("-vga virtio", rendered)
 
     def test_uefi_uses_disposable_varstore(self):
         args = iso_qemu.qemu_args(
@@ -72,6 +74,20 @@ class IsoQemuSmokeTests(unittest.TestCase):
             with self.assertRaises(iso_qemu.SmokeError):
                 iso_qemu.ppm_to_png(source, result)
 
+    def test_black_vs_nonblack_qemu_scanout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "black.ppm"
+            path.write_bytes(b"P6\n64 64\n255\n" + b"\x00" * (64 * 64 * 3))
+            self.assertFalse(iso_qemu.ppm_has_visible_pixels(path))
+            # One lit cursor pixel must never count as a visible desktop.
+            path.write_bytes(b"P6\n64 64\n255\n" + b"\x00" * (64 * 64 * 3 - 1) + b"\xff")
+            self.assertFalse(iso_qemu.ppm_has_visible_pixels(path))
+            path.write_bytes(b"P6\n64 64\n255\n" + b"\x60" * (64 * 64 * 3))
+            self.assertTrue(iso_qemu.ppm_has_visible_pixels(path))
+            with self.assertRaises(iso_qemu.SmokeError):
+                path.write_bytes(b"P6\n64 64\n255\n" + b"\x00")
+                iso_qemu.ppm_has_visible_pixels(path)
+
     def test_serial_markers_not_fake_success(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "serial.log"
@@ -80,6 +96,47 @@ class IsoQemuSmokeTests(unittest.TestCase):
             self.assertTrue(outcome["kernel_seen"])
             self.assertTrue(outcome["init_seen"])
             self.assertFalse(outcome["live_desktop_confirmed"])
+
+    def test_session_crash_is_detected_from_serial_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "serial.log"
+            path.write_text(
+                "Linux version 7.2\\n"
+                "systemd[1]: booted\\n"
+                "Starting Wayland user session: /usr/bin/startplasma-wayland\\n"
+                "Session crashed (exit code 127).\\n"
+                "PAM unable to dlopen(/usr/lib64/security/pam_systemd.so)\\n",
+                encoding="utf-8",
+            )
+            signals = iso_qemu.serial_signals(path)
+            self.assertTrue(signals["plasma_session_invoked"])
+            self.assertTrue(signals["plasma_session_crashed"])
+            self.assertTrue(signals["pam_systemd_missing"])
+            self.assertFalse(signals["live_desktop_confirmed"])
+
+    def test_kde_runtime_errors_are_detected_from_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "serial.log"
+            path.write_text(
+                "plasma-ksplash.service: Failed with result 'timeout'.\n"
+                'module "org.kde.milou" is not installed\n'
+                "Failed to open drm node : No such file or directory\n",
+                encoding="utf-8",
+            )
+            signals = iso_qemu.serial_signals(path)
+            self.assertTrue(signals["ksplash_timed_out"])
+            self.assertTrue(signals["milou_qml_missing"])
+            self.assertTrue(signals["kwin_drm_node_error"])
+
+    def test_vpkg_guest_markers_are_not_assumed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "serial.log"
+            path.write_text("Linux version 6.0\nsystemd[1]: Started\n", encoding="utf-8")
+            self.assertFalse(iso_qemu.serial_signals(path)["vpkg_guest_test_passed"])
+            path.write_text("VEYRA_LIVE_VPKG_CI_BEGIN\nVEYRA_LIVE_VPKG_CI_PASS\n", encoding="utf-8")
+            self.assertTrue(iso_qemu.serial_signals(path)["vpkg_guest_test_passed"])
+            path.write_text("VEYRA_LIVE_VPKG_CI_FAILURE\n", encoding="utf-8")
+            self.assertTrue(iso_qemu.serial_signals(path)["vpkg_guest_test_failed"])
 
     def test_output_refuses_reuse_before_invoking_qemu(self):
         with tempfile.TemporaryDirectory() as directory:

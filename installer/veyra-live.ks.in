@@ -30,7 +30,9 @@ dracut-live
 e2fsprogs
 erofs-utils
 flatpak
-# Required for Lorax's EFI/BOOT ISO generation (gcdx64.efi).
+# Required by Lorax's legacy EFI/BOOT templates: shimx64.efi and gcdx64.efi.
+# This belongs only to the legacy diagnostic ISO, not the native Live builder.
+shim-x64
 grub2-efi-x64
 grub2-efi-x64-cdboot
 grub2-pc
@@ -93,8 +95,12 @@ if rpm --root="$live_root" -qa --qf '%{NAME}\n' | grep -Eq '(^|-)anaconda($|-)';
   echo "Anaconda packages must not be included in the Veyra Live ISO." >&2
   exit 1
 fi
-rpm --root="$live_root" -q calamares calamares-interactiveterminal grub2-efi-x64-cdboot dracut-config-generic
+rpm --root="$live_root" -q calamares calamares-interactiveterminal shim-x64 grub2-efi-x64-cdboot dracut-config-generic
 # Fail early if Lorax cannot find the EFI bootloader required by its ISO template.
+test -s "$live_root/boot/efi/EFI/fedora/shimx64.efi" || {
+  echo "UEFI ISO bootloader missing: /boot/efi/EFI/fedora/shimx64.efi" >&2
+  exit 1
+}
 test -s "$live_root/boot/efi/EFI/fedora/gcdx64.efi" || {
   echo "UEFI ISO bootloader missing: /boot/efi/EFI/fedora/gcdx64.efi" >&2
   exit 1
