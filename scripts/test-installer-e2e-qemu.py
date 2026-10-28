@@ -89,6 +89,10 @@ grep -Eq 'roothash=[0-9a-f]{64}' /proc/cmdline
 test "$(findmnt -no FSTYPE /)" = erofs
 findmnt -no OPTIONS / | grep -Eq '(^|,)ro(,|$)'
 test "$(findmnt -no FSTYPE /home)" = ext4
+getent passwd veyra-ci >/dev/null
+test -d /home/veyra-ci
+test "$(stat -c %U /home/veyra-ci)" = veyra-ci
+id -nG veyra-ci | grep -wq wheel
 systemctl is-active --quiet graphical.target
 systemctl is-active --quiet display-manager.service
 test -x /usr/bin/vpkg
