@@ -127,6 +127,12 @@ fi
 
 vpkg channel testing
 vpkg install veyra-shell-tools
+echo "VEYRA_VPKG_CI_SIGNED_INSTALL_TRANSACTION_PASS"
+# Confirm activation independently before checking individual installed tools.
+# An RPM already written during preflight would be present in the private DB
+# without an active overlay; this catches exactly that regression in QEMU.
+assert_extension_active veyra-shell-tools
+echo "VEYRA_VPKG_CI_SYSEXT_ACTIVATION_PASS"
 installed="$(rpm --root "$root" -q --qf '%{VERSION}' veyra-shell-tools)"
 test "$installed" = "0.1.0"
 command -v fzf >/dev/null
