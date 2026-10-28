@@ -149,14 +149,14 @@ Packages=systemd
             staged_kernel, staged_initrd, staged_release = installer.stage_installer_boot_assets(
                 root, kernel, initrd, host_assets
             )
+            with self.assertRaisesRegex(installer.InstallError, "overwrite staged"):
+                installer.stage_installer_boot_assets(root, kernel, initrd, host_assets)
             # The scratch disk is unmounted/reformatted at this point.
             import shutil
             shutil.rmtree(root)
             self.assertEqual(staged_kernel.read_bytes(), b"kernel")
             self.assertEqual(staged_initrd.read_bytes(), b"initrd")
             self.assertEqual(staged_release.read_bytes(), b"ID=fedora\\nVERSION_ID=44\\n")
-            with self.assertRaisesRegex(installer.InstallError, "overwrite staged"):
-                installer.stage_installer_boot_assets(root, kernel, initrd, host_assets)
 
     def test_boot_assets_reject_missing_initrd_and_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -179,7 +179,7 @@ Packages=systemd
 
     def test_installer_stages_boot_files_before_reformat_then_uses_copies(self) -> None:
         source = (ROOT / "scripts/veyra-install.py").read_text(encoding="utf-8")
-        installed = source.split("def install_system(", 1)[1].split("\\ndef main()", 1)[0]
+        installed = source.split("def install_system(", 1)[1].split("\ndef main()", 1)[0]
         stage_call = installed.index("stage_installer_boot_assets(")
         scratch_unmount = installed.index('command(["umount", str(SCRATCH_MOUNT)])')
         ext4_format = installed.index('command(["mkfs.ext4"')
