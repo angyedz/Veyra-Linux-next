@@ -30,8 +30,10 @@ def verify(report: dict) -> list[str]:
         screenshots = item.get("screenshots")
         if not screenshots:
             issues.append(f"{mode}: no guest screenshot recorded")
-        elif isinstance(screenshots[-1], dict) and screenshots[-1].get("non_black_pixels_detected") is False:
-            issues.append(f"{mode}: final screenshot remains completely black")
+        elif not isinstance(screenshots, list) or not isinstance(screenshots[-1], dict):
+            issues.append(f"{mode}: final screenshot evidence is malformed")
+        elif screenshots[-1].get("non_black_pixels_detected") is not True:
+            issues.append(f"{mode}: final screenshot has no confirmed visible framebuffer (black or unchecked)")
         signals = item.get("serial_signals", {})
         if not isinstance(signals, dict) or not signals.get("kernel_seen"):
             issues.append(f"{mode}: no kernel startup evidence in serial output")
