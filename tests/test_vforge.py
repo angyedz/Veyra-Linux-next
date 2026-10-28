@@ -214,6 +214,27 @@ class VforgeNativeTests(unittest.TestCase):
         self.assertEqual(mountpoints, [str(target)])
         self.assertEqual(run.call_args.args[0][1], "--bind")
         self.assertTrue(run.call_args.args[0][2].startswith("/proc/self/fd/"))
+        descriptor = int(run.call_args.args[0][2].rsplit("/", 1)[1])
+        self.assertEqual(run.call_args.kwargs["pass_fds"], (descriptor,))
+
+    def test_pinned_descriptor_reaches_subprocess(self) -> None:
+        # This is the exact failure the real QEMU guest hit: mount(8)
+        # cannot resolve /proc/self/fd/N when Popen closes N at exec.
+        source = self.root / "sealed-source"
+        source.write_text("vforge-pinned-test\n", encoding="ascii")
+        import os
+        import sys
+        descriptor = os.open(str(source), os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            result = vforge.run(
+                [sys.executable, "-c",
+                 "import os,sys; print(os.readlink('/proc/self/fd/' + sys.argv[1]))",
+                 str(descriptor)],
+                pass_fds=(descriptor,),
+            )
+            self.assertEqual(result.stdout.strip(), str(source))
+        finally:
+            os.close(descriptor)
 
         link = self.root / "device-link"
         link.symlink_to(source)
