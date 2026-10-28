@@ -19,7 +19,7 @@ def good_report():
             {
                 "mode": mode,
                 "errors": [],
-                "screenshots": [{"file": "screen-120.png"}],
+                "screenshots": [{"file": "screen-300.png", "non_black_pixels_detected": True}],
                 "serial_signals": {
                     "kernel_seen": True,
                     "init_seen": True,
@@ -66,7 +66,20 @@ class FirmwareBootGateTests(unittest.TestCase):
         report = good_report()
         report["modes"][0]["screenshots"][-1]["non_black_pixels_detected"] = False
         failures = module.verify(report)
-        self.assertTrue(any("completely black" in failure for failure in failures))
+        self.assertTrue(any("visible framebuffer" in failure for failure in failures))
+
+    def test_missing_or_malformed_screenshot_visibility_is_not_green(self):
+        for missing in (None, "", 0):
+            report = good_report()
+            frame = report["modes"][0]["screenshots"][-1]
+            frame.pop("non_black_pixels_detected")
+            if missing is not None:
+                frame["non_black_pixels_detected"] = missing
+            with self.subTest(evidence=missing):
+                self.assertTrue(any("visible framebuffer" in text for text in module.verify(report)))
+        report = good_report()
+        report["modes"][0]["screenshots"] = {"last_frame": "screen-300.png"}
+        self.assertTrue(any("malformed" in text for text in module.verify(report)))
 
     def test_qemu_failure_or_unchecked_firmware_fails(self):
         report = good_report()
