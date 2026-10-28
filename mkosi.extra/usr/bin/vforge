@@ -613,6 +613,13 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
     verify_private_directory(runtime_root, "user runtime directory")
     runtime_parent = runtime_root / "vforge"
     ensure_private_directory(runtime_parent)
+    # The EROFS /var is owned by the host root (unmapped in a rootless user
+    # namespace). Attempting to create /var/lib inside the overlay failed with
+    # EACCES in real Fedora OTA QEMU, even though the OverlayFS mount worked.
+    # Bind a persistent *per-environment* private /var owned by this user.
+    # Never recursively bind the host's /var into the isolated environment.
+    private_var = path / "var"
+    ensure_private_directory(private_var)
     with tempfile.TemporaryDirectory(prefix=f"{metadata['name']}-", dir=runtime_parent) as temporary:
         root = Path(temporary)
         lower, merged = root / "lower", root / "merged"
@@ -653,8 +660,11 @@ def run_environment(path: Path, command: Sequence[str]) -> int:
                     item["source"], str(destination),
                     readonly=item["access"] == "read-only", mountpoints=mountpoints,
                 )
-            for name in ("proc", "sys", "dev", "tmp", "run", "home"):
+            for name in ("proc", "sys", "dev", "tmp", "run", "home", "var"):
                 (merged / name).mkdir(exist_ok=True)
+            # A dedicated per-environment /var avoids the EROFS permission
+            # trap while retaining vpkg cache/history across Vforge sessions.
+            mount_at(merged / "var", ["mount", "--bind", str(private_var), str(merged / "var")])
             mount_at(merged / "proc", ["mount", "-t", "proc", "proc", str(merged / "proc")])
             mount_at(merged / "sys", ["mount", "-t", "tmpfs", "-o", "mode=755,nosuid,nodev", "tmpfs", str(merged / "sys")])
             mount_at(merged / "dev", ["mount", "-t", "tmpfs", "-o", "mode=755,nosuid", "tmpfs", str(merged / "dev")])
