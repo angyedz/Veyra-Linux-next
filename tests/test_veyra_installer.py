@@ -113,6 +113,7 @@ Packages=systemd
         self.assertIn("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=present", vm_check)
         self.assertIn("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=absent-rejected", vm_check)
         self.assertIn("Live installer accepted installation without a Recovery UKI", vm_check)
+        self.assertIn("assets/veyra-recovery[.]efi|Recovery UKI", vm_check)
         self.assertLess(vm_check.index("step installer-preflight"),
                         vm_check.index("VEYRA_LIVE_VPKG_CI_PASS"))
         # The VM must never run the destructive installer without --preflight.
