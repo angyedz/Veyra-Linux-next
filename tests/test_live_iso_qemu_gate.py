@@ -19,7 +19,7 @@ def good_report():
             {
                 "mode": mode,
                 "errors": [],
-                "screenshots": [{"file": "screen-300.png", "non_black_pixels_detected": True}],
+                "screenshots": [{"file": "screen-300.png", "seconds_after_launch": 300, "non_black_pixels_detected": True}],
                 "serial_signals": {
                     "kernel_seen": True,
                     "init_seen": True,
@@ -80,6 +80,17 @@ class FirmwareBootGateTests(unittest.TestCase):
         report = good_report()
         report["modes"][0]["screenshots"] = {"last_frame": "screen-300.png"}
         self.assertTrue(any("malformed" in text for text in module.verify(report)))
+
+    def test_early_boot_splash_does_not_count_as_a_desktop(self):
+        for seconds in (0, 60, 180, 299, None):
+            report = good_report()
+            frame = report["modes"][0]["screenshots"][-1]
+            if seconds is None:
+                frame.pop("seconds_after_launch")
+            else:
+                frame["seconds_after_launch"] = seconds
+            with self.subTest(seconds=seconds):
+                self.assertTrue(any("too early" in failure for failure in module.verify(report)))
 
     def test_qemu_failure_or_unchecked_firmware_fails(self):
         report = good_report()
