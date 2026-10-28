@@ -132,6 +132,14 @@ Packages=systemd
         self.assertIn('if [[ "${EUID}" -eq 0 ]]; then', builder)
         self.assertIn("/usr/bin/sudo -n /usr/libexec/veyra-installer --preflight", builder)
 
+    def test_lorax_calamares_overridden_data_root_resolves_qml(self) -> None:
+        kickstart = (ROOT / "installer/veyra-live.ks.in").read_text(encoding="utf-8")
+        self.assertIn('test -d "$live_root/usr/share/calamares/qml"', kickstart)
+        self.assertIn('ln -s ../../usr/share/calamares/qml "$live_root/etc/calamares/qml"', kickstart)
+        self.assertIn('test -d "$live_root/etc/calamares/qml"', kickstart)
+        self.assertIn('Calamares QML package resources are missing.', kickstart)
+        self.assertNotIn('mkdir -p "$live_root/etc/calamares/qml"', kickstart)
+
     def test_live_iso_has_both_firmware_bootloaders(self) -> None:
         kickstart = (ROOT / "installer/veyra-live.ks.in").read_text()
         packages = kickstart.split("%packages", 1)[1].split("%end", 1)[0]
