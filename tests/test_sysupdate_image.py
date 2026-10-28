@@ -166,6 +166,19 @@ class SysupdateImageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "invalid dm-verity root hash"):
                 sysupdate_image.patch_uki(source, source.with_name("target.efi"), "0.1.1", "bad", "graphical.target")
 
+    def test_disposable_ota_target_is_explicitly_enabled_for_real_guest_boot(self) -> None:
+        # Previously the target and services were written to /etc but never
+        # pulled into the transaction. Both signed OTA QEMU variants then
+        # timed out with no prepare/rollback marker.
+        source = SCRIPT.read_text(encoding="utf-8")
+        fixture = source.split("def inject_guest_ota_test(", 1)[1].split(
+            "\\ndef inject_bios_guest_ota_test(", 1
+        )[0]
+        self.assertIn('ota_wants = systemd / "graphical.target.wants"', fixture)
+        self.assertIn('ota_link = ota_wants / "veyra-ota-ci.target"', fixture)
+        self.assertIn('ota_link.symlink_to("../veyra-ota-ci.target")', fixture)
+        self.assertIn("ConditionPathExists=/var/lib/veyra/vpkg-ci-stage-pass", fixture)
+
     def test_boot_log_normalizer_preserves_systemd_markers_around_terminal_escapes(self) -> None:
         log = (
             "\x1b]3008;start=boot\x1b\\"
