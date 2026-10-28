@@ -110,6 +110,7 @@ Packages=systemd
         vm_check = (ROOT / "scripts/veyra-live-vpkg-vm-check.sh").read_text(encoding="utf-8")
         self.assertIn("step installer-preflight", vm_check)
         self.assertIn("/usr/libexec/veyra-installer --preflight", vm_check)
+        self.assertEqual(vm_check.count("/usr/bin/runuser -u liveuser -- /usr/bin/sudo -n /usr/libexec/veyra-installer --preflight"), 2)
         self.assertIn("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=present", vm_check)
         self.assertIn("VEYRA_LIVE_INSTALLER_PREFLIGHT_PASS recovery=absent-rejected", vm_check)
         self.assertIn("Live installer accepted installation without a Recovery UKI", vm_check)
