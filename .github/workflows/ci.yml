@@ -246,6 +246,10 @@ jobs:
           python3 -c 'from pathlib import Path; p=Path("scripts/veyra-install.py"); compile(p.read_text(), str(p), "exec")'
       - name: Test Recovery source and image installation contract
         run: python3 -m unittest discover -s tests -p 'test_recovery*.py' -v
+      - name: Test standalone Recovery QEMU harness safety
+        run: |
+          python3 -m py_compile scripts/test-recovery-uki-qemu.py tests/test_recovery_qemu.py
+          python3 -m unittest discover -s tests -p 'test_recovery_qemu.py' -v
       - name: Test v-dri sysfs inventory against isolated fixtures
         run: python3 -m unittest discover -s tests -p 'test_vdri.py' -v
       - name: Check v-dri syntax
@@ -299,6 +303,23 @@ jobs:
             rpm -q --qf "%{EVR}\\n" "$package" | grep -Eq "\\.fc44$"
           done
           '
+      - name: Boot standalone Recovery UKI in disposable UEFI QEMU
+        run: |
+          set -euo pipefail
+          mapfile -t recovery_ukis < <(find mkosi.output -maxdepth 1 -type f -name 'veyra-recovery*.efi' -print)
+          test "${#recovery_ukis[@]}" -eq 1
+          python3 scripts/test-recovery-uki-qemu.py \
+            --uki "${recovery_ukis[0]}" \
+            --report-dir build/recovery-uki-qemu --timeout 480
+      - name: Always preserve independent Recovery QEMU serial and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-independent-qemu-diagnostics
+          path: build/recovery-uki-qemu/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Verify the packages inside the built image
         run: |
           sudo --preserve-env=PATH,VEYRA_MKOSI_RUNNER,GITHUB_ACTIONS,RUNNER_OS scripts/mkosi.sh shell -- sh -eu -c "$(cat <<'VERIFY_PACKAGES'
