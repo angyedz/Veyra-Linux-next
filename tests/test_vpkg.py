@@ -936,6 +936,63 @@ class VpkgPolicyTests(unittest.TestCase):
                 inspect.assert_called_once_with("upgrade", channel=channel)
                 transaction.assert_called_once_with("upgrade")
 
+    def test_signed_extension_preflight_never_mutates_live_rpm_installroot(self) -> None:
+        # libdnf5 Session.resolve() executes a transaction, so the inspection
+        # session must never receive the active root itself. Reproduce that
+        # side effect and verify it is confined to the temporary snapshot.
+        with tempfile.TemporaryDirectory() as temporary:
+            live_root = Path(temporary) / "live-rpm-root"
+            live_root.mkdir()
+            (live_root / "installed-state").write_text("original")
+            inspection_roots = []
+
+            def inspect_session(root, _channel, **_kwargs):
+                self.assertNotEqual(root, live_root)
+                inspection_roots.append(root)
+                self.assertEqual((root / "installed-state").read_text(), "original")
+
+                class Session:
+                    def resolve(self, *_args, **_kwargs):
+                        (root / "installed-state").write_text("modified by transaction")
+                        (root / "new-rpm").write_text("installed")
+                        class Result:
+                            changes = []
+                        return Result()
+                return Session()
+
+            with (
+                patch.object(vpkg, "VPKG_ROOT", live_root),
+                patch.object(vpkg, "selected_channel", return_value="testing"),
+                patch.object(vpkg, "package_session", side_effect=inspect_session),
+                patch.object(vpkg, "inspect_extension_rpms", return_value=[]),
+            ):
+                self.assertFalse(vpkg.download_for_inspection("upgrade"))
+            self.assertEqual((live_root / "installed-state").read_text(), "original")
+            self.assertFalse((live_root / "new-rpm").exists())
+            self.assertEqual(len(inspection_roots), 1)
+            self.assertFalse(inspection_roots[0].exists(), "preflight root must be ephemeral")
+
+    def test_signed_extension_preflight_creates_private_root_if_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            live_root = Path(temporary) / "never-initialized"
+            def inspect_session(root, _channel, **_kwargs):
+                self.assertTrue(root.is_dir())
+                self.assertNotEqual(root, live_root)
+                class Session:
+                    def resolve(self, *_args, **_kwargs):
+                        class Result:
+                            changes = []
+                        return Result()
+                return Session()
+            with (
+                patch.object(vpkg, "VPKG_ROOT", live_root),
+                patch.object(vpkg, "selected_channel", return_value="testing"),
+                patch.object(vpkg, "package_session", side_effect=inspect_session),
+                patch.object(vpkg, "inspect_extension_rpms", return_value=[]),
+            ):
+                self.assertFalse(vpkg.download_for_inspection("upgrade"))
+            self.assertFalse(live_root.exists(), "inspection must not initialize real RPM database")
+
     def test_upgrade_preflight_resolves_from_api_with_refresh_requested(self) -> None:
         with (
             patch.object(vpkg, "selected_channel", return_value="testing"),
