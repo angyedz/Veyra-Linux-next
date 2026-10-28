@@ -614,7 +614,9 @@ jobs:
   installer-e2e-qemu:
     name: Real Live install and installed UEFI boot on disposable disk
     needs: live-installer-iso
-    if: ${{ needs.live-installer-iso.result == 'success' }}
+    # Explicit always() avoids inheriting the failed upstream Fedora/OTA
+    # dependency: if the ISO itself succeeded, install it even if OTA failed.
+    if: ${{ always() && needs.live-installer-iso.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
