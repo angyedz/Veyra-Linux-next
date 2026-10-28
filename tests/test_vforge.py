@@ -261,6 +261,49 @@ class VforgeNativeTests(unittest.TestCase):
         with self.assertRaisesRegex(vforge.VforgeError, "unsafe or non-writable"):
             vforge.prepare_rootless_overlay_upper(upper)
 
+    def test_delete_rootless_overlay_000_mode_kernel_workdir(self) -> None:
+        path = vforge.create("backend")
+        internal = path / "work/work"
+        internal.mkdir(mode=0o700)
+        (internal / "overlay-internal-marker").write_text("private metadata")
+        internal.chmod(0o000)
+        self.assertEqual(internal.stat().st_mode & 0o777, 0)
+        self.assertEqual(vforge.main(["delete", "backend"]), 0)
+        self.assertFalse(path.exists(), "private workdir must not block deletion")
+
+    def test_rootless_overlay_work_cleanup_only_adjusts_known_private_child(self) -> None:
+        path = vforge.create("backend")
+        work = path / "work"
+        vforge.prepare_rootless_overlay_work_for_removal(work)
+        internal = work / "work"
+        internal.mkdir()
+        internal.chmod(0o000)
+        vforge.prepare_rootless_overlay_work_for_removal(work)
+        self.assertEqual(internal.stat().st_mode & 0o777, 0o700)
+        vforge.prepare_rootless_overlay_work_for_removal(work)
+        self.assertEqual(internal.stat().st_mode & 0o777, 0o700)
+
+    def test_rootless_overlay_work_cleanup_rejects_symlink_escape(self) -> None:
+        path = vforge.create("backend")
+        outside = self.root / "external"
+        outside.mkdir()
+        internal = path / "work/work"
+        internal.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(vforge.VforgeError, "unsafe private OverlayFS"):
+            vforge.prepare_rootless_overlay_work_for_removal(path / "work")
+        self.assertTrue(outside.is_dir())
+        self.assertTrue(internal.is_symlink())
+        self.assertEqual(vforge.main(["delete", "backend"]), 1)
+        self.assertTrue(path.is_dir())
+
+    def test_rootless_overlay_work_cleanup_rejects_unexpected_regular_file(self) -> None:
+        path = vforge.create("backend")
+        marker = path / "work/work"
+        marker.write_text("must not chmod arbitrary files")
+        with self.assertRaisesRegex(vforge.VforgeError, "unsafe private OverlayFS"):
+            vforge.prepare_rootless_overlay_work_for_removal(path / "work")
+        self.assertEqual(marker.read_text(), "must not chmod arbitrary files")
+
     def test_rootless_var_bind_rejects_preexisting_symlink(self) -> None:
         path = vforge.create("backend")
         parent = self.root / "external-data"
