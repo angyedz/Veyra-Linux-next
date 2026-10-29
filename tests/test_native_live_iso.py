@@ -173,6 +173,8 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn('if (p.height > 44) p.height = 40;', SCRIPT)
         self.assertIn('widget.writeConfig("groupingStrategy", 1)', SCRIPT)
         self.assertIn('widget.writeConfig("maxStripes", 1)', SCRIPT)
+        self.assertIn('widget.writeConfig("forceStripes", true)', SCRIPT)
+        self.assertIn('widget.writeConfig("fillFreeSpace", false)', SCRIPT)
         for flavor in ("dark", "light"):
             panel = (ROOT / f"mkosi.extra/usr/share/plasma/desktoptheme/veyra-glacier-{flavor}/widgets/panel-background.svg").read_text()
             self.assertEqual(panel.count('height="2" fill="#000" fill-opacity="0"'), 4)
