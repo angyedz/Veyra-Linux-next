@@ -172,7 +172,8 @@ search --no-floppy --file --set=root /grub2/grub.cfg
 insmod loadenv
 insmod normal
 insmod linux
-set timeout=0
+set timeout_style=menu
+set timeout=5
 set veyra_stable_version={fallback_version}
 set veyra_stable_roothash={fallback_roothash}
 load_env --file=/grub2/grubenv
