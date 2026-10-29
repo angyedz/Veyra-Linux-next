@@ -465,6 +465,12 @@ for (var p of panels()) {
             widget.currentConfigGroup = ["General"];
             widget.writeConfig("icon", "/usr/share/veyra/branding/veyra-logo.svg");
             widget.reloadConfig();
+        } else if (widget.type === "org.kde.plasma.taskmanager" ||
+                   widget.type === "org.kde.plasma.icontasks") {
+            widget.currentConfigGroup = ["General"];
+            widget.writeConfig("groupingStrategy", 1);
+            widget.writeConfig("maxStripes", 1);
+            widget.reloadConfig();
         }
     }
 }
