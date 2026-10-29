@@ -479,6 +479,9 @@ for (var p of panels()) {
             widget.currentConfigGroup = ["General"];
             widget.writeConfig("groupingStrategy", 1);
             widget.writeConfig("maxStripes", 1);
+            widget.writeConfig("forceStripes", true);
+            // Keep task buttons close to 1:1: do not let them expand into pills.
+            widget.writeConfig("fillFreeSpace", false);
             widget.reloadConfig();
         }
     }
