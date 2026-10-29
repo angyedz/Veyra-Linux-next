@@ -13,6 +13,8 @@ on:
       - 'tests/test_native_live_iso.py'
       - 'tests/test_vpkg.py'
       - 'mkosi.extra/usr/bin/vpkg'
+      - 'mkosi.extra/usr/lib/veyra/vpkg_libdnf.py'
+      - 'scripts/test-vpkg-real-rpm.py'
       - 'scripts/export-bootstrap-public-keys.sh'
   workflow_dispatch:
     inputs:
@@ -39,6 +41,18 @@ jobs:
       - run: python3 -m unittest discover -s tests -p 'test_vpkg.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu_gate.py' -v
+  real-vpkg-rpm-transaction:
+    needs: source-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libdnf5 Python bindings
+        run: dnf5 install -y python3 python3-libdnf5 rpm
+      - name: Install real tree RPM through vpkg's libdnf5 adapter
+        run: timeout --signal=INT --kill-after=15s 900s python3 -u scripts/test-vpkg-real-rpm.py
   compose:
     needs: source-tests
     runs-on: ubuntu-24.04
