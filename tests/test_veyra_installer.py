@@ -43,6 +43,34 @@ def write_recovery_fixture(path: pathlib.Path, *, image_id: str = "veyra-recover
 
 
 class InstallerManifestTests(unittest.TestCase):
+    def test_repositories_are_refreshed_before_destructive_repart(self) -> None:
+        from unittest import mock
+        import subprocess
+
+        with mock.patch.object(installer.subprocess, "run") as run:
+            installer.verify_package_repository_access()
+        run.assert_called_once_with(
+            ["dnf5", "--releasever=44", "--refresh", "makecache"],
+            check=True, timeout=180,
+        )
+
+        source = (ROOT / "scripts/veyra-install.py").read_text()
+        action = source.split("def install_system(", 1)[1].split("\ndef main()", 1)[0]
+        self.assertLess(
+            action.index("verify_package_repository_access()"),
+            action.index('"systemd-repart", "--dry-run=no", "--empty=force"'),
+        )
+
+    def test_repository_failure_aborts_before_erasing_disk(self) -> None:
+        from unittest import mock
+        import subprocess
+        with mock.patch.object(installer.subprocess, "run", side_effect=subprocess.TimeoutExpired("dnf5", 180)):
+            with self.assertRaisesRegex(installer.InstallError, "NOT changed"):
+                installer.verify_package_repository_access()
+        with mock.patch.object(installer.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "dnf5")):
+            with self.assertRaisesRegex(installer.InstallError, "NOT changed"):
+                installer.verify_package_repository_access()
+
     def test_live_installer_uses_the_veyra_package_manifest(self) -> None:
         version, packages = installer.package_manifest(ROOT)
 
