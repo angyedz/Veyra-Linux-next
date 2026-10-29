@@ -47,6 +47,20 @@ class GlacierThemeTests(unittest.TestCase):
         self.assertEqual(buttons["ButtonsOnLeft"], "")
         self.assertEqual(buttons["ButtonsOnRight"], "IAX")
 
+    def test_active_task_indicators_have_small_square_corners(self):
+        import xml.etree.ElementTree as ET
+        for flavor in ("dark", "light"):
+            path = ROOT / f"mkosi.extra/usr/share/plasma/desktoptheme/veyra-glacier-{flavor}/widgets/tasks.svg"
+            root = ET.parse(path).getroot()
+            ids = {el.get("id") for el in root.iter()}
+            self.assertIn("focus-topleft", ids)
+            self.assertIn("focus-bottomright", ids)
+            self.assertIn("focus-center", ids)
+            contents = path.read_text()
+            self.assertIn("A4 4", contents)
+            self.assertNotIn("A12 12", contents)
+            self.assertIn('stroke-width="1"', contents)
+
     def test_user_home_is_untouched(self):
         self.assertFalse((ROOT / "mkosi.extra/home").exists())
         self.assertFalse((ROOT / "mkosi.extra/etc/skel/.config/kdeglobals").exists())
