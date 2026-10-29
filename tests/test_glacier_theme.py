@@ -72,7 +72,7 @@ class GlacierThemeTests(unittest.TestCase):
 
     def test_fastfetch_logo_is_vertically_offset(self):
         logo = ROOT / "mkosi.extra/usr/share/veyra/fastfetch/logo.txt"
-        self.assertTrue(logo.read_text().startswith("\\n\\n"))
+        self.assertTrue(logo.read_text().startswith(chr(10) * 2))
 
     def test_user_home_is_untouched(self):
         self.assertFalse((ROOT / "mkosi.extra/home").exists())
