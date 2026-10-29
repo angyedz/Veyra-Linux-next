@@ -459,6 +459,7 @@ ln -sfn ../veyra-live-plasma-vm-check.service \
 cat > "$root/usr/share/veyra/branding/configure-launcher.js" <<'EOF'
 var menus = ["org.kde.plasma.kickoff", "org.kde.plasma.kicker", "org.kde.plasma.simplemenu"];
 for (var p of panels()) {
+    if (p.height > 44) p.height = 40;
     for (var widget of p.widgets()) {
         if (menus.indexOf(widget.type) !== -1) {
             widget.currentConfigGroup = ["General"];
