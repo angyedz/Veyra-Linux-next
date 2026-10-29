@@ -34,6 +34,15 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn("source/assets/veyra-recovery.efi", SCRIPT)
         self.assertIn("Exec=/usr/libexec/veyra-live-launch-calamares", SCRIPT)
         self.assertIn("passwd --lock liveuser", SCRIPT)
+    def test_live_build_requires_functional_vpkg_runtime_and_all_upstream_sources(self):
+        self.assertIn('chroot "$root" /usr/bin/vpkg doctor', SCRIPT)
+        self.assertIn('VEYRA_LIVE_VPKG_REPOSITORIES_OK', SCRIPT)
+        for repo_id in (
+            "fedora", "updates", "rpmfusion-free", "rpmfusion-free-updates",
+            "rpmfusion-nonfree", "rpmfusion-nonfree-updates",
+        ):
+            self.assertIn('"' + repo_id + '"', SCRIPT)
+
     def test_passwordless_live_vpkg_is_narrow_and_disposable(self):
         self.assertIn("root:veyra", SCRIPT)
         self.assertIn("PermitRootLogin no", SCRIPT)
