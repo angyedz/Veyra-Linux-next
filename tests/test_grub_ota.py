@@ -24,6 +24,10 @@ class GrubOtaTests(unittest.TestCase):
         self.assertIn("insmod loadenv", config)
         self.assertIn("insmod linux", config)
         self.assertIn("load_env --file=/grub2/grubenv", config)
+        # Users must be able to manually select the stable slot on BIOS.
+        self.assertIn("set timeout_style=menu", config)
+        self.assertIn("set timeout=5", config)
+        self.assertNotIn("set timeout=0", config)
         self.assertIn("set default=veyra-stable", config)
         self.assertIn('set veyra_trial_tries_left=2', config)
         self.assertIn('set veyra_trial_tries_left=1', config)
