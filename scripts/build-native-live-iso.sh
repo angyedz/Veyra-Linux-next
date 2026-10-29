@@ -167,6 +167,23 @@ for unit in systemd-sysupdate.service systemd-sysupdate.timer \
 done
 # A package-manager and helper sanity check runs inside the composed root.
 chroot "$root" /usr/bin/vpkg --help >/dev/null
+# Fail image composition if vpkg's runtime or upstream repository definitions
+# are absent. A --help smoke alone cannot detect a missing libdnf5 binding.
+chroot "$root" /usr/bin/vpkg doctor || die "Live vpkg runtime is not ready"
+chroot "$root" /usr/bin/python3 - <<'PY'
+from configparser import ConfigParser
+from pathlib import Path
+repos = ConfigParser(interpolation=None)
+repos.read(sorted(str(p) for p in Path("/etc/yum.repos.d").glob("*.repo")))
+required = (
+    "fedora", "updates", "rpmfusion-free", "rpmfusion-free-updates",
+    "rpmfusion-nonfree", "rpmfusion-nonfree-updates",
+)
+missing = [name for name in required if name not in repos]
+if missing:
+    raise SystemExit("Live vpkg repository definitions missing: " + ", ".join(missing))
+print("VEYRA_LIVE_VPKG_REPOSITORIES_OK " + ",".join(required))
+PY
 [[ ! -e "$root/usr/bin/veyra-update" ]] || die "Live system must not ship installed OTA updater"
 [[ ! -d "$root/usr/lib/sysupdate.d" ]] || die "Live system must not contain A/B transfer rules"
 if [[ -n "${VEYRA_RECOVERY_UKI:-}" ]]; then
