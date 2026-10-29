@@ -1,53 +1,53 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="112" height="76" viewBox="0 0 112 76">
-<!-- Veyra Glacier light tasks: minimal nine-slice surfaces; decorative grid and borders removed. -->
-  <g id="normal-topleft"><path d="M12 0 V12 H0 C0 5.373 5.373 0 12 0 Z" fill="#F0F4FA"/></g>
-  <g id="normal-top"><rect x="12" y="0" width="36" height="12" fill="#F0F4FA"/></g>
-  <g id="normal-topright"><path d="M48 0 C54.627 0 60 5.373 60 12 H48 Z" fill="#F0F4FA"/></g>
-  <g id="normal-left"><rect x="0" y="12" width="12" height="36" fill="#F0F4FA"/></g>
-  <g id="normal-center"><rect x="12" y="12" width="36" height="36" fill="#F0F4FA"/></g>
-  <g id="normal-right"><rect x="48" y="12" width="12" height="36" fill="#F0F4FA"/></g>
-  <g id="normal-bottomleft"><path d="M0 48 H12 V60 C5.373 60 0 54.627 0 48 Z" fill="#F0F4FA"/></g>
-  <g id="normal-bottom"><rect x="12" y="48" width="36" height="12" fill="#F0F4FA"/></g>
-  <g id="normal-bottomright"><path d="M48 48 H60 C60 54.627 54.627 60 48 60 Z" fill="#F0F4FA"/></g>
-  <g id="hover-topleft"><path d="M12 0 V12 H0 C0 5.373 5.373 0 12 0 Z" fill="#E1EBF7"/></g>
-  <g id="hover-top"><rect x="12" y="0" width="36" height="12" fill="#E1EBF7"/></g>
-  <g id="hover-topright"><path d="M48 0 C54.627 0 60 5.373 60 12 H48 Z" fill="#E1EBF7"/></g>
-  <g id="hover-left"><rect x="0" y="12" width="12" height="36" fill="#E1EBF7"/></g>
-  <g id="hover-center"><rect x="12" y="12" width="36" height="36" fill="#E1EBF7"/></g>
-  <g id="hover-right"><rect x="48" y="12" width="12" height="36" fill="#E1EBF7"/></g>
-  <g id="hover-bottomleft"><path d="M0 48 H12 V60 C5.373 60 0 54.627 0 48 Z" fill="#E1EBF7"/></g>
-  <g id="hover-bottom"><rect x="12" y="48" width="36" height="12" fill="#E1EBF7"/></g>
-  <g id="hover-bottomright"><path d="M48 48 H60 C60 54.627 54.627 60 48 60 Z" fill="#E1EBF7"/></g>
-  <g id="focus-topleft"><path d="M12 0 V12 H0 C0 5.373 5.373 0 12 0 Z" fill="#D4E9FC"/></g>
-  <g id="focus-top"><rect x="12" y="0" width="36" height="12" fill="#D4E9FC"/></g>
-  <g id="focus-topright"><path d="M48 0 C54.627 0 60 5.373 60 12 H48 Z" fill="#D4E9FC"/></g>
-  <g id="focus-left"><rect x="0" y="12" width="12" height="36" fill="#D4E9FC"/></g>
-  <g id="focus-center"><rect x="12" y="12" width="36" height="36" fill="#D4E9FC"/></g>
-  <g id="focus-right"><rect x="48" y="12" width="12" height="36" fill="#D4E9FC"/></g>
-  <g id="focus-bottomleft"><path d="M0 48 H12 V60 C5.373 60 0 54.627 0 48 Z" fill="#D4E9FC"/></g>
-  <g id="focus-bottom"><rect x="12" y="48" width="36" height="12" fill="#D4E9FC"/></g>
-  <g id="focus-bottomright"><path d="M48 48 H60 C60 54.627 54.627 60 48 60 Z" fill="#D4E9FC"/></g>
-  <g id="attention-topleft"><path d="M12 0 V12 H0 C0 5.373 5.373 0 12 0 Z" fill="#FBE8D9"/></g>
-  <g id="attention-top"><rect x="12" y="0" width="36" height="12" fill="#FBE8D9"/></g>
-  <g id="attention-topright"><path d="M48 0 C54.627 0 60 5.373 60 12 H48 Z" fill="#FBE8D9"/></g>
-  <g id="attention-left"><rect x="0" y="12" width="12" height="36" fill="#FBE8D9"/></g>
-  <g id="attention-center"><rect x="12" y="12" width="36" height="36" fill="#FBE8D9"/></g>
-  <g id="attention-right"><rect x="48" y="12" width="12" height="36" fill="#FBE8D9"/></g>
-  <g id="attention-bottomleft"><path d="M0 48 H12 V60 C5.373 60 0 54.627 0 48 Z" fill="#FBE8D9"/></g>
-  <g id="attention-bottom"><rect x="12" y="48" width="36" height="12" fill="#FBE8D9"/></g>
-  <g id="attention-bottomright"><path d="M48 48 H60 C60 54.627 54.627 60 48 60 Z" fill="#FBE8D9"/></g>
-  <g id="minimized-topleft"><path d="M12 0 V12 H0 C0 5.373 5.373 0 12 0 Z" fill="#E9EFF6"/></g>
-  <g id="minimized-top"><rect x="12" y="0" width="36" height="12" fill="#E9EFF6"/></g>
-  <g id="minimized-topright"><path d="M48 0 C54.627 0 60 5.373 60 12 H48 Z" fill="#E9EFF6"/></g>
-  <g id="minimized-left"><rect x="0" y="12" width="12" height="36" fill="#E9EFF6"/></g>
-  <g id="minimized-center"><rect x="12" y="12" width="36" height="36" fill="#E9EFF6"/></g>
-  <g id="minimized-right"><rect x="48" y="12" width="12" height="36" fill="#E9EFF6"/></g>
-  <g id="minimized-bottomleft"><path d="M0 48 H12 V60 C5.373 60 0 54.627 0 48 Z" fill="#E9EFF6"/></g>
-  <g id="minimized-bottom"><rect x="12" y="48" width="36" height="12" fill="#E9EFF6"/></g>
-  <g id="minimized-bottomright"><path d="M48 48 H60 C60 54.627 54.627 60 48 60 Z" fill="#E9EFF6"/></g>
-  <rect id="hint-top-margin" x="72" y="4" width="2" height="10" fill="#000" fill-opacity="0"/>
-  <rect id="hint-right-margin" x="76" y="4" width="10" height="2" fill="#000" fill-opacity="0"/>
-  <rect id="hint-bottom-margin" x="88" y="4" width="2" height="10" fill="#000" fill-opacity="0"/>
-  <rect id="hint-left-margin" x="92" y="4" width="10" height="2" fill="#000" fill-opacity="0"/>
+  <!-- Veyra Glacier: compact 4px corner task indicators, no techno framing. -->
+  <g id="normal-topleft"><path d="M4 0 H4 V4 H0 A4 4 0 0 1 4 0 Z" fill="#F0F4FA"/><path d="M0.5 4 A3.5 3.5 0 0 1 4 .5" fill="none"/></g>
+  <g id="normal-top"><rect x="4" y="0" width="36" height="4" fill="#F0F4FA"/><path d="M4 .5 H40" fill="none"/></g>
+  <g id="normal-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#F0F4FA"/><path d="M40 .5 A3.5 3.5 0 0 1 43.5 4" fill="none"/></g>
+  <g id="normal-left"><rect x="0" y="4" width="4" height="36" fill="#F0F4FA"/><path d="M.5 4 V40" fill="none"/></g>
+  <g id="normal-center"><rect x="4" y="4" width="36" height="36" fill="#F0F4FA"/></g>
+  <g id="normal-right"><rect x="40" y="4" width="4" height="36" fill="#F0F4FA"/><path d="M43.5 4 V40" fill="none"/></g>
+  <g id="normal-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#F0F4FA"/><path d="M.5 40 A3.5 3.5 0 0 0 4 43.5" fill="none"/></g>
+  <g id="normal-bottom"><rect x="4" y="40" width="36" height="4" fill="#F0F4FA"/><path d="M4 43.5 H40" fill="none"/></g>
+  <g id="normal-bottomright"><path d="M40 40 H44 A4 4 0 0 1 40 44 Z" fill="#F0F4FA"/><path d="M43.5 40 A3.5 3.5 0 0 1 40 43.5" fill="none"/></g>
+  <g id="hover-topleft"><path d="M4 0 H4 V4 H0 A4 4 0 0 1 4 0 Z" fill="#EAF1F9"/><path d="M0.5 4 A3.5 3.5 0 0 1 4 .5" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="hover-top"><rect x="4" y="0" width="36" height="4" fill="#EAF1F9"/><path d="M4 .5 H40" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="hover-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#EAF1F9"/><path d="M40 .5 A3.5 3.5 0 0 1 43.5 4" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="hover-left"><rect x="0" y="4" width="4" height="36" fill="#EAF1F9"/><path d="M.5 4 V40" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="hover-center"><rect x="4" y="4" width="36" height="36" fill="#EAF1F9"/></g>
+  <g id="hover-right"><rect x="40" y="4" width="4" height="36" fill="#EAF1F9"/><path d="M43.5 4 V40" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="hover-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#EAF1F9"/><path d="M.5 40 A3.5 3.5 0 0 0 4 43.5" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="hover-bottom"><rect x="4" y="40" width="36" height="4" fill="#EAF1F9"/><path d="M4 43.5 H40" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="hover-bottomright"><path d="M40 40 H44 A4 4 0 0 1 40 44 Z" fill="#EAF1F9"/><path d="M43.5 40 A3.5 3.5 0 0 1 40 43.5" fill="none" stroke="#C6D7EB" stroke-width="1"/></g>
+  <g id="focus-topleft"><path d="M4 0 H4 V4 H0 A4 4 0 0 1 4 0 Z" fill="#DCEBFA"/><path d="M0.5 4 A3.5 3.5 0 0 1 4 .5" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="focus-top"><rect x="4" y="0" width="36" height="4" fill="#DCEBFA"/><path d="M4 .5 H40" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="focus-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#DCEBFA"/><path d="M40 .5 A3.5 3.5 0 0 1 43.5 4" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="focus-left"><rect x="0" y="4" width="4" height="36" fill="#DCEBFA"/><path d="M.5 4 V40" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="focus-center"><rect x="4" y="4" width="36" height="36" fill="#DCEBFA"/></g>
+  <g id="focus-right"><rect x="40" y="4" width="4" height="36" fill="#DCEBFA"/><path d="M43.5 4 V40" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="focus-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#DCEBFA"/><path d="M.5 40 A3.5 3.5 0 0 0 4 43.5" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="focus-bottom"><rect x="4" y="40" width="36" height="4" fill="#DCEBFA"/><path d="M4 43.5 H40" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="focus-bottomright"><path d="M40 40 H44 A4 4 0 0 1 40 44 Z" fill="#DCEBFA"/><path d="M43.5 40 A3.5 3.5 0 0 1 40 43.5" fill="none" stroke="#5597CC" stroke-width="1"/></g>
+  <g id="attention-topleft"><path d="M4 0 H4 V4 H0 A4 4 0 0 1 4 0 Z" fill="#FBE8D9"/><path d="M0.5 4 A3.5 3.5 0 0 1 4 .5" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="attention-top"><rect x="4" y="0" width="36" height="4" fill="#FBE8D9"/><path d="M4 .5 H40" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="attention-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#FBE8D9"/><path d="M40 .5 A3.5 3.5 0 0 1 43.5 4" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="attention-left"><rect x="0" y="4" width="4" height="36" fill="#FBE8D9"/><path d="M.5 4 V40" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="attention-center"><rect x="4" y="4" width="36" height="36" fill="#FBE8D9"/></g>
+  <g id="attention-right"><rect x="40" y="4" width="4" height="36" fill="#FBE8D9"/><path d="M43.5 4 V40" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="attention-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#FBE8D9"/><path d="M.5 40 A3.5 3.5 0 0 0 4 43.5" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="attention-bottom"><rect x="4" y="40" width="36" height="4" fill="#FBE8D9"/><path d="M4 43.5 H40" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="attention-bottomright"><path d="M40 40 H44 A4 4 0 0 1 40 44 Z" fill="#FBE8D9"/><path d="M43.5 40 A3.5 3.5 0 0 1 40 43.5" fill="none" stroke="#D49A70" stroke-width="1"/></g>
+  <g id="minimized-topleft"><path d="M4 0 H4 V4 H0 A4 4 0 0 1 4 0 Z" fill="#E9EFF6"/><path d="M0.5 4 A3.5 3.5 0 0 1 4 .5" fill="none"/></g>
+  <g id="minimized-top"><rect x="4" y="0" width="36" height="4" fill="#E9EFF6"/><path d="M4 .5 H40" fill="none"/></g>
+  <g id="minimized-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#E9EFF6"/><path d="M40 .5 A3.5 3.5 0 0 1 43.5 4" fill="none"/></g>
+  <g id="minimized-left"><rect x="0" y="4" width="4" height="36" fill="#E9EFF6"/><path d="M.5 4 V40" fill="none"/></g>
+  <g id="minimized-center"><rect x="4" y="4" width="36" height="36" fill="#E9EFF6"/></g>
+  <g id="minimized-right"><rect x="40" y="4" width="4" height="36" fill="#E9EFF6"/><path d="M43.5 4 V40" fill="none"/></g>
+  <g id="minimized-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#E9EFF6"/><path d="M.5 40 A3.5 3.5 0 0 0 4 43.5" fill="none"/></g>
+  <g id="minimized-bottom"><rect x="4" y="40" width="36" height="4" fill="#E9EFF6"/><path d="M4 43.5 H40" fill="none"/></g>
+  <g id="minimized-bottomright"><path d="M40 40 H44 A4 4 0 0 1 40 44 Z" fill="#E9EFF6"/><path d="M43.5 40 A3.5 3.5 0 0 1 40 43.5" fill="none"/></g>
+  <rect id="hint-top-margin" x="72" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
+  <rect id="hint-right-margin" x="76" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
+  <rect id="hint-bottom-margin" x="88" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
+  <rect id="hint-left-margin" x="92" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
 </svg>
