@@ -61,6 +61,19 @@ class GlacierThemeTests(unittest.TestCase):
             self.assertNotIn("A12 12", contents)
             self.assertIn('stroke-width="1"', contents)
 
+    def test_glacier_has_no_decorative_techno_outlines(self):
+        import xml.etree.ElementTree as ET
+        for flavor in ("dark", "light"):
+            widgets = ROOT / f"mkosi.extra/usr/share/plasma/desktoptheme/veyra-glacier-{flavor}/widgets"
+            for file in ("panel-background.svg", "background.svg", "button.svg"):
+                root = ET.parse(widgets / file).getroot()
+                self.assertFalse(any(el.get("stroke") for el in root.iter()),
+                                 f"{flavor}/{file} unexpectedly contains outlines")
+
+    def test_fastfetch_logo_is_vertically_offset(self):
+        logo = ROOT / "mkosi.extra/usr/share/veyra/fastfetch/logo.txt"
+        self.assertTrue(logo.read_text().startswith("\\n\\n"))
+
     def test_user_home_is_untouched(self):
         self.assertFalse((ROOT / "mkosi.extra/home").exists())
         self.assertFalse((ROOT / "mkosi.extra/etc/skel/.config/kdeglobals").exists())
