@@ -43,6 +43,45 @@ def write_recovery_fixture(path: pathlib.Path, *, image_id: str = "veyra-recover
 
 
 class InstallerManifestTests(unittest.TestCase):
+    def test_boot_payload_verification_rejects_missing_uefi_bios_or_recovery(self) -> None:
+        from unittest import mock
+
+        version = "0.1.0"
+        required = (
+            "EFI/BOOT/BOOTX64.EFI",
+            f"EFI/Linux/veyra-next_{version}+3-0.efi",
+            "EFI/Linux/veyra-recovery.efi",
+            "loader/loader.conf",
+            "grub2/grub.cfg",
+            "grub2/grubenv",
+            f"VEYRA/veyra-next_{version}.vmlinuz",
+            f"VEYRA/veyra-next_{version}.initrd",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            esp = pathlib.Path(directory)
+            for name in required:
+                path = esp / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture")
+            with mock.patch.object(installer, "validate_recovery_uki_metadata") as verify:
+                installer.verify_installed_boot_payloads(esp, version)
+                verify.assert_called_once_with(esp / "EFI/Linux/veyra-recovery.efi")
+                for name in required:
+                    path = esp / name
+                    path.unlink()
+                    with self.subTest(missing=name), self.assertRaisesRegex(
+                        installer.InstallError, "missing or unsafe"
+                    ):
+                        installer.verify_installed_boot_payloads(esp, version)
+                    path.write_bytes(b"fixture")
+
+        source = (ROOT / "scripts/veyra-install.py").read_text()
+        install = source.split("def install_system(", 1)[1].split("\ndef main()", 1)[0]
+        self.assertLess(
+            install.index("verify_installed_boot_payloads(esp, version)"),
+            install.index('Remove the Live USB and reboot'),
+        )
+
     def test_repositories_are_refreshed_before_destructive_repart(self) -> None:
         from unittest import mock
         import subprocess
