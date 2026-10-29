@@ -11,6 +11,11 @@ on:
       - 'tests/test_live_iso_qemu_gate.py'
       - '.github/workflows/native-live-iso.yml'
       - 'tests/test_native_live_iso.py'
+      - 'mkosi.extra/usr/share/plasma/desktoptheme/**'
+      - 'mkosi.extra/usr/share/plasma/look-and-feel/**'
+      - 'mkosi.extra/etc/xdg/**'
+      - 'tests/test_glacier_theme.py'
+      - 'tests/test_veyra_live_branding.py'
       - 'tests/test_vpkg.py'
       - 'mkosi.extra/usr/bin/vpkg'
       - 'mkosi.extra/usr/lib/veyra/vpkg_libdnf.py'
@@ -38,6 +43,8 @@ jobs:
       - run: bash -n scripts/build-native-live-iso.sh
       - run: bash -n scripts/export-bootstrap-public-keys.sh
       - run: python3 -m unittest discover -s tests -p 'test_native_live_iso.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_glacier_theme.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_veyra_live_branding.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_vpkg.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
       - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu_gate.py' -v
