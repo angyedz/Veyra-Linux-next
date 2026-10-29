@@ -412,6 +412,25 @@ install -d "$root/home/liveuser/Desktop"
 install -m 0755 "$root/usr/share/applications/veyra-installer.desktop" \
   "$root/home/liveuser/Desktop/Install Veyra Next.desktop"
 chroot "$root" /usr/bin/chown -R liveuser:liveuser /home/liveuser/Desktop
+# QEMU-only visual diagnostic: open a real Konsole showing the preinstalled
+# fastfetch. Never autostart this on users' physical machines.
+install -d "$root/etc/xdg/autostart"
+cat > "$root/usr/libexec/veyra-live-qemu-fastfetch" <<'EOF'
+#!/usr/bin/bash
+case "$(systemd-detect-virt --vm 2>/dev/null)" in
+  qemu|kvm) exec /usr/bin/konsole --hold -e /usr/bin/fastfetch ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod 0755 "$root/usr/libexec/veyra-live-qemu-fastfetch"
+cat > "$root/etc/xdg/autostart/veyra-live-qemu-fastfetch.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Veyra QEMU Fastfetch Screenshot
+Exec=/usr/libexec/veyra-live-qemu-fastfetch
+NoDisplay=true
+OnlyShowIn=KDE;
+EOF
 echo 'Veyra Next Prototype Live' > "$root/etc/hostname"
 # Require two real Plasma processes in a QEMU Live guest. The main visual
 # smoke still independently checks the final framebuffer for scene content.
