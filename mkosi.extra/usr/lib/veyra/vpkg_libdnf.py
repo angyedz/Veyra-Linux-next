@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Iterable
 from urllib.parse import unquote, urlparse
 
@@ -100,6 +101,9 @@ class Session:
             "skip_broken": False,
             "skip_unavailable": False,
             "best": True,
+            # An unreachable mirror must not leave an interactive Live install hanging forever.
+            "timeout": 20,
+            "retries": 2,
         }
         for name, value in settings.items():
             _set_option(config, name, value)
@@ -134,7 +138,9 @@ class Session:
             if refresh and repo.get_id() in self.repo_ids:
                 _set_option(repo_config, "metadata_expire", 0)
         sack = self.base.get_repo_sack()
+        print("vpkg: loading Fedora/RPM Fusion repository metadata...", file=sys.stderr, flush=True)
         sack.load_repos()
+        print("vpkg: repository metadata loaded.", file=sys.stderr, flush=True)
         self.refresh = refresh
 
     def _resolve_veyra_repositories(self, query, cache_dir: Path) -> dict[str, Path]:
@@ -239,12 +245,14 @@ class Session:
         else:
             raise LibdnfError(f"Unsupported libdnf5 transaction action: {action}")
 
+        print("vpkg: resolving RPM dependencies...", file=sys.stderr, flush=True)
         transaction = goal.resolve()
         if transaction.get_problems() != libdnf5.base.GoalProblem_NO_PROBLEM:
             details = "\n".join(transaction.get_resolve_logs_as_strings())
             raise LibdnfError(f"Could not resolve the RPM transaction:\n{details}")
         if transaction.empty():
             return TransactionResult((), transaction)
+        print("vpkg: downloading RPM packages...", file=sys.stderr, flush=True)
         transaction.download()
         if not transaction.check_gpg_signatures():
             raise LibdnfError("libdnf5 rejected one or more RPM package signatures.")
@@ -261,6 +269,7 @@ class Session:
                     path=package.get_package_path(),
                 )
             )
+        print("vpkg: applying RPM transaction to isolated root...", file=sys.stderr, flush=True)
         run_result = transaction.run()
         if run_result != transaction.TransactionRunResult_SUCCESS:
             raise LibdnfError(
