@@ -82,6 +82,18 @@ class GlacierThemeTests(unittest.TestCase):
                 self.assertIsNotNone(hint)
                 self.assertEqual(hint.get("width"), "2")
                 self.assertEqual(hint.get("height"), "2")
+            # Earlier artwork reversed the lower-right arc and left a dark
+            # notch that looked like a techno ornament around the active icon.
+            for state in states:
+                for part, expected in (
+                    ("topleft", "M4 0 V4 H0 A4 4 0 0 1 4 0 Z"),
+                    ("topright", "M40 0 A4 4 0 0 1 44 4 H40 Z"),
+                    ("bottomleft", "M0 40 H4 V44 A4 4 0 0 1 0 40 Z"),
+                    ("bottomright", "M44 40 A4 4 0 0 1 40 44 V40 Z"),
+                ):
+                    path_data = groups[f"{state}-{part}"][0].get("d")
+                    self.assertEqual(path_data, expected,
+                                     f"{flavor} {state}-{part} corner is malformed")
             self.assertNotIn("A12 12", path.read_text())
             self.assertNotIn("shadow-", path.read_text())
 
