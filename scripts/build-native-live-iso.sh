@@ -146,6 +146,15 @@ if [[ -s "$repo/mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA" ]]; then
   install -m 0644 "$repo/mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA" \
     "$root/usr/share/veyra/RPM-GPG-KEY-VEYRA"
 fi
+# Brand the OS through standard os-release metadata (used by all fetch tools).
+# Preserve ID=fedora and VERSION_ID=44 for Fedora/libdnf compatibility.
+os_release="$root/usr/lib/os-release"
+[[ -f "$os_release" && ! -L "$os_release" ]] || die "missing Fedora os-release for branding"
+sed -i 's/^NAME=.*/NAME="Veyra Next"/;s/^PRETTY_NAME=.*/PRETTY_NAME="Veyra Next (Fedora 44)"/' "$os_release"
+# /etc/os-release should point to the canonical system metadata.
+if [[ ! -e "$root/etc/os-release" ]]; then
+  ln -sfn ../usr/lib/os-release "$root/etc/os-release"
+fi
 # The system extension ABI must match the vpkg release metadata.
 os_release="$root/usr/lib/os-release"
 [[ -f "$os_release" && ! -L "$os_release" ]] || die "missing Fedora os-release for vpkg"
