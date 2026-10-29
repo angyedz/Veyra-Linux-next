@@ -47,19 +47,36 @@ class GlacierThemeTests(unittest.TestCase):
         self.assertEqual(buttons["ButtonsOnLeft"], "")
         self.assertEqual(buttons["ButtonsOnRight"], "IAX")
 
-    def test_active_task_indicators_have_small_square_corners(self):
+    def test_task_frames_use_pixel_aligned_square_tiles_without_techno_corners(self):
         import xml.etree.ElementTree as ET
+
+        nine = ("topleft", "top", "topright", "left", "center", "right",
+                "bottomleft", "bottom", "bottomright")
+        states = ("normal", "hover", "focus", "attention", "minimized")
         for flavor in ("dark", "light"):
             path = ROOT / f"mkosi.extra/usr/share/plasma/desktoptheme/veyra-glacier-{flavor}/widgets/tasks.svg"
             root = ET.parse(path).getroot()
-            ids = {el.get("id") for el in root.iter()}
-            self.assertIn("focus-topleft", ids)
-            self.assertIn("focus-bottomright", ids)
-            self.assertIn("focus-center", ids)
-            contents = path.read_text()
-            self.assertIn("A4 4", contents)
-            self.assertNotIn("A12 12", contents)
-            self.assertIn('stroke-width="1"', contents)
+            self.assertEqual(root.get("viewBox"), "0 0 88 32")
+            groups = {el.get("id"): el for el in root if el.tag.endswith("g")}
+            self.assertEqual(set(groups), {f"{state}-{part}" for state in states for part in nine})
+            for group in groups.values():
+                self.assertTrue(group, "nine-slice group must contain its rectangle")
+                for node in group:
+                    self.assertTrue(node.tag.endswith("rect"))
+                    self.assertNotIn("stroke", node.attrib)
+                    self.assertNotIn("rx", node.attrib)
+                    self.assertNotIn("ry", node.attrib)
+                    self.assertGreater(int(node.get("width", "0")), 0)
+                    self.assertGreater(int(node.get("height", "0")), 0)
+            for suffix in nine:
+                self.assertGreater(len(groups[f"focus-{suffix}"]), 1)
+            for edge in ("top", "right", "bottom", "left"):
+                hint = next((el for el in root if el.get("id") == f"hint-{edge}-margin"), None)
+                self.assertIsNotNone(hint)
+                self.assertEqual(hint.get("width"), "2")
+                self.assertEqual(hint.get("height"), "2")
+            self.assertNotIn("<path", path.read_text())
+            self.assertNotIn("stroke=", path.read_text())
 
     def test_glacier_has_no_decorative_techno_outlines(self):
         import xml.etree.ElementTree as ET
