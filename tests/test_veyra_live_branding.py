@@ -34,7 +34,10 @@ class VeyraLiveBrandingTests(unittest.TestCase):
         config = json.loads(paths[0].read_text(encoding="utf-8"))
         self.assertEqual(config["logo"]["source"], "/usr/share/veyra/fastfetch/logo.txt")
         # Preserve the actual Fastfetch defaults; custom branding is logo-only.
-        self.assertNotIn("modules", config)
+        self.assertGreaterEqual(len(config["modules"]), 20)
+        self.assertTrue(all(isinstance(module, str) for module in config["modules"]))
+        self.assertIn("os", config["modules"])
+        self.assertIn("memory", config["modules"])
         self.assertNotIn("display", config)
         self.assertEqual(config["logo"]["type"], "file")
         self.assertTrue((ROOT / "mkosi.extra/usr/share/veyra/fastfetch/logo.txt").is_file())
