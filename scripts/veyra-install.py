@@ -533,6 +533,23 @@ def write_image_identity(root: pathlib.Path, version: str) -> None:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def verify_package_repository_access() -> None:
+    """Before repartitioning, require fresh Fedora package metadata to be reachable.
+
+    Do not confuse a cached manifest or Calamares' network indicator with proof
+    that dnf5 can actually resolve the official Fedora repositories.
+    """
+    try:
+        subprocess.run(
+            ["dnf5", "--releasever=44", "--refresh", "makecache"],
+            check=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise InstallError("Fedora repository refresh timed out; target disk was NOT changed") from error
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise InstallError("Fedora package repositories are unavailable; target disk was NOT changed") from error
+
+
 def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str | None = None) -> None:
     if os.geteuid() != 0:
         raise InstallError("run the installer with administrator privileges")
@@ -563,6 +580,9 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
     # For safety require interactive credentials even with --confirm-device.
     # Do not begin destructive operations when no terminal can provide them.
     username, user_password, root_password = requested_account()
+    # Never erase an eligible disk if the Fedora install would immediately
+    # fail due to missing network/repository metadata.
+    verify_package_repository_access()
 
     scratch_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-scratch-repart-"))
     final_conf_dir = pathlib.Path(tempfile.mkdtemp(prefix="veyra-final-repart-"))
