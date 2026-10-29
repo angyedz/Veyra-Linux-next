@@ -422,6 +422,29 @@ def write_recovery_uki(esp: pathlib.Path, source: pathlib.Path) -> None:
     shutil.copy2(recovery, destination)
 
 
+def verify_installed_boot_payloads(esp: pathlib.Path, version: str) -> None:
+    """Check boot-critical files before reporting a successful installation.
+
+    This is an on-disk structural check, NOT proof that firmware can boot the
+    installed image. Actual UEFI/Legacy first boot still requires QEMU E2E.
+    """
+    required = (
+        "EFI/BOOT/BOOTX64.EFI",
+        f"EFI/Linux/veyra-next_{version}+3-0.efi",
+        "EFI/Linux/veyra-recovery.efi",
+        "loader/loader.conf",
+        "grub2/grub.cfg",
+        "grub2/grubenv",
+        f"VEYRA/veyra-next_{version}.vmlinuz",
+        f"VEYRA/veyra-next_{version}.initrd",
+    )
+    for relative in required:
+        artifact = esp / relative
+        if artifact.is_symlink() or not artifact.is_file() or artifact.stat().st_size == 0:
+            raise InstallError(f"installed boot payload is missing or unsafe: {relative}")
+    validate_recovery_uki_metadata(esp / "EFI/Linux/veyra-recovery.efi")
+
+
 def with_chroot_mounts(root: pathlib.Path) -> list[pathlib.Path]:
     mounted: list[pathlib.Path] = []
     try:
@@ -730,6 +753,7 @@ def install_system(target: pathlib.Path, source: pathlib.Path, confirmation: str
         grub_ota.initialize_grubenv(grub_dir / "grubenv", version, roothash)
         command(["grub2-install", "--target=i386-pc", f"--boot-directory={esp}", "--recheck", str(disk)])
 
+        verify_installed_boot_payloads(esp, version)
         command(["sync"])
         print(
             f"\nVeyra Next Prototype {version} is installed on {disk}. "
