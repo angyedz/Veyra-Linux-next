@@ -89,7 +89,8 @@ class GlacierThemeTests(unittest.TestCase):
         import xml.etree.ElementTree as ET
         for flavor in ("dark", "light"):
             widgets = ROOT / f"mkosi.extra/usr/share/plasma/desktoptheme/veyra-glacier-{flavor}/widgets"
-            for file in ("panel-background.svg", "background.svg", "button.svg"):
+            for file in ("panel-background.svg", "background.svg", "button.svg",
+                         "tooltip.svg", "viewitem.svg", "lineedit.svg"):
                 root = ET.parse(widgets / file).getroot()
                 self.assertFalse(any(el.get("stroke") for el in root.iter()),
                                  f"{flavor}/{file} unexpectedly contains outlines")
