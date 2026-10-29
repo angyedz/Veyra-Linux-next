@@ -175,8 +175,8 @@ class NativeLiveIsoTests(unittest.TestCase):
         self.assertIn('widget.writeConfig("maxStripes", 1)', SCRIPT)
         for flavor in ("dark", "light"):
             panel = (ROOT / f"mkosi.extra/usr/share/plasma/desktoptheme/veyra-glacier-{flavor}/widgets/panel-background.svg").read_text()
-            self.assertEqual(panel.count('height="5" fill="#000" fill-opacity="0"'), 2)
-            self.assertEqual(panel.count('width="5" height="2" fill="#000" fill-opacity="0"'), 2)
+            self.assertEqual(panel.count('height="2" fill="#000" fill-opacity="0"'), 2)
+            self.assertEqual(panel.count('width="2" height="2" fill="#000" fill-opacity="0"'), 2)
 
     def test_default_launcher_is_branded_without_replacing_layout(self):
         for expected in (
