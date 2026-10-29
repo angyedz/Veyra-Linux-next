@@ -47,7 +47,7 @@ class GlacierThemeTests(unittest.TestCase):
         self.assertEqual(buttons["ButtonsOnLeft"], "")
         self.assertEqual(buttons["ButtonsOnRight"], "IAX")
 
-    def test_task_frames_use_pixel_aligned_square_tiles_without_techno_corners(self):
+    def test_task_frames_are_compact_square_without_decorative_corner_artifacts(self):
         import xml.etree.ElementTree as ET
 
         nine = ("topleft", "top", "topright", "left", "center", "right",
@@ -56,27 +56,34 @@ class GlacierThemeTests(unittest.TestCase):
         for flavor in ("dark", "light"):
             path = ROOT / f"mkosi.extra/usr/share/plasma/desktoptheme/veyra-glacier-{flavor}/widgets/tasks.svg"
             root = ET.parse(path).getroot()
-            self.assertEqual(root.get("viewBox"), "0 0 88 32")
-            groups = {el.get("id"): el for el in root if el.tag.endswith("g")}
+            # All nine slices describe the same 44 x 44 square, never a capsule.
+            self.assertEqual(root.get("viewBox"), "0 0 116 54")
+            groups = {element.get("id"): element for element in root if element.tag.endswith("g")}
             self.assertEqual(set(groups), {f"{state}-{part}" for state in states for part in nine})
-            for group in groups.values():
-                self.assertTrue(group, "nine-slice group must contain its rectangle")
-                for node in group:
-                    self.assertTrue(node.tag.endswith("rect"))
-                    self.assertNotIn("stroke", node.attrib)
-                    self.assertNotIn("rx", node.attrib)
-                    self.assertNotIn("ry", node.attrib)
-                    self.assertGreater(int(node.get("width", "0")), 0)
-                    self.assertGreater(int(node.get("height", "0")), 0)
-            for suffix in nine:
-                self.assertGreater(len(groups[f"focus-{suffix}"]), 1)
+            for state in states:
+                center = groups[f"{state}-center"][0]
+                self.assertEqual(
+                    tuple(center.get(key) for key in ("x", "y", "width", "height")),
+                    ("4", "4", "36", "36"),
+                )
+                for part in nine:
+                    members = list(groups[f"{state}-{part}"])
+                    self.assertGreaterEqual(len(members), 1)
+                    self.assertLessEqual(len(members), 2)
+                    for member in members:
+                        self.assertIn(member.tag.rsplit("}", 1)[-1], ("rect", "path"))
+                        if member.get("stroke"):
+                            # Only a restrained focus rim; no neon/techno corners.
+                            self.assertEqual(state, "focus")
+                            self.assertEqual(member.get("stroke-width"), "1")
+                            self.assertLessEqual(float(member.get("stroke-opacity")), 0.65)
             for edge in ("top", "right", "bottom", "left"):
-                hint = next((el for el in root if el.get("id") == f"hint-{edge}-margin"), None)
+                hint = next((el for el in root if el.get("id") == f"normal-hint-{edge}-margin"), None)
                 self.assertIsNotNone(hint)
                 self.assertEqual(hint.get("width"), "2")
                 self.assertEqual(hint.get("height"), "2")
-            self.assertNotIn("<path", path.read_text())
-            self.assertNotIn("stroke=", path.read_text())
+            self.assertNotIn("A12 12", path.read_text())
+            self.assertNotIn("shadow-", path.read_text())
 
     def test_glacier_has_no_decorative_techno_outlines(self):
         import xml.etree.ElementTree as ET
