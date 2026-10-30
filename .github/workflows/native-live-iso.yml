@@ -1,0 +1,170 @@
+name: Veyra Anaconda-free Live ISO experiment
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-native-live-iso.sh'
+      - 'scripts/veyra-live-vpkg-vm-check.sh'
+      - 'scripts/test-live-iso-qemu.py'
+      - 'tests/test_live_iso_qemu.py'
+      - 'scripts/verify-live-iso-qemu.py'
+      - 'tests/test_live_iso_qemu_gate.py'
+      - '.github/workflows/native-live-iso.yml'
+      - 'tests/test_native_live_iso.py'
+      - 'mkosi.extra/usr/share/plasma/desktoptheme/**'
+      - 'mkosi.extra/usr/share/plasma/look-and-feel/**'
+      - 'mkosi.extra/etc/xdg/**'
+      - 'tests/test_glacier_theme.py'
+      - 'tests/test_veyra_live_branding.py'
+      - 'tests/test_vpkg.py'
+      - 'mkosi.extra/usr/bin/vpkg'
+      - 'mkosi.extra/usr/lib/veyra/vpkg_libdnf.py'
+      - 'scripts/test-vpkg-real-rpm.py'
+      - 'scripts/export-bootstrap-public-keys.sh'
+  workflow_dispatch:
+    inputs:
+      recovery_run_id:
+        description: Successful Fedora image run containing a veyra-recovery-uki artifact
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-live-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/build-native-live-iso.sh
+      - run: bash -n scripts/export-bootstrap-public-keys.sh
+      - run: python3 -m unittest discover -s tests -p 'test_native_live_iso.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_glacier_theme.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_veyra_live_branding.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_vpkg.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_live_iso_qemu_gate.py' -v
+  real-vpkg-rpm-transaction:
+    needs: source-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libdnf5 Python bindings
+        run: dnf5 install -y python3 python3-libdnf5 rpm
+      - name: Install real tree RPM through vpkg's libdnf5 adapter
+        run: timeout --signal=INT --kill-after=15s 900s python3 -u scripts/test-vpkg-real-rpm.py
+  compose:
+    needs: source-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install only native builders (no Anaconda/Lorax)
+        run: |
+          dnf5 install -y grub2-tools-extra grub2-pc-modules grub2-efi-x64-modules \
+            grub2-tools-efi dracut squashfs-tools xorriso mtools \
+            dosfstools python3 gnupg2 dejavu-sans-fonts qemu-system-x86-core qemu-device-display-virtio-vga edk2-ovmf
+      - name: Provide required GRUB Unicode font
+        run: |
+          mkdir -p /usr/share/grub
+          test -s /usr/share/grub/unicode.pf2 || grub2-mkfont --output=/usr/share/grub/unicode.pf2 /usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf
+          test -s /usr/share/grub/unicode.pf2
+      - name: Restrict installable signed ISO bootstrap to the trusted main branch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || {
+            echo "Signed, installable media bootstrap is allowed only from reviewed main." >&2; exit 1;
+          }
+          [[ "${{ inputs.recovery_run_id }}" =~ ^[0-9]+$ ]] || {
+            echo "Supply a successful Fedora image recovery_run_id to install safely." >&2; exit 1;
+          }
+      - name: Fetch independently built Recovery UKI for installer preflight
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: veyra-recovery-uki
+          path: build/recovery-uki
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ github.token }}
+      - name: Provision the installed image with its pinned release trust roots
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VEYRA_UPDATE_SIGNING_KEY: ${{ secrets.VEYRA_UPDATE_SIGNING_KEY }}
+          VEYRA_RPM_SIGNING_KEY: ${{ secrets.VEYRA_RPM_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -s build/recovery-uki/veyra-recovery.efi
+          test -n "$VEYRA_UPDATE_SIGNING_KEY"
+          test -n "$VEYRA_RPM_SIGNING_KEY"
+          bash scripts/export-bootstrap-public-keys.sh
+          test -s mkosi.extra/usr/lib/systemd/import-pubring.pgp
+          test -s mkosi.extra/usr/share/veyra/RPM-GPG-KEY-VEYRA
+          echo "VEYRA_RECOVERY_UKI=$GITHUB_WORKSPACE/build/recovery-uki/veyra-recovery.efi" >> "$GITHUB_ENV"
+      - name: Compose Live ISO from Fedora RPM rootfs
+        id: build
+        run: bash scripts/build-native-live-iso.sh
+      - name: Verify QEMU VirtIO VGA backend is available
+        run: |
+          qemu-system-x86_64 -device help | grep -q 'virtio-vga'
+          # Listing the device alone is insufficient: test instantiation.
+          set +e
+          timeout 3s qemu-system-x86_64 -machine q35,accel=tcg -m 512 \
+            -display none -vga none -device virtio-vga -S -nic none \
+            > /tmp/veyra-qemu-probe.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            cat /tmp/veyra-qemu-probe.log
+            echo "VirtIO VGA failed to initialize (exit $status)" >&2
+            exit 1
+          fi
+      - name: Capture firmware and early Live boot diagnostics in disposable QEMU
+        id: qemu
+        continue-on-error: false
+        run: |
+          python3 scripts/test-live-iso-qemu.py \
+            --iso build/native-live/veyra-next-prototype-live.iso \
+            --output build/native-live-qemu \
+            --modes both \
+            --at 60,180,300
+      - name: Require kernel and init evidence for both firmwares
+        run: python3 scripts/verify-live-iso-qemu.py build/native-live-qemu/report.json
+      - name: Upload QEMU BIOS and UEFI guest screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-native-live-qemu-screens
+          path: build/native-live-qemu/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Publish experimental ISO and hash (metadata verified; QEMU may still fail)
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-next-native-live-iso
+          path: |
+            build/native-live/veyra-next-prototype-live.iso
+            build/native-live/veyra-next-prototype-live.iso.sha256
+            build/native-live/eltorito.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Preserve failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyra-native-live-failure
+          path: |
+            build/native-live/eltorito.txt
+          if-no-files-found: ignore
+          retention-days: 3

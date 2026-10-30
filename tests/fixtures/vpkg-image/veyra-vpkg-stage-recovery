@@ -1,0 +1,18 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+phase=/var/lib/veyra/vpkg-ci-stage-phase
+test -s "$phase"
+test ! -e /var/lib/veyra/vpkg/staged-package.json
+command -v jq >/dev/null
+command -v htop >/dev/null
+vpkg rollback
+if command -v jq >/dev/null 2>&1; then
+    echo "vpkg rollback left the staged jq generation active." >&2
+    exit 1
+fi
+command -v htop >/dev/null
+rm -f "$phase"
+touch /var/lib/veyra/vpkg-ci-stage-pass
+echo "Veyra vpkg staged generation rolled back before graphical.target."
+echo "VEYRA_VPKG_STAGE_ROLLBACK_PASS"

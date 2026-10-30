@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="84" viewBox="0 0 128 84">
+<!-- Veyra Glacier dark input controls; no runtime effects or filters. -->
+  <g id="base-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#1D2B3A"/></g>
+  <g id="base-top"><rect x="8" y="0" width="24" height="8" fill="#1D2B3A"/></g>
+  <g id="base-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#1D2B3A"/></g>
+  <g id="base-left"><rect x="0" y="8" width="8" height="24" fill="#1D2B3A"/></g>
+  <g id="base-center"><rect x="8" y="8" width="24" height="24" fill="#1D2B3A"/></g>
+  <g id="base-right"><rect x="32" y="8" width="8" height="24" fill="#1D2B3A"/></g>
+  <g id="base-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#1D2B3A"/></g>
+  <g id="base-bottom"><rect x="8" y="32" width="24" height="8" fill="#1D2B3A"/></g>
+  <g id="base-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#1D2B3A"/></g>
+  <g id="hover-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#1A2E45"/></g>
+  <g id="hover-top"><rect x="8" y="0" width="24" height="8" fill="#1A2E45"/></g>
+  <g id="hover-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#1A2E45"/></g>
+  <g id="hover-left"><rect x="0" y="8" width="8" height="24" fill="#1A2E45"/></g>
+  <g id="hover-center"><rect x="8" y="8" width="24" height="24" fill="#1A2E45"/></g>
+  <g id="hover-right"><rect x="32" y="8" width="8" height="24" fill="#1A2E45"/></g>
+  <g id="hover-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#1A2E45"/></g>
+  <g id="hover-bottom"><rect x="8" y="32" width="24" height="8" fill="#1A2E45"/></g>
+  <g id="hover-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#1A2E45"/></g>
+  <g id="focus-topleft"><path d="M8 0 L8 8 L0 8 A8 8 0 0 1 8 0 Z" fill="#152A41"/></g>
+  <g id="focus-top"><rect x="8" y="0" width="24" height="8" fill="#152A41"/></g>
+  <g id="focus-topright"><path d="M32 0 A8 8 0 0 1 40 8 L32 8 Z" fill="#152A41"/></g>
+  <g id="focus-left"><rect x="0" y="8" width="8" height="24" fill="#152A41"/></g>
+  <g id="focus-center"><rect x="8" y="8" width="24" height="24" fill="#152A41"/></g>
+  <g id="focus-right"><rect x="32" y="8" width="8" height="24" fill="#152A41"/></g>
+  <g id="focus-bottomleft"><path d="M0 32 L8 32 L8 40 A8 8 0 0 1 0 32 Z" fill="#152A41"/></g>
+  <g id="focus-bottom"><rect x="8" y="32" width="24" height="8" fill="#152A41"/></g>
+  <g id="focus-bottomright"><path d="M32 32 H40 A8 8 0 0 1 32 40 Z" fill="#152A41"/></g>
+  <rect id="base-hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="base-hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="base-hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="base-hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+  <rect id="hover-hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="hover-hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="hover-hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="hover-hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+  <rect id="focus-hint-top-margin" x="56" y="0" width="2" height="5" fill="none"/>
+  <rect id="focus-hint-bottom-margin" x="60" y="0" width="2" height="5" fill="none"/>
+  <rect id="focus-hint-left-margin" x="64" y="0" width="5" height="2" fill="none"/>
+  <rect id="focus-hint-right-margin" x="70" y="0" width="5" height="2" fill="none"/>
+</svg>

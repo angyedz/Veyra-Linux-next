@@ -1,0 +1,293 @@
+"""Small, policy-focused libdnf5 API adapter used by vpkg.
+
+This module intentionally does not expose a shell command surface. Every
+transaction is resolved and executed through libdnf5's Python bindings.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import sys
+from typing import Iterable
+from urllib.parse import unquote, urlparse
+
+
+class LibdnfError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class PackageChange:
+    action: int
+    name: str
+    nevra: str
+    repo_id: str
+    path: str
+
+
+@dataclass(frozen=True)
+class TransactionResult:
+    changes: tuple[PackageChange, ...]
+    transaction: object
+
+
+def _bindings():
+    try:
+        import libdnf5
+    except ImportError as error:
+        raise LibdnfError("The python3-libdnf5 bindings are required by vpkg.") from error
+    return libdnf5
+
+
+def _set_option(config, name: str, value) -> None:
+    getter = getattr(config, f"get_{name}_option", None)
+    if getter is None:
+        raise LibdnfError(f"libdnf5 does not expose the required {name} configuration option.")
+    option = getter()
+    try:
+        option.set(value)
+    except TypeError:
+        # libdnf5's SWIG bindings use both Option::set(value) and
+        # Option::set(priority, value), depending on option type.
+        option.set(option.Priority_RUNTIME, value)
+
+
+class Session:
+    """One immutable libdnf5 configuration/repository/solver session."""
+
+    def __init__(
+        self,
+        *,
+        installroot: Path,
+        releasever: str,
+        repo_ids: Iterable[str],
+        cache_dir: Path,
+        history_dir: Path,
+        persist_dir: Path,
+        state_dir: Path,
+        no_scripts: bool = True,
+        refresh: bool = False,
+    ) -> None:
+        self.libdnf5 = _bindings()
+        self.repo_ids = tuple(dict.fromkeys(repo_ids))
+        if not releasever.isdecimal():
+            raise LibdnfError("The base releasever must be a decimal Fedora version.")
+
+        self.base = self.libdnf5.base.Base()
+        config = self.base.get_config()
+        _set_option(config, "config_file_path", "/etc/dnf/dnf.conf")
+        _set_option(config, "installroot", str(installroot))
+        self.base.load_config()
+
+        # Explicitly use host repository definitions while directing all
+        # package database and cache writes into vpkg-owned locations.
+        config = self.base.get_config()
+        settings = {
+            "config_file_path": "/etc/dnf/dnf.conf",
+            "installroot": str(installroot),
+            "reposdir": ["/etc/yum.repos.d", "/etc/distro.repos.d", "/usr/share/dnf5/repos.d"],
+            "plugins": False,
+            "system_cachedir": str(cache_dir),
+            "cachedir": str(cache_dir),
+            "transaction_history_dir": str(history_dir),
+            "persistdir": str(persist_dir),
+            "system_state_dir": str(state_dir),
+            "install_weak_deps": False,
+            "keepcache": True,
+            "pkg_gpgcheck": True,
+            "localpkg_gpgcheck": True,
+            "assumeyes": True,
+            "skip_broken": False,
+            "skip_unavailable": False,
+            "best": True,
+            # An unreachable mirror must not leave an interactive Live install hanging forever.
+            "timeout": 20,
+            "retries": 2,
+        }
+        for name, value in settings.items():
+            _set_option(config, name, value)
+        if no_scripts:
+            _set_option(config, "tsflags", ["noscripts", "notriggers"])
+
+        self.base.get_vars().get().set(
+            "releasever", releasever, self.base.get_vars().get().Priority_RUNTIME
+        )
+        self.base.setup()
+        self.base.get_repo_sack().create_repos_from_system_configuration()
+        query = self.libdnf5.repo.RepoQuery(self.base)
+        veyra_repo_paths = self._resolve_veyra_repositories(query, cache_dir)
+        for repo in query:
+            repo_config = repo.get_config()
+            _set_option(repo_config, "enabled", repo.get_id() in self.repo_ids)
+            _set_option(repo_config, "pkg_gpgcheck", True)
+            if repo.get_id() in {"veyra-main", "veyra-testing"}:
+                local_path = veyra_repo_paths.get(repo.get_id())
+                if local_path is not None:
+                    _set_option(repo_config, "baseurl", [local_path.as_uri().rstrip("/") + "/"])
+                # The Fedora 44 SWIG set_callbacks API takes an owning
+                # std::unique_ptr, not a Python RepoCallbacks instance.
+                # Do not circumvent that type mismatch with a permissive
+                # fallback or disable signatures: pin the *only* allowable
+                # key source and require signed metadata and RPMs instead.
+                # libdnf5 uses the configured gpgkey when loading the repo.
+                trusted_key = "file:///usr/share/veyra/RPM-GPG-KEY-VEYRA"
+                _set_option(repo_config, "gpgkey", [trusted_key])
+                _set_option(repo_config, "repo_gpgcheck", True)
+                _set_option(repo_config, "pkg_gpgcheck", True)
+            if refresh and repo.get_id() in self.repo_ids:
+                _set_option(repo_config, "metadata_expire", 0)
+        sack = self.base.get_repo_sack()
+        print("vpkg: loading Fedora/RPM Fusion repository metadata...", file=sys.stderr, flush=True)
+        sack.load_repos()
+        print("vpkg: repository metadata loaded.", file=sys.stderr, flush=True)
+        self.refresh = refresh
+
+    def _resolve_veyra_repositories(self, query, cache_dir: Path) -> dict[str, Path]:
+        """Resolve release snapshots before libdnf5 loads Veyra metadata.
+
+        A repository explicitly configured as a local file repo (the isolated
+        RPM integration fixture) remains local. Production image definitions
+        point at an absent cache path; that is replaced with a verified release
+        snapshot before the repo sack is loaded.
+        """
+        selected = set(self.repo_ids) & {"veyra-main", "veyra-testing"}
+        if not selected:
+            return {}
+        configured = {repo.get_id(): repo for repo in query}
+        result: dict[str, Path] = {}
+        for repo_id in selected:
+            repo = configured.get(repo_id)
+            if repo is None:
+                raise LibdnfError(f"Required Veyra repository configuration is missing: {repo_id}")
+            option = repo.get_config().get_baseurl_option()
+            configured_urls = option.get_value()
+            urls = [configured_urls] if isinstance(configured_urls, str) else list(configured_urls)
+            local_repo = None
+            for value in urls:
+                parsed = urlparse(value)
+                if parsed.scheme == "file":
+                    candidate = Path(unquote(parsed.path))
+                    is_release_cache = str(candidate).startswith(
+                        "/var/cache/veyra/vpkg/repositories/"
+                    )
+                    if not is_release_cache and (candidate / "repodata/repomd.xml").is_file():
+                        local_repo = candidate
+                        break
+            if local_repo is not None:
+                result[repo_id] = local_repo
+                continue
+            try:
+                from veyra_repo import VeyraRepoError, resolve_repository
+
+                channel = "main" if repo_id == "veyra-main" else "testing"
+                result[repo_id] = resolve_repository(
+                    channel,
+                    Path("/var/cache/veyra/vpkg/repositories"),
+                    Path("/usr/share/veyra/RPM-GPG-KEY-VEYRA"),
+                )
+            except (VeyraRepoError, OSError) as error:
+                raise LibdnfError(f"Could not prepare the signed {repo_id} release repository: {error}") from error
+        return result
+
+    def resolve(
+        self,
+        action: str,
+        specifications: Iterable[str] = (),
+        *,
+        installed_from: Iterable[str] = (),
+        local_rpms: Iterable[Path] = (),
+    ) -> TransactionResult:
+        try:
+            return self._resolve(action, specifications, installed_from=installed_from, local_rpms=local_rpms)
+        except LibdnfError:
+            raise
+        except Exception as error:
+            raise LibdnfError(f"libdnf5 transaction failed: {error}") from error
+
+    def _resolve(
+        self,
+        action: str,
+        specifications: Iterable[str],
+        *,
+        installed_from: Iterable[str],
+        local_rpms: Iterable[Path],
+    ) -> TransactionResult:
+        libdnf5 = self.libdnf5
+        goal = libdnf5.base.Goal(self.base)
+        settings = libdnf5.base.GoalJobSettings()
+        settings.set_skip_broken(False)
+        settings.set_skip_unavailable(False)
+        if self.repo_ids:
+            settings.set_to_repo_ids(list(self.repo_ids))
+        if installed_from:
+            settings.set_from_repo_ids(list(installed_from))
+
+        paths = [str(path) for path in local_rpms]
+        local_packages = {}
+        if paths:
+            local_packages = self.base.get_repo_sack().add_cmdline_packages(paths, True)
+        specs = list(specifications)
+        if action != "remove" and not self.repo_ids:
+            raise LibdnfError("No trusted package repositories are enabled for this transaction.")
+        if action == "install":
+            for spec in specs:
+                goal.add_install(spec, settings)
+            for path in paths:
+                goal.add_install(local_packages[path], settings)
+        elif action == "remove":
+            for spec in specs:
+                goal.add_remove(spec, settings)
+        elif action == "upgrade":
+            goal.add_upgrade(settings, False)
+        elif action == "repo-sync":
+            goal.add_rpm_distro_sync(settings)
+        else:
+            raise LibdnfError(f"Unsupported libdnf5 transaction action: {action}")
+
+        print("vpkg: resolving RPM dependencies...", file=sys.stderr, flush=True)
+        transaction = goal.resolve()
+        if transaction.get_problems() != libdnf5.base.GoalProblem_NO_PROBLEM:
+            details = "\n".join(transaction.get_resolve_logs_as_strings())
+            raise LibdnfError(f"Could not resolve the RPM transaction:\n{details}")
+        if transaction.empty():
+            return TransactionResult((), transaction)
+        print("vpkg: downloading RPM packages...", file=sys.stderr, flush=True)
+        transaction.download()
+        if not transaction.check_gpg_signatures():
+            raise LibdnfError("libdnf5 rejected one or more RPM package signatures.")
+
+        changes = []
+        for item in transaction.get_transaction_packages():
+            package = item.get_package()
+            changes.append(
+                PackageChange(
+                    action=item.get_action(),
+                    name=package.get_name(),
+                    nevra=package.get_full_nevra(),
+                    repo_id=package.get_repo_id(),
+                    path=package.get_package_path(),
+                )
+            )
+        print("vpkg: applying RPM transaction to isolated root...", file=sys.stderr, flush=True)
+        run_result = transaction.run()
+        if run_result != transaction.TransactionRunResult_SUCCESS:
+            raise LibdnfError(
+                "libdnf5 transaction failed: "
+                + transaction.transaction_result_to_string(run_result)
+            )
+        return TransactionResult(tuple(changes), transaction)
+
+
+def package_query(installroot: Path, releasever: str, repo_ids: Iterable[str], cache_dir: Path):
+    """Load selected repos and return query-ready Base and PackageQuery."""
+    session = Session(
+        installroot=installroot,
+        releasever=releasever,
+        repo_ids=repo_ids,
+        cache_dir=cache_dir,
+        history_dir=cache_dir / "history",
+        persist_dir=cache_dir / "persist",
+        state_dir=cache_dir / "state",
+    )
+    return session.base, session.libdnf5.rpm.PackageQuery(session.base)

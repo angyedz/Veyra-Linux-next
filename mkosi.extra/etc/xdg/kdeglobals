@@ -1,0 +1,17 @@
+# Veyra system defaults. User ~/.config/kdeglobals overrides these.
+[General]
+ColorScheme=VeyraGlacier
+Name=Veyra Glacier Dark
+
+[KDE]
+LookAndFeelPackage=org.veyra.glacier.dark
+widgetStyle=Breeze
+
+[Icons]
+Theme=breeze-dark
+
+[WM]
+activeBackground=18,25,39
+activeForeground=230,239,251
+inactiveBackground=24,32,46
+inactiveForeground=144,163,187

@@ -38,6 +38,134 @@ def main() -> int:
     build = section_values(config, "Build")
     runtime = section_values(config, "Runtime")
 
+    build_environment_gate = ROOT / "scripts/check-build-environment.sh"
+    python_build_environment_gate = ROOT / "scripts/check-build-environment.py"
+    mkosi_wrapper = ROOT / "scripts/mkosi.sh"
+    if not build_environment_gate.is_file() or not python_build_environment_gate.is_file():
+        return fail("mkosi must have build-environment and Fedora-repository gates")
+    wrapper_content = mkosi_wrapper.read_text(encoding="utf-8")
+    for expected in ("check-build-environment.sh", "check-build-environment.py"):
+        if expected not in wrapper_content:
+            return fail(f"mkosi.sh must run the {expected} gate before build and shell operations")
+
+    pinned_fedora_container = (
+        "registry.fedoraproject.org/fedora@sha256:"
+        "2d894246f63e15be3557d103c50e5fdef67bf50b34e35d54753966b9c1854608"
+    )
+    for workflow in ("ci.yml", "release.yml"):
+        workflow_path = ROOT / ".github/workflows" / workflow
+        workflow_content = workflow_path.read_text(encoding="utf-8")
+        if "bash scripts/check-build-environment.sh" not in workflow_content:
+            return fail(f"{workflow} must gate its image build environment before installing build tools")
+
+    release_workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    if pinned_fedora_container not in release_workflow:
+        return fail("release.yml must compose images in the pinned Fedora container")
+
+    ci_workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    build_job = re.search(r"(?ms)^  build:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci_workflow)
+    if not build_job:
+        return fail("ci.yml must define the image build job")
+    if "VEYRA_MKOSI_RUNNER: github-ubuntu-24.04" not in build_job.group(1):
+        return fail("ci.yml image composition must use the guarded Ubuntu runner path")
+    if re.search(r"(?m)^    container:", build_job.group(1)):
+        return fail("ci.yml image composition must not nest mkosi inside a Fedora job container")
+    if "prototype-artifact:" in ci_workflow or "veyra-next-prototype-disk" in ci_workflow:
+        return fail("ci.yml must not build or upload a second prototype VM disk")
+    live_iso_job = re.search(r"(?ms)^  live-installer-iso:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci_workflow)
+    if not live_iso_job:
+        return fail("ci.yml must build the single downloadable Live Installer ISO")
+    for expected in (
+        "veyra-next-prototype-live-iso",
+        "build-live-iso.sh",
+        "VEYRA_FEDORA_BOOT_ISO",
+        "sha256sum",
+        "always() && needs.build.result != 'cancelled'",
+    ):
+        if expected not in live_iso_job.group(1):
+            return fail(f"the Live Installer job must include {expected!r}")
+    if "always() && steps.image_assets.outcome == 'success'" not in build_job.group(1):
+        return fail("the Recovery UKI must be uploaded after image composition even if an unrelated later test fails")
+    if "recovery_run_id" not in ci_workflow or "run-id: ${{ inputs.recovery_run_id || github.run_id }}" not in live_iso_job.group(1):
+        return fail("the Live Installer job must support an ISO-only rebuild from an existing Recovery UKI artifact")
+    if "if: ${{ github.event_name != 'workflow_dispatch' || inputs.recovery_run_id == '' }}" not in ci_workflow:
+        return fail("an ISO-only workflow dispatch must skip the expensive image and RPM fixture jobs")
+    if "Prepare loop devices for Lorax in the job container" not in live_iso_job.group(1) or "losetup --find --show" not in live_iso_job.group(1):
+        return fail("the Lorax container must create and verify loop device nodes before building the Live ISO")
+    if "Verify loop-backed Fedora ISO mounts in the job container" not in live_iso_job.group(1):
+        return fail("the Live ISO job must verify its loop mount capability before invoking Lorax")
+    if "--security-opt=seccomp=unconfined" not in live_iso_job.group(1) or "--security-opt=apparmor=unconfined" not in live_iso_job.group(1):
+        return fail("the isolated Live ISO job container must permit the mount syscalls required by Lorax")
+    if "veyra-live-iso-diagnostics" not in live_iso_job.group(1):
+        return fail("the Live ISO job must retain Lorax diagnostics after a failed build")
+    live_iso_script = (ROOT / "scripts/build-live-iso.sh").read_text(encoding="utf-8")
+    if 'rm -rf -- "$result_dir"' not in live_iso_script or 'mkdir -p "$result_dir"' in live_iso_script:
+        return fail("livemedia-creator needs a result directory that does not exist before invocation")
+    installer_script = ROOT / "scripts/veyra-install.py"
+    if not installer_script.is_file():
+        return fail("the Live ISO needs an installer that composes the target from Fedora packages")
+    live_kickstart = (ROOT / "installer/veyra-live.ks.in").read_text(encoding="utf-8")
+    if "dracut-live" not in live_kickstart:
+        return fail("the Live ISO Kickstart must include dracut-live for Lorax image composition")
+    for package in ("calamares", "calamares-interactiveterminal"):
+        if not re.search(rf"(?m)^{re.escape(package)}$", live_kickstart):
+            return fail(f"the Live ISO must install the Calamares package {package}")
+    if re.search(r"(?m)^anaconda(?:-[^\s]+)?$", live_kickstart):
+        return fail("Anaconda must not be installed in the Veyra Live ISO")
+    if "-anaconda*" not in live_kickstart:
+        return fail("the Live ISO package selection must explicitly exclude Anaconda packages")
+    pinned_url = "url --url=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/"
+    templated_url = "url --url=__VEYRA_FEDORA_REPO_URL__"
+    if templated_url in live_kickstart:
+        for marker in ("repo_primary=", "repo_fallback=", 'render_kickstart "$repo_url"'):
+            if marker not in live_iso_script:
+                return fail(f"the Live ISO builder must resolve the Fedora template URL: {marker}")
+        for official_host in ("download.fedoraproject.org", "dl.fedoraproject.org"):
+            if official_host not in live_iso_script:
+                return fail(f"the Live ISO builder lacks official repository host: {official_host}")
+    elif pinned_url not in live_kickstart:
+        return fail("the Fedora 44 Live ISO Kickstart must declare an official network RPM source")
+    if 'live_root="/mnt/sysimage"' not in live_kickstart or "${LIVE_ROOT" in live_kickstart:
+        return fail("the Lorax no-virt Kickstart must copy Live assets into its /mnt/sysimage staging root")
+    if "policycoreutils" not in live_iso_job.group(1):
+        return fail("the Lorax build container must provide load_policy for Anaconda cleanup")
+    if "rpm --root=\"$live_root\" -qa" not in live_kickstart or "Anaconda packages must not be included" not in live_kickstart:
+        return fail("the Live ISO must fail its build if an Anaconda package enters the runtime system")
+    calamares_settings = ROOT / "installer/calamares/settings.conf"
+    calamares_terminal = ROOT / "installer/calamares/modules/interactiveterminal.conf"
+    calamares_welcome = ROOT / "installer/calamares/modules/welcome.conf"
+    calamares_branding = ROOT / "installer/calamares/branding/veyra/branding.desc"
+    for path in (calamares_settings, calamares_terminal, calamares_welcome, calamares_branding):
+        if not path.is_file():
+            return fail(f"the Calamares installer is missing {path.relative_to(ROOT)}")
+    current_settings = calamares_settings.read_text(encoding="utf-8")
+    for expected in ("branding: veyra", "- interactiveterminal"):
+        if expected not in current_settings:
+            return fail(f"Calamares settings must include {expected!r}")
+    # The external terminal installer has its own pass/fail result; a generic
+    # 'finished' page could misleadingly claim success after failed preflight.
+    if "- finished" in current_settings:
+        return fail("Calamares must not show a success page for a failed terminal installer")
+    if "command: /usr/libexec/veyra-live-calamares-session" not in calamares_terminal.read_text(encoding="utf-8"):
+        return fail("Calamares must use the Recovery-gated terminal launcher")
+    native_live = (ROOT / "scripts/build-native-live-iso.sh").read_text(encoding="utf-8")
+    for required in (
+        "Exec=/usr/libexec/veyra-live-launch-calamares",
+        "/usr/libexec/veyra-installer --preflight",
+        "Install Veyra Next.desktop",
+        "konsole-part",
+    ):
+        if required not in native_live:
+            return fail(f"the native Live Calamares runtime must include {required!r}")
+    for path in (
+        "installer/calamares/settings.conf",
+        "installer/calamares/modules/interactiveterminal.conf",
+        "installer/calamares/modules/welcome.conf",
+        "installer/calamares/branding/veyra/branding.desc",
+    ):
+        if path not in live_kickstart:
+            return fail(f"the Live ISO Kickstart must install {path}")
+
     for expected in (
         "Distribution=fedora",
         "Release=44",
@@ -46,25 +174,85 @@ def main() -> int:
     ):
         if expected not in distribution:
             return fail(f"{config.name} must contain {expected!r} in [Distribution]")
-    for expected in ("Format=disk", "Output=veyra-next", "OutputDirectory=mkosi.output"):
+    for expected in (
+        "Format=disk",
+        "ElTorito=no",
+        "Output=veyra-next",
+        "OutputDirectory=mkosi.output",
+    ):
         if expected not in output:
             return fail(f"{config.name} must contain {expected!r} in [Output]")
-    for expected in ("Bootable=yes", "Bootloader=systemd-boot", "UnifiedKernelImages=unsigned"):
+    if "SplitArtifacts=partitions,uki,initrd,roothash,os-release,repart-definitions" not in output:
+        return fail("the build must export root, verity and UKI artifacts for updates")
+    if "ManifestFormat=json" not in output:
+        return fail("the build must export an RPM manifest for the Fedora release gate")
+    user_os_release = ROOT / "mkosi.extra/etc/os-release"
+    prototype_os_release = ROOT / "mkosi.extra/usr/lib/veyra/os-release"
+    if not user_os_release.is_symlink() or user_os_release.readlink().as_posix() != "../usr/lib/veyra/os-release":
+        return fail("/etc/os-release must point to the Veyra display name while /usr/lib/os-release stays Fedora")
+    if not prototype_os_release.is_file():
+        return fail("the prototype must provide its user-facing os-release metadata")
+    prototype_metadata = prototype_os_release.read_text(encoding="utf-8")
+    for expected in (
+        'NAME="Veyra Next Prototype"',
+        'PRETTY_NAME="Veyra Next Prototype"',
+        "ID=veyra",
+        "ID_LIKE=fedora",
+        "SYSEXT_LEVEL=1",
+    ):
+        if expected not in prototype_metadata:
+            return fail(f"prototype os-release must contain {expected!r}")
+    release_marker = ROOT / "mkosi.extra/etc/veyra-release"
+    if "Track: prototype" not in release_marker.read_text(encoding="utf-8"):
+        return fail("/etc/veyra-release must identify this image as a prototype")
+    for expected in (
+        "Bootable=yes",
+        "Bootloader=systemd-boot",
+        "BiosBootloader=grub",
+        "UnifiedKernelImages=unsigned",
+        "Initrds=%O/initrd",
+    ):
         if expected not in content:
             return fail(f"{config.name} must contain {expected!r} in [Content]")
     if "ToolsTree=yes" not in build:
         return fail(f"{config.name} must build through mkosi's isolated tools tree")
     if "Firmware=uefi" not in runtime:
         return fail("the unsigned prototype UKIs must boot with Secure Boot disabled in the test VM")
-    if "KernelCommandLine=systemd.unit=graphical.target" not in content:
-        return fail("the image must boot into the graphical desktop target")
+    kernel_command_line = next((line for line in content if line.startswith("KernelCommandLine=")), "")
+    for argument in (
+        "systemd.firstboot=no",
+        "systemd.unit=graphical.target",
+        "console=ttyS0,115200n8",
+        "module.sig_enforce=1",
+    ):
+        if argument not in kernel_command_line:
+            return fail(f"the kernel command line must include {argument!r}")
+
+    vdri = ROOT / "mkosi.extra/usr/bin/v-dri"
+    if not vdri.is_file() or not vdri.stat().st_mode & 0o111:
+        return fail("the read-only v-dri status command must be installed as an executable")
+    vdri_content = vdri.read_text(encoding="utf-8")
+    if (
+        '"driver_policy": "fedora-in-tree-only"' not in vdri_content
+        or '"module_signature_enforcement": signature_enforcement' not in vdri_content
+        or "external-module-detected" not in vdri_content
+    ):
+        return fail("v-dri must expose the Fedora driver policy, signature enforcement, and taint diagnostics")
+    if "subprocess" in vdri_content or "modprobe" in vdri_content:
+        return fail("the v-dri status command must not run or activate host driver commands")
 
     packages = {line.removeprefix("Packages=") for line in content if line.startswith("Packages=")}
     required_packages = {
         "kernel",
+        "grub2-pc",
+        "grub2-tools-minimal",
+        "libdnf5",
+        "util-linux",
+        "systemd-udev",
         "NetworkManager",
         "firewalld",
         "flatpak",
+        "python3-libdnf5",
         "plasma-setup",
         "plasma-login-manager",
         "plasma-desktop",
@@ -93,14 +281,144 @@ def main() -> int:
         "enable firewalld.service",
         "enable plasma-setup.service",
         "enable plasmalogin.service",
+        "enable systemd-sysext.service",
+        "enable systemd-boot-check-no-failures.service",
     ):
         if service not in preset_content:
             return fail(f"system preset must include {service!r}")
+
+    vpkg = ROOT / "mkosi.extra/usr/bin/vpkg"
+    if not vpkg.is_file() or not (vpkg.stat().st_mode & 0o111):
+        return fail("vpkg must be installed as an executable in the base image")
+    vpkg_content = vpkg.read_text(encoding="utf-8")
+    for expected in (
+        "from vpkg_libdnf import LibdnfError, Session",
+        "package_session(",
+        'commands.add_parser("stage"',
+        "stage_user_apps(arguments.packages, assume_yes=arguments.yes)",
+        "systemd-sysext",
+        "SYSTEM_EXTENSION_LINK_DIR = Path(\"/etc/extensions\")",
+        "USER_APP_SYSEXT_LINK = SYSTEM_EXTENSION_LINK_DIR / \"vpkg-apps\"",
+        "BLOCKED_PACKAGE_PREFIXES",
+        "check_user_app_base_conflicts",
+        "Refusing non-Veyra RPM",
+        "System files must be delivered by an A/B OS update",
+        "check_extensions_active",
+        "status", "--json=short",
+    ):
+        if expected not in vpkg_content:
+            return fail(f"vpkg safety contract must include {expected!r}")
+    backend = ROOT / "mkosi.extra/usr/lib/veyra/vpkg_libdnf.py"
+    if not backend.is_file():
+        return fail("vpkg must install its libdnf5 API adapter")
+    backend_content = backend.read_text(encoding="utf-8")
+    for expected in ("libdnf5.base.Base()", "libdnf5.base.Goal", "transaction.run()", '"noscripts", "notriggers"'):
+        if expected not in backend_content:
+            return fail(f"libdnf5 API adapter must include {expected!r}")
+    if "dnf5" in packages or "dnf5-plugins" in packages:
+        return fail("the installed image must not include the DNF5 CLI")
+    if re.search(r"run\(\s*\[\s*['\"]dnf5['\"]", vpkg_content):
+        return fail("vpkg must not spawn the DNF5 CLI")
+    for channel in ("main", "testing"):
+        repo_file = ROOT / f"mkosi.extra/etc/yum.repos.d/veyra-{channel}.repo"
+        if not repo_file.is_file():
+            return fail(f"missing Veyra {channel} repository configuration")
+        repo_content = repo_file.read_text(encoding="utf-8")
+        for expected in (
+            f"[veyra-{channel}]",
+            f"/repositories/{channel}/current/x86_64/",
+            "enabled=0",
+            "gpgcheck=1",
+            "repo_gpgcheck=1",
+            "gpgkey=file:///usr/share/veyra/RPM-GPG-KEY-VEYRA",
+        ):
+            if expected not in repo_content:
+                return fail(f"Veyra {channel} repository must include {expected!r}")
+        if "raw.githubusercontent.com" in repo_content or "github.io" in repo_content:
+            return fail(f"Veyra {channel} RPMs must be resolved from GitHub Release snapshots")
+    release_provider = ROOT / "mkosi.extra/usr/lib/veyra/veyra_repo.py"
+    if not release_provider.is_file():
+        return fail("the signed GitHub Releases repository provider must be installed")
+    provider_content = release_provider.read_text(encoding="utf-8")
+    for expected in (
+        "veyra-rpm-repo-x86_64.tar.gz",
+        "veyra-rpm-repo-x86_64.tar.gz.sha256",
+        "repomd.xml.asc",
+        "--verify",
+        "_safe_extract",
+        "rpm-vX.Y.Z-testing",
+    ):
+        if expected not in provider_content:
+            return fail(f"the release provider must enforce {expected!r}")
+    if "gnupg2" not in packages:
+        return fail("the runtime image must include GnuPG for pinned repomd signature verification")
+    rpmfusion = ROOT / "mkosi.extra/etc/yum.repos.d/rpmfusion.repo"
+    if not rpmfusion.is_file():
+        return fail("RPM Fusion free/nonfree repositories must be available to vpkg")
+    for repository in (
+        "rpmfusion-free",
+        "rpmfusion-free-updates",
+        "rpmfusion-nonfree",
+        "rpmfusion-nonfree-updates",
+    ):
+        values = section_values(rpmfusion, repository)
+        if not values:
+            return fail(f"missing RPM Fusion repository section: {repository}")
+        for expected in ("enabled=1", "gpgcheck=1", "repo_gpgcheck=0"):
+            if expected not in values:
+                return fail(f"RPM Fusion {repository} must include {expected!r}")
+        license_channel = "nonfree" if "nonfree" in repository else "free"
+        expected_key = f"RPM-GPG-KEY-rpmfusion-{license_channel}-fedora-2020"
+        if not any(expected_key in value for value in values):
+            return fail(f"RPM Fusion {repository} must use its pinned public key")
+        key_file = ROOT / "mkosi.extra/usr/share/pki/rpm-gpg" / expected_key
+        if not key_file.is_file() or "BEGIN PGP PUBLIC KEY BLOCK" not in key_file.read_text(encoding="ascii"):
+            return fail(f"missing embedded RPM Fusion signing key: {expected_key}")
+    for expected in (
+        "fedora",
+        "updates",
+        "rpmfusion-free",
+        "rpmfusion-free-updates",
+        "rpmfusion-nonfree",
+        "rpmfusion-nonfree-updates",
+    ):
+        if expected not in vpkg_content:
+            return fail(f"vpkg must select the upstream package repository {expected!r}")
+    sync_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-sync.service"
+    sysext_dropin = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-sysext.service.d/veyra-vpkg.conf"
+    if not sync_service.is_file() or not sysext_dropin.is_file():
+        return fail("systemd-sysext must sync Veyra package links before activation")
+    if "ConditionPathExists=/var/lib/veyra/vpkg/root" in sync_service.read_text(encoding="utf-8"):
+        return fail("Veyra app-layer links must synchronize at boot even when no Veyra RPMs are installed")
+    if "Before=systemd-sysext.service" not in sync_service.read_text(encoding="utf-8"):
+        return fail("Veyra package link synchronization must run before systemd-sysext")
+    if "After=veyra-vpkg-sync.service" not in sysext_dropin.read_text(encoding="utf-8"):
+        return fail("systemd-sysext must wait for Veyra extension links to synchronize")
+    stage_test_service = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery.service"
+    stage_test_script = ROOT / "tests/fixtures/vpkg-image/veyra-vpkg-stage-recovery"
+    if not stage_test_service.is_file() or not stage_test_script.is_file():
+        return fail("the QEMU fixture must cover staged-generation rollback before graphical.target")
+    if "Before=graphical.target" not in stage_test_service.read_text(encoding="utf-8"):
+        return fail("the staged rollback QEMU helper must run before the graphical target")
+    for channel in ("main", "testing"):
+        package_list = ROOT / f"packages/{channel}/packages.list"
+        if not package_list.is_file():
+            return fail(f"missing package-channel manifest: {package_list.relative_to(ROOT)}")
+        for line in package_list.read_text(encoding="utf-8").splitlines():
+            name = line.strip()
+            if name and not name.startswith("#") and not name.startswith("veyra-"):
+                return fail(f"Fedora/base packages must not be published into Veyra channels: {name}")
 
     postinstall = ROOT / "mkosi.postinst.chroot"
     postinstall_content = postinstall.read_text(encoding="utf-8")
     if "flatpak remote-add --system --if-not-exists flathub" not in postinstall_content:
         return fail("post-install script must configure Flathub for all users")
+    sysext_level_file = ROOT / "mkosi.extra/usr/share/veyra/sysext-level"
+    sysext_level = sysext_level_file.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", sysext_level):
+        return fail("Veyra system-extension compatibility level must be a safe identifier")
+    if "/usr/share/veyra/sysext-level" not in postinstall_content or "SYSEXT_LEVEL=" not in postinstall_content:
+        return fail("the base OS release must expose the Veyra system-extension compatibility level")
     remote_definition = ROOT / "mkosi.extra/usr/share/veyra/flathub.flatpakrepo"
     if not remote_definition.is_file():
         return fail("the offline Flathub remote definition must be included in the image")
@@ -110,6 +428,235 @@ def main() -> int:
             return fail(f"vendored Flathub definition must include {expected!r}")
     if "/usr/share/veyra/flathub.flatpakrepo" not in postinstall_content:
         return fail("post-install script must configure Flathub from the vendored definition")
+
+    repart = ROOT / "mkosi.repart"
+    root_partition = (repart / "11-root.conf").read_text(encoding="utf-8")
+    verity_partition = (repart / "10-root-verity.conf").read_text(encoding="utf-8")
+    for expected in ("Type=root", "Format=erofs", "Verity=data", "VerityMatchKey=root"):
+        if expected not in root_partition:
+            return fail(f"the active root partition must include {expected!r}")
+    for expected in ("Type=root-verity", "Verity=hash", "VerityMatchKey=root"):
+        if expected not in verity_partition:
+            return fail(f"the active verity partition must include {expected!r}")
+    bios_partition = repart / "05-bios.conf"
+    if not bios_partition.is_file():
+        return fail("Legacy BIOS images must include a GRUB BIOS Boot Partition")
+    bios_partition_content = bios_partition.read_text(encoding="utf-8")
+    for expected in (
+        "Type=21686148-6449-6e6f-744e-656564454649",
+        "SizeMinBytes=1M",
+        "SizeMaxBytes=1M",
+    ):
+        if expected not in bios_partition_content:
+            return fail(f"the BIOS Boot Partition must include {expected!r}")
+    if re.search(r"(?m)^Format=", bios_partition_content):
+        return fail("the GRUB BIOS Boot Partition must remain unformatted")
+    for relative in (
+        "20-empty-root-verity.conf",
+        "21-empty-root.conf",
+        "30-etc.conf",
+        "40-var.conf",
+        "50-home.conf",
+    ):
+        if not (repart / relative).is_file():
+            return fail(f"missing A/B or persistent partition definition: {relative}")
+
+    initrd_root = ROOT / "mkosi.images/initrd/mkosi.extra/usr/lib/systemd/system"
+    for mount_name, label, where in (
+        ("sysroot-etc.mount", "VEYRA_ETC", "/sysroot/etc"),
+        ("sysroot-var.mount", "VEYRA_VAR", "/sysroot/var"),
+    ):
+        mount_unit = (initrd_root / mount_name).read_text(encoding="utf-8")
+        for expected in (f"/dev/disk/by-partlabel/{label}", f"Where={where}", "Before=initrd-root-fs.target"):
+            if expected not in mount_unit:
+                return fail(f"initrd {mount_name} must include {expected!r}")
+        link = initrd_root / "initrd-root-fs.target.wants" / mount_name
+        if not link.is_symlink() or not link.exists():
+            return fail(f"initrd must pull {mount_name} into initrd-root-fs.target")
+
+    transfer_dir = ROOT / "mkosi.extra/usr/lib/sysupdate.d"
+    transfer_names = sorted(path.name for path in transfer_dir.glob("*.transfer"))
+    if transfer_names != [
+        "10-root-verity.transfer",
+        "20-root.transfer",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
+        "99-uki.transfer",
+    ]:
+        return fail("systemd-sysupdate transfers must stage root, BIOS boot assets, then the UEFI commit entry")
+    for name in transfer_names:
+        transfer = (transfer_dir / name).read_text(encoding="utf-8")
+        for expected in ("Verify=yes", "ProtectVersion=%A", "Type=url-file"):
+            if expected not in transfer:
+                return fail(f"{name} must include {expected!r}")
+    expected_sources = {
+        "10-root-verity.transfer": "veyra-next_@v_@u.root-verity.raw.zst",
+        "20-root.transfer": "veyra-next_@v_@u.root.raw.zst",
+        "80-bios-kernel.transfer": "veyra-next_@v.vmlinuz",
+        "90-bios-initrd.transfer": "veyra-next_@v.initrd",
+        "99-uki.transfer": "veyra-next_@v.efi",
+    }
+    for name, pattern in expected_sources.items():
+        transfer = (transfer_dir / name).read_text(encoding="utf-8")
+        if pattern not in transfer:
+            return fail(f"{name} must match the generated release asset pattern {pattern!r}")
+    for name in ("10-root-verity.transfer", "20-root.transfer"):
+        transfer = (transfer_dir / name).read_text(encoding="utf-8")
+        if "PartitionUUID=@u" not in transfer:
+            return fail(f"{name} must preserve the split UUID required by the dm-verity root hash")
+        if "ReadOnly=1" not in transfer:
+            return fail(f"{name} must mark updated root and verity partitions read-only")
+    for name in ("80-bios-kernel.transfer", "90-bios-initrd.transfer"):
+        transfer = (transfer_dir / name).read_text(encoding="utf-8")
+        for expected in ("Path=/VEYRA", "PathRelativeTo=boot", "Mode=0444", "InstancesMax=2"):
+            if expected not in transfer:
+                return fail(f"{name} must install versioned BIOS boot assets on the ESP ({expected!r})")
+    uki_transfer = (transfer_dir / "99-uki.transfer").read_text(encoding="utf-8")
+    for expected in ("TriesLeft=3", "TriesDone=0", "InstancesMax=2", "PathRelativeTo=boot"):
+        if expected not in uki_transfer:
+            return fail(f"UKI transfer must include {expected!r}")
+    if not (ROOT / "mkosi.postoutput").is_file():
+        return fail("mkosi must prepare versioned update assets after image output")
+    artifact_preparer = (ROOT / "scripts/prepare-update-artifacts.py").read_text(encoding="utf-8")
+    for expected in ("extract_uki_section", "write_bios_boot_files", "grub_ota.render_grub_config", ".vmlinuz", ".initrd"):
+        if expected not in artifact_preparer:
+            return fail(f"the post-output artifact step must prepare BIOS boot files ({expected!r})")
+    if not (ROOT / "mkosi.extra/usr/lib/veyra/grub_ota.py").is_file():
+        return fail("the image must include the GRUB A/B update-state helper")
+    grub_bless_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-grub-bless.service"
+    if not grub_bless_service.is_file():
+        return fail("Legacy BIOS trial updates must be blessed after the boot health checks")
+    if "veyra-grub-bless.service" not in (ROOT / "mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra.conf").read_text(encoding="utf-8"):
+        return fail("boot-complete.target must wait for the GRUB trial health decision")
+    if not (ROOT / "mkosi.configure").is_file():
+        return fail("the initial UKI filename must use the same version as the root slot")
+    if not (ROOT / "scripts/check-image.py").is_file():
+        return fail("the built GPT layout must be checked in CI")
+    if not (ROOT / "scripts/test-ab-boot.py").is_file():
+        return fail("CI must boot a staged A/B update and exercise boot-count rollback")
+    ota_vm_test = ROOT / "scripts/test-sysupdate-image.py"
+    ota_vm_test_content = ota_vm_test.read_text(encoding="utf-8")
+    if "veyra-update install" not in ota_vm_test_content or "guestfwd=" not in (ROOT / "scripts/test-ab-boot.py").read_text(encoding="utf-8"):
+        return fail("signed OTA installation and updates must run inside the restricted QEMU guest")
+    if not (ROOT / "scripts/test-bios-ab-boot.py").is_file():
+        return fail("Legacy BIOS OTA needs its own SeaBIOS trial and rollback integration check")
+    bios_boot_test = ROOT / "scripts/test-bios-boot.py"
+    if not bios_boot_test.is_file():
+        return fail("the image must be booted through SeaBIOS in QEMU")
+    bios_boot_test_content = bios_boot_test.read_text(encoding="utf-8")
+    for expected in (
+        "serial_console_diagnostics",
+        "console=ttyS0,115200n8",
+        "systemd.log_target=console",
+        "veyra_bios_ci=1",
+        "mcopy",
+    ):
+        if expected not in bios_boot_test_content:
+            return fail(f"the BIOS QEMU test must collect guest serial diagnostics ({expected!r})")
+    bios_ci_service = ROOT / "tests/fixtures/firmware/veyra-bios-ci.service"
+    if not bios_ci_service.is_file():
+        return fail("the BIOS QEMU test requires its CI-only boot-complete marker service")
+    bios_ci_service_content = bios_ci_service.read_text(encoding="utf-8")
+    if "ConditionKernelCommandLine=veyra_bios_ci=1" not in bios_ci_service_content:
+        return fail("the BIOS marker service must run only during the explicit BIOS diagnostic boot")
+    if "test-bios-boot.py --image mkosi.output/veyra-next.raw" not in ci_workflow:
+        return fail("CI must run the Legacy BIOS QEMU boot test against its built image")
+    if 'sudo chown "$(id -u):$(id -g)" mkosi.output/veyra-next.raw' not in ci_workflow:
+        return fail("the BIOS QEMU diagnostic must be able to write and restore its disposable GRUB config")
+    if "inject_bios_guest_ota_test" not in ota_vm_test_content or "--firmware bios" not in ci_workflow:
+        return fail("CI must stage and boot a signed BIOS OTA through GRUB in QEMU")
+    if "--candidate-dir build/bios-ota-candidate" not in ci_workflow:
+        return fail("BIOS OTA CI must build a target-version root, kernel, and initramfs")
+    if re.search(r"systemd-sysupdate[^\n]*--image", ota_vm_test_content):
+        return fail("CI must not exercise systemd-sysupdate against a host-mounted image")
+    if any(option not in ota_vm_test_content for option in (
+        "--qemu-accel", "--qemu-cpu", "--qemu-memory-mib", "--log-directory",
+    )):
+        return fail("the OTA QEMU test must support KVM, adequate guest memory, and retained serial logs")
+    update_client = ROOT / "mkosi.extra/usr/bin/veyra-update"
+    if not update_client.is_file() or not (update_client.stat().st_mode & 0o111):
+        return fail("the image must install the veyra-update command")
+    update_client_content = update_client.read_text(encoding="utf-8")
+    for expected in (
+        "check-new",
+        "prepare-for-base",
+        "bind-generation",
+        "--definitions=\"$root_definitions\" update",
+        "--definitions=\"$boot_definitions\" update",
+        "80-bios-kernel.transfer",
+        "90-bios-initrd.transfer",
+        "GRUB_OTA_HELPER",
+        "veritysetup verify",
+        "cancel-pending",
+        "--version \"$version\"",
+        "flock --shared 9",
+        "flock --exclusive 9",
+        "complete_pending_if_current",
+        "pending_update",
+        "bootctl set-oneshot \"veyra-next_${version}.efi\"",
+        "systemctl reboot",
+    ):
+        if expected not in update_client_content:
+            return fail(f"veyra-update OTA preflight must include {expected!r}")
+    boot_complete = ROOT / "mkosi.extra/usr/lib/systemd/system/boot-complete.target.d/veyra.conf"
+    boot_complete_content = boot_complete.read_text(encoding="utf-8")
+    for expected in (
+        "Requires=graphical.target",
+        "systemd-boot-check-no-failures.service",
+        "veyra-vpkg-check.service",
+        "After=graphical.target",
+    ):
+        if expected not in boot_complete_content:
+            return fail(f"boot assessment must wait for {expected!r}")
+    extension_check = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-check.service"
+    if not extension_check.is_file() or "systemd-sysext.service" not in extension_check.read_text(encoding="utf-8"):
+        return fail("boot assessment must verify Veyra extensions after systemd-sysext activation")
+    boot_failure_check = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-boot-check-no-failures.service.d/veyra-vpkg.conf"
+    if not boot_failure_check.is_file() or "After=veyra-vpkg-check.service" not in boot_failure_check.read_text(encoding="utf-8"):
+        return fail("boot blessing must wait for the Veyra extension health check")
+    boot_bless_hook = ROOT / "mkosi.extra/usr/lib/systemd/system/systemd-bless-boot.service.d/veyra-vpkg-ota.conf"
+    if not boot_bless_hook.is_file() or "veyra-update bless-complete" not in boot_bless_hook.read_text(encoding="utf-8"):
+        return fail("successful UKI blessing must release the OTA package-mutation lock")
+    update_lock = ROOT / "mkosi.extra/usr/lib/tmpfiles.d/veyra-update.conf"
+    if not update_lock.is_file() or "veyra-update.lock 0644 root root" not in update_lock.read_text(encoding="utf-8"):
+        return fail("read-only pending queries must share the OTA install lock")
+    fallback_hook = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vpkg-sync.service.d/veyra-ota.conf"
+    if not fallback_hook.is_file() or "veyra-update settle" not in fallback_hook.read_text(encoding="utf-8"):
+        return fail("OTA fallback reconciliation must run after vpkg selects the booted deployment")
+    for expected in ("bootctl --print-stub-path", "rm -- \"$exhausted\"", "sync -f /boot/EFI/Linux"):
+        if expected not in update_client_content:
+            return fail(f"OTA fallback reconciliation must verify and retire {expected!r}")
+
+    vforge_command = ROOT / "mkosi.extra/usr/bin/vforge"
+    vforge_base_service = ROOT / "mkosi.extra/usr/lib/systemd/system/veyra-vforge-base.service"
+    vforge_tmpfiles = ROOT / "mkosi.extra/usr/lib/tmpfiles.d/veyra-vforge.conf"
+    veyra_preset = ROOT / "mkosi.extra/usr/lib/systemd/system-preset/99-veyra.preset"
+    vforge_base_link = ROOT / "mkosi.extra/usr/lib/systemd/system/multi-user.target.wants/veyra-vforge-base.service"
+    if not all(path.is_file() for path in (vforge_command, vforge_base_service, vforge_tmpfiles, veyra_preset)):
+        return fail("rootless Vforge requires its command, immutable-base service, tmpfiles entry, and preset")
+    vforge_command_content = vforge_command.read_text(encoding="utf-8")
+    if "VFORGE_BASE_ROOT = \"/run/veyra/vforge/base\"" not in vforge_command_content:
+        return fail("Vforge must bind its lower layer from the prepared immutable system base")
+    if "podman" in vforge_command_content.lower() or "registry.fedoraproject.org/fedora:44" in vforge_command_content:
+        return fail("Vforge must run directly over the Veyra base without a Fedora container runtime")
+    base_service_content = vforge_base_service.read_text(encoding="utf-8")
+    for expected in (
+        "After=local-fs.target systemd-tmpfiles-setup.service",
+        "mount --bind / /run/veyra/vforge/base",
+        "mount -o remount,bind,ro /run/veyra/vforge/base",
+        "WantedBy=multi-user.target",
+    ):
+        if expected not in base_service_content:
+            return fail(f"the Vforge base service must provide a read-only, non-recursive EROFS bind: {expected!r}")
+    if "rbind" in base_service_content:
+        return fail("the Vforge base service must not expose persistent host submounts")
+    if "enable veyra-vforge-base.service" not in veyra_preset.read_text(encoding="utf-8"):
+        return fail("the immutable Vforge base service must be enabled in the image")
+    if (not vforge_base_link.is_symlink()
+            or vforge_base_link.readlink().as_posix() != "/usr/lib/systemd/system/veyra-vforge-base.service"):
+        return fail("mkosi must install the Vforge base service enablement link in multi-user.target.wants")
+    if "/run/veyra/vforge/base" not in vforge_tmpfiles.read_text(encoding="utf-8"):
+        return fail("tmpfiles must create the immutable Vforge base mountpoint")
 
     logo = ROOT / "branding/veyra-logo.svg"
     installed_logo = ROOT / "mkosi.extra/usr/share/veyra/branding/veyra-logo.svg"

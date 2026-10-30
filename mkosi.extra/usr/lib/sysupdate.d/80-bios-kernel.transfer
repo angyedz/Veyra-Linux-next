@@ -1,0 +1,16 @@
+[Transfer]
+ProtectVersion=%A
+Verify=yes
+
+[Source]
+Type=url-file
+Path=https://github.com/angyedz/Veyra-Linux-next/releases/latest/download/
+MatchPattern=veyra-next_@v.vmlinuz
+
+[Target]
+Type=regular-file
+Path=/VEYRA
+PathRelativeTo=boot
+MatchPattern=veyra-next_@v.vmlinuz
+Mode=0444
+InstancesMax=2

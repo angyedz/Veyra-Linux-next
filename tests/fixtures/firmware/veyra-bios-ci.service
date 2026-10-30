@@ -1,0 +1,16 @@
+[Unit]
+Description=Veyra Legacy BIOS boot acceptance marker
+# Avoid After=graphical.target with WantedBy=graphical.target: that
+# creates an ordering cycle. The QEMU harness independently requires
+# the actual 'Reached target graphical.target' serial record.
+After=multi-user.target
+ConditionKernelCommandLine=veyra_bios_ci=1
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "printf 'VEYRA_BIOS_BOOT_CI_PASS\\n' > /dev/ttyS0"
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="116" height="54" viewBox="0 0 116 54">
+  <!-- Glacier: one mathematically consistent 44x44 rounded-square nine-slice frame per task state. -->
+  <g id="normal-topleft"><path d="M4 0 V4 H0 A4 4 0 0 1 4 0 Z" fill="#F4F6F9"/></g>
+  <g id="normal-top"><rect x="4" y="0" width="36" height="4" fill="#F4F6F9"/></g>
+  <g id="normal-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#F4F6F9"/></g>
+  <g id="normal-left"><rect x="0" y="4" width="4" height="36" fill="#F4F6F9"/></g>
+  <g id="normal-center"><rect x="4" y="4" width="36" height="36" fill="#F4F6F9"/></g>
+  <g id="normal-right"><rect x="40" y="4" width="4" height="36" fill="#F4F6F9"/></g>
+  <g id="normal-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#F4F6F9"/></g>
+  <g id="normal-bottom"><rect x="4" y="40" width="36" height="4" fill="#F4F6F9"/></g>
+  <g id="normal-bottomright"><path d="M44 40 A4 4 0 0 1 40 44 V40 Z" fill="#F4F6F9"/></g>
+  <g id="hover-topleft"><path d="M4 0 V4 H0 A4 4 0 0 1 4 0 Z" fill="#E7EEF5"/></g>
+  <g id="hover-top"><rect x="4" y="0" width="36" height="4" fill="#E7EEF5"/></g>
+  <g id="hover-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#E7EEF5"/></g>
+  <g id="hover-left"><rect x="0" y="4" width="4" height="36" fill="#E7EEF5"/></g>
+  <g id="hover-center"><rect x="4" y="4" width="36" height="36" fill="#E7EEF5"/></g>
+  <g id="hover-right"><rect x="40" y="4" width="4" height="36" fill="#E7EEF5"/></g>
+  <g id="hover-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#E7EEF5"/></g>
+  <g id="hover-bottom"><rect x="4" y="40" width="36" height="4" fill="#E7EEF5"/></g>
+  <g id="hover-bottomright"><path d="M44 40 A4 4 0 0 1 40 44 V40 Z" fill="#E7EEF5"/></g>
+  <g id="focus-topleft"><path d="M4 0 V4 H0 A4 4 0 0 1 4 0 Z" fill="#DCE7F1"/><path d="M0.5 4 A3.5 3.5 0 0 1 4 0.5" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="focus-top"><rect x="4" y="0" width="36" height="4" fill="#DCE7F1"/><path d="M4 0.5 H40" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="focus-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#DCE7F1"/><path d="M40 0.5 A3.5 3.5 0 0 1 43.5 4" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="focus-left"><rect x="0" y="4" width="4" height="36" fill="#DCE7F1"/><path d="M0.5 4 V40" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="focus-center"><rect x="4" y="4" width="36" height="36" fill="#DCE7F1"/></g>
+  <g id="focus-right"><rect x="40" y="4" width="4" height="36" fill="#DCE7F1"/><path d="M43.5 4 V40" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="focus-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#DCE7F1"/><path d="M0.5 40 A3.5 3.5 0 0 0 4 43.5" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="focus-bottom"><rect x="4" y="40" width="36" height="4" fill="#DCE7F1"/><path d="M4 43.5 H40" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="focus-bottomright"><path d="M44 40 A4 4 0 0 1 40 44 V40 Z" fill="#DCE7F1"/><path d="M43.5 40 A3.5 3.5 0 0 1 40 43.5" fill="none" stroke="#9BB3C8" stroke-width="1" stroke-opacity=".65"/></g>
+  <g id="attention-topleft"><path d="M4 0 V4 H0 A4 4 0 0 1 4 0 Z" fill="#F8E8DD"/></g>
+  <g id="attention-top"><rect x="4" y="0" width="36" height="4" fill="#F8E8DD"/></g>
+  <g id="attention-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#F8E8DD"/></g>
+  <g id="attention-left"><rect x="0" y="4" width="4" height="36" fill="#F8E8DD"/></g>
+  <g id="attention-center"><rect x="4" y="4" width="36" height="36" fill="#F8E8DD"/></g>
+  <g id="attention-right"><rect x="40" y="4" width="4" height="36" fill="#F8E8DD"/></g>
+  <g id="attention-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#F8E8DD"/></g>
+  <g id="attention-bottom"><rect x="4" y="40" width="36" height="4" fill="#F8E8DD"/></g>
+  <g id="attention-bottomright"><path d="M44 40 A4 4 0 0 1 40 44 V40 Z" fill="#F8E8DD"/></g>
+  <g id="minimized-topleft"><path d="M4 0 V4 H0 A4 4 0 0 1 4 0 Z" fill="#F4F6F9"/></g>
+  <g id="minimized-top"><rect x="4" y="0" width="36" height="4" fill="#F4F6F9"/></g>
+  <g id="minimized-topright"><path d="M40 0 A4 4 0 0 1 44 4 H40 Z" fill="#F4F6F9"/></g>
+  <g id="minimized-left"><rect x="0" y="4" width="4" height="36" fill="#F4F6F9"/></g>
+  <g id="minimized-center"><rect x="4" y="4" width="36" height="36" fill="#F4F6F9"/></g>
+  <g id="minimized-right"><rect x="40" y="4" width="4" height="36" fill="#F4F6F9"/></g>
+  <g id="minimized-bottomleft"><path d="M0 40 H4 V44 A4 4 0 0 1 0 40 Z" fill="#F4F6F9"/></g>
+  <g id="minimized-bottom"><rect x="4" y="40" width="36" height="4" fill="#F4F6F9"/></g>
+  <g id="minimized-bottomright"><path d="M44 40 A4 4 0 0 1 40 44 V40 Z" fill="#F4F6F9"/></g>
+  <rect id="normal-hint-top-margin" x="70" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
+  <rect id="normal-hint-right-margin" x="78" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
+  <rect id="normal-hint-bottom-margin" x="86" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
+  <rect id="normal-hint-left-margin" x="94" y="4" width="2" height="2" fill="#000" fill-opacity="0"/>
+</svg>

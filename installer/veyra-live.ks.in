@@ -1,0 +1,149 @@
+#version=F44
+lang en_US.UTF-8
+keyboard --vckeymap=us --xlayouts='us'
+timezone UTC --utc
+rootpw --lock
+network --bootproto=dhcp --device=link --activate
+url --url=__VEYRA_FEDORA_REPO_URL__
+firewall --enabled --service=mdns
+selinux --enforcing
+services --enabled=NetworkManager,livesys,livesys-late,qemu-guest-agent
+shutdown
+bootloader --location=none
+clearpart --all --initlabel
+reqpart
+part / --fstype=ext4 --size=16384
+
+# Fedora mirrors occasionally reset large downloads; configure Anaconda retries
+# inside the transaction before retrying the entire image build.
+%packages --excludedocs --timeout=120 --retries=20
+@^kde-desktop-environment
+btrfs-progs
+calamares
+calamares-interactiveterminal
+cryptsetup
+dnf5
+dosfstools
+dracut
+dracut-config-generic
+dracut-live
+e2fsprogs
+erofs-utils
+flatpak
+# Required by Lorax's legacy EFI/BOOT templates: shimx64.efi and gcdx64.efi.
+# This belongs only to the legacy diagnostic ISO, not the native Live builder.
+shim-x64
+grub2-efi-x64
+grub2-efi-x64-cdboot
+grub2-pc
+grub2-pc-modules
+grub2-tools
+grub2-tools-extra
+kdialog
+konsole
+fastfetch
+livesys-scripts
+NetworkManager
+polkit
+qemu-guest-agent
+python3
+systemd-ukify
+systemd-boot-unsigned
+systemd-udev
+util-linux
+-@dial-up
+-@input-methods
+-@standard
+-anaconda*
+-gfs2-utils
+%end
+
+%post --nochroot --interpreter=/usr/bin/bash --erroronfail --log=/tmp/veyra-live-post.log
+set -euo pipefail
+source_root='__VEYRA_SOURCE_ROOT__'
+live_root="/mnt/sysimage"
+install -d -m 0755 "$live_root/usr/share/veyra/installer/source" \
+  "$live_root/usr/share/veyra/installer/source/assets" \
+  "$live_root/usr/share/veyra/installer/source/installer" \
+  "$live_root/usr/share/applications" "$live_root/usr/libexec" \
+  "$live_root/etc/calamares/modules" \
+  "$live_root/etc/calamares/branding/veyra"
+cp -a "$source_root/mkosi.conf" "$live_root/usr/share/veyra/installer/source/"
+cp -a "$source_root/mkosi.repart" "$live_root/usr/share/veyra/installer/source/"
+cp -a "$source_root/mkosi.extra" "$live_root/usr/share/veyra/installer/source/"
+cp -a "$source_root/installer/dracut" "$live_root/usr/share/veyra/installer/source/installer/"
+install -m 0755 "$source_root/scripts/veyra-install.py" "$live_root/usr/libexec/veyra-installer"
+install -m 0644 "$source_root/installer/veyra-installer.desktop" \
+  "$live_root/usr/share/applications/veyra-installer.desktop"
+install -m 0644 "$source_root/installer/calamares/settings.conf" \
+  "$live_root/etc/calamares/settings.conf"
+# Invoking "calamares -c /etc/calamares" overrides its QML data root.
+# Fedora's QML resources remain in /usr/share/calamares/qml. Link them
+# instead of shipping an empty /etc/calamares/qml directory or copying assets.
+test -d "$live_root/usr/share/calamares/qml" || {
+  echo "Calamares QML package resources are missing." >&2
+  exit 1
+}
+test ! -e "$live_root/etc/calamares/qml" &&
+  test ! -L "$live_root/etc/calamares/qml" || {
+    echo "Unexpected Calamares QML override entry." >&2
+    exit 1
+  }
+ln -s ../../usr/share/calamares/qml "$live_root/etc/calamares/qml"
+test -d "$live_root/etc/calamares/qml" || {
+  echo "Calamares QML resource link does not resolve." >&2
+  exit 1
+}
+install -m 0644 "$source_root/installer/calamares/modules/interactiveterminal.conf" \
+  "$live_root/etc/calamares/modules/interactiveterminal.conf"
+install -m 0644 "$source_root/installer/calamares/modules/welcome.conf" \
+  "$live_root/etc/calamares/modules/welcome.conf"
+install -m 0644 "$source_root/installer/calamares/branding/veyra/branding.desc" \
+  "$live_root/etc/calamares/branding/veyra/branding.desc"
+install -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
+  "$live_root/etc/calamares/branding/veyra/veyra-logo.svg"
+install -m 0644 "$source_root/build/recovery-uki/veyra-recovery.efi" \
+  "$live_root/usr/share/veyra/installer/source/assets/veyra-recovery.efi"
+install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/branding/veyra-logo.svg" \
+  "$live_root/usr/share/veyra/branding/veyra-logo.svg"
+# Install Veyra's existing Fastfetch preset as a genuine global XDG
+# configuration: root and liveuser get it without changing their home files.
+install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/fastfetch/logo.txt" \
+  "$live_root/usr/share/veyra/fastfetch/logo.txt"
+install -D -m 0644 "$source_root/mkosi.extra/usr/share/veyra/fastfetch/config.jsonc" \
+  "$live_root/etc/xdg/fastfetch/config.jsonc"
+# Reuse the committed Glacier themes verbatim for Live and installed Veyra;
+# do not modify /home/liveuser, boot loader, or system identity.
+for theme_dir in color-schemes plasma/desktoptheme plasma/look-and-feel; do
+  mkdir -p "$live_root/usr/share/$theme_dir"
+  cp -a "$source_root/mkosi.extra/usr/share/$theme_dir/." "$live_root/usr/share/$theme_dir/"
+done
+for default in kdeglobals plasmarc kwinrc; do
+  install -D -m 0644 "$source_root/mkosi.extra/etc/xdg/$default" \
+    "$live_root/etc/xdg/$default"
+done
+install -D -m 0755 "$source_root/mkosi.extra/usr/bin/veyra-theme" \
+  "$live_root/usr/bin/veyra-theme"
+test -x "$live_root/usr/bin/fastfetch"
+test -s "$live_root/usr/share/veyra/fastfetch/logo.txt"
+test -s "$live_root/etc/xdg/fastfetch/config.jsonc"
+test -s "$live_root/usr/share/plasma/look-and-feel/org.veyra.glacier.dark/metadata.json"
+if [ -f "$live_root/etc/os-release" ]; then
+  sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
+  sed -i 's/^NAME=.*/NAME="Veyra Next Prototype Live"/' "$live_root/etc/os-release"
+fi
+if rpm --root="$live_root" -qa --qf '%{NAME}\n' | grep -Eq '(^|-)anaconda($|-)'; then
+  echo "Anaconda packages must not be included in the Veyra Live ISO." >&2
+  exit 1
+fi
+rpm --root="$live_root" -q calamares calamares-interactiveterminal shim-x64 grub2-efi-x64-cdboot dracut-config-generic
+# Fail early if Lorax cannot find the EFI bootloader required by its ISO template.
+test -s "$live_root/boot/efi/EFI/fedora/shimx64.efi" || {
+  echo "UEFI ISO bootloader missing: /boot/efi/EFI/fedora/shimx64.efi" >&2
+  exit 1
+}
+test -s "$live_root/boot/efi/EFI/fedora/gcdx64.efi" || {
+  echo "UEFI ISO bootloader missing: /boot/efi/EFI/fedora/gcdx64.efi" >&2
+  exit 1
+}
+%end
