@@ -126,7 +126,15 @@ command -v implantisomd5 >/dev/null || {
 command -v checkisomd5 >/dev/null || {
   echo "Missing isomd5sum package: checkisomd5 is required." >&2; exit 1;
 }
-implantisomd5 "$iso"
+# Lorax may have already implanted a valid media checksum. Do not overwrite
+# its ISO9660 application data in that case: implantisomd5 otherwise fails
+# with "Application data has been used" even though the ISO is valid.
+if checkisomd5 "$iso"; then
+  echo "Existing Live Installer ISO media checksum is valid; keeping it."
+else
+  echo "No valid embedded media checksum; trying to implant one." >&2
+  implantisomd5 "$iso"
+fi
 checkisomd5 "$iso" || {
   echo "Live Installer ISO failed its own embedded media checksum." >&2; exit 1;
 }
